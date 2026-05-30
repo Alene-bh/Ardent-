@@ -285,6 +285,13 @@ const finalScoreText = document.getElementById("finalScoreText");
 const bestScoreText = document.getElementById("bestScoreText");
 const bestScoreMenuText = document.getElementById("bestScoreMenuText");
 
+const refreshLeaderboardBtn = document.getElementById("refreshLeaderboardBtn");
+const refreshLeaderboardGameBtn = document.getElementById("refreshLeaderboardGameBtn");
+const leaderboardStatusText = document.getElementById("leaderboardStatusText");
+const leaderboardGameStatusText = document.getElementById("leaderboardGameStatusText");
+const leaderboardList = document.getElementById("leaderboardList");
+const leaderboardGameList = document.getElementById("leaderboardGameList");
+
 const upgradeDamageBtn = document.getElementById("upgradeDamageBtn");
 const upgradeFireRateBtn = document.getElementById("upgradeFireRateBtn");
 const upgradeMaxHpBtn = document.getElementById("upgradeMaxHpBtn");
@@ -1165,7 +1172,7 @@ function createDefaultState() {
             name: "Bomba",
             key: codeToLabel(controlBindings.bomb),
             owned: false,
-            cost: 580,
+            cost: 180,
             cooldown: 8000,
             lastUsed: -Infinity
         },
@@ -1173,7 +1180,7 @@ function createDefaultState() {
             name: "Congelar",
             key: codeToLabel(controlBindings.freeze),
             owned: false,
-            cost: 2080,
+            cost: 280,
             cooldown: 14000,
             lastUsed: -Infinity
         },
@@ -1181,7 +1188,7 @@ function createDefaultState() {
             name: "Tsunami",
             key: codeToLabel(controlBindings.tsunami),
             owned: false,
-            cost: 5060,
+            cost: 560,
             cooldown: 24000,
             lastUsed: -Infinity
         },
@@ -1189,7 +1196,7 @@ function createDefaultState() {
             name: "Rayo",
             key: codeToLabel(controlBindings.lightning),
             owned: false,
-            cost: 7050,
+            cost: 650,
             cooldown: 22000,
             lastUsed: -Infinity
         },
@@ -1197,7 +1204,7 @@ function createDefaultState() {
             name: "Meteorito",
             key: codeToLabel(controlBindings.meteor),
             owned: false,
-            cost: 9050,
+            cost: 950,
             cooldown: 30000,
             lastUsed: -Infinity
         },
@@ -1205,7 +1212,7 @@ function createDefaultState() {
             name: "Eclipse",
             key: codeToLabel(controlBindings.eclipse),
             owned: false,
-            cost: 25050,
+            cost: 1350,
             cooldown: 42000,
             lastUsed: -Infinity
         }
@@ -2570,6 +2577,117 @@ function showWaveSummary() {
     waveSummaryPanel.classList.remove("hidden");
 }
 
+function getLeaderboardPlayerName() {
+    return String(developerName || alphaTesterName || playerName || "Jugador").trim().slice(0, 18) || "Jugador";
+}
+
+function formatLeaderboardNumber(value) {
+    return Number(value || 0).toLocaleString("es-AR");
+}
+
+function setLeaderboardStatus(message) {
+    if (leaderboardStatusText) leaderboardStatusText.textContent = message;
+    if (leaderboardGameStatusText) leaderboardGameStatusText.textContent = message;
+}
+
+function renderLeaderboard(scores = []) {
+    const lists = [leaderboardList, leaderboardGameList].filter(Boolean);
+
+    lists.forEach(list => {
+        list.innerHTML = "";
+
+        if (!scores.length) {
+            const li = document.createElement("li");
+            li.textContent = "Todavía no hay puntuaciones guardadas.";
+            list.appendChild(li);
+            return;
+        }
+
+        scores.forEach(entry => {
+            const li = document.createElement("li");
+            const waveText = entry.wave ? `Wave ${entry.wave}` : "Wave ?";
+            const dateText = entry.date ? new Date(entry.date).toLocaleDateString("es-AR") : "";
+            const name = String(entry.name || "Jugador").slice(0, 18);
+            const scoreValue = formatLeaderboardNumber(entry.score);
+
+            li.innerHTML = `
+                <div class="leaderboardEntry">
+                    <div>
+                        <div class="leaderboardName"></div>
+                        <div class="leaderboardMeta">${waveText}${dateText ? " · " + dateText : ""}</div>
+                    </div>
+                    <div class="leaderboardScore">${scoreValue}</div>
+                </div>
+            `;
+
+            li.querySelector(".leaderboardName").textContent = name;
+            list.appendChild(li);
+        });
+    });
+}
+
+async function loadLeaderboard() {
+    try {
+        setLeaderboardStatus("Cargando leaderboard...");
+        const response = await fetch("/api/leaderboard", { cache: "no-store" });
+        const data = await response.json();
+
+        if (!response.ok) throw new Error(data.message || "No se pudo cargar el leaderboard.");
+
+        renderLeaderboard(Array.isArray(data.scores) ? data.scores : []);
+
+        if (data.configured === false) {
+            setLeaderboardStatus("Leaderboard local listo. Falta configurar KV_REST_API_URL y KV_REST_API_TOKEN en Vercel.");
+        } else {
+            setLeaderboardStatus("Top global actualizado.");
+        }
+    } catch (error) {
+        console.log("Leaderboard load error:", error);
+        renderLeaderboard([]);
+        setLeaderboardStatus("No se pudo conectar al leaderboard global todavía.");
+    }
+}
+
+async function submitLeaderboardScore() {
+    if (!score || score <= 0) {
+        await loadLeaderboard();
+        return;
+    }
+
+    try {
+        setLeaderboardStatus("Guardando puntuación...");
+
+        const payload = {
+            name: getLeaderboardPlayerName(),
+            score: Math.max(0, Math.floor(score)),
+            wave: Math.max(1, Math.floor(wave || 1)),
+            version: "0.7.5.1"
+        };
+
+        const response = await fetch("/api/leaderboard", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) throw new Error(data.message || "No se pudo guardar la puntuación.");
+
+        renderLeaderboard(Array.isArray(data.scores) ? data.scores : []);
+
+        if (data.configured === false) {
+            setLeaderboardStatus("Puntuación no guardada online: falta configurar Vercel KV.");
+        } else {
+            setLeaderboardStatus("Puntuación guardada en el leaderboard global.");
+        }
+    } catch (error) {
+        console.log("Leaderboard submit error:", error);
+        setLeaderboardStatus("No se pudo guardar online. Revisá la configuración de Vercel KV.");
+        await loadLeaderboard();
+    }
+}
+
 function endRun() {
     stopMusicAndReset();
     hasActiveRun = false;
@@ -2602,6 +2720,7 @@ function endRun() {
     shop.classList.add("hidden");
     waveSummaryPanel.classList.add("hidden");
 
+    submitLeaderboardScore();
     updateHud();
 }
 
@@ -3955,6 +4074,10 @@ resetControlsButtons.forEach(button => {
 updateControlsUI();
 
 startGameBtn.addEventListener("click", startGame);
+
+if (refreshLeaderboardBtn) refreshLeaderboardBtn.addEventListener("click", loadLeaderboard);
+if (refreshLeaderboardGameBtn) refreshLeaderboardGameBtn.addEventListener("click", loadLeaderboard);
+loadLeaderboard();
 
 if (consoleBtn) consoleBtn.addEventListener("click", openConsole);
 if (closeConsoleBtn) closeConsoleBtn.addEventListener("click", closeConsole);
