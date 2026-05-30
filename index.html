@@ -86,6 +86,15 @@
             </div>
 
             <button id="startGameBtn">Jugar</button>
+
+            <div class="leaderboardBox menuLeaderboardBox">
+                <div class="leaderboardHeader">
+                    <h3>Leaderboard global</h3>
+                    <button id="refreshLeaderboardBtn" class="smallHudButton" type="button">Actualizar</button>
+                </div>
+                <p id="leaderboardStatusText" class="leaderboardStatus">Cargando leaderboard...</p>
+                <ol id="leaderboardList" class="leaderboardList"></ol>
+            </div>
         </div>
 
         <div id="gameArea" class="hidden">
@@ -386,6 +395,16 @@
                     <p id="deathMessageText">Tu base cayó.</p>
                     <p>Puntos de esta run: <strong id="finalScoreText">0</strong></p>
                     <p>Récord: <strong id="bestScoreText">0</strong></p>
+
+                    <div class="leaderboardBox gameOverLeaderboardBox">
+                        <div class="leaderboardHeader">
+                            <h3>Leaderboard global</h3>
+                            <button id="refreshLeaderboardGameBtn" class="smallHudButton" type="button">Actualizar</button>
+                        </div>
+                        <p id="leaderboardGameStatusText" class="leaderboardStatus">Guardando puntuación...</p>
+                        <ol id="leaderboardGameList" class="leaderboardList"></ol>
+                    </div>
+
                     <button id="newRunBtn">Nueva run</button>
                 </div>
                 <div id="pausePanel" class="overlayPanel hidden">
