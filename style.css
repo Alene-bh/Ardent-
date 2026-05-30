@@ -206,7 +206,7 @@ canvas {
 
 .shopSections {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
     gap: 10px;
     align-items: start;
 }
@@ -240,15 +240,27 @@ canvas {
     color: #9be7ff;
 }
 
-.nextWaveButton {
+.nextWaveButton,
+.repeatWaveButton {
     margin-top: 12px;
     width: 100%;
     padding: 13px;
+}
+
+.nextWaveButton {
     background: #2eaf5d !important;
 }
 
 .nextWaveButton:hover {
     background: #39c96f !important;
+}
+
+.repeatWaveButton {
+    background: #8a5a2f !important;
+}
+
+.repeatWaveButton:hover {
+    background: #a96f3b !important;
 }
 
 #gameOverScreen {
@@ -355,4 +367,69 @@ canvas {
 
 #speedBtn:hover {
     background: #40577e;
+}
+.controlsSettingsBox {
+    background: #181818;
+    border: 1px solid #444;
+    border-radius: 12px;
+    padding: 14px;
+    max-width: 520px;
+    margin: 18px auto;
+    text-align: left;
+}
+
+.controlsSettingsBox h3 {
+    text-align: center;
+    margin-top: 0;
+    color: #ffe28a;
+}
+
+.controlsHint {
+    color: #bbb;
+    font-size: 13px;
+    text-align: center;
+    margin-top: -4px;
+}
+
+.controlsGrid {
+    display: grid;
+    grid-template-columns: 1fr 95px;
+    gap: 8px;
+    align-items: center;
+}
+
+.controlsGrid span {
+    color: #ddd;
+    font-size: 14px;
+}
+
+.controlKeyButton {
+    min-height: 34px;
+    padding: 7px 10px;
+    background: #30405c;
+    border: 1px solid #7085b8;
+    font-weight: bold;
+}
+
+.controlKeyButton.listening {
+    background: #9d7d23;
+    border-color: #ffe28a;
+}
+
+.resetControlsBtn {
+    width: 100%;
+    margin-top: 12px;
+    padding: 10px;
+    background: #333;
+    border: 1px solid #777;
+}
+
+.barricadeShop h3 {
+    color: #d6a05f;
+}
+
+@media (max-width: 900px) {
+    .shopSections {
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    }
 }
