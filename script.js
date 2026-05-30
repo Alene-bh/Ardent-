@@ -1,6 +1,40 @@
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 
+// Tamaño lógico del juego: NO cambia gameplay, colisiones, rangos ni posiciones.
+// El canvas ahora renderiza a la resolución REAL en pantalla para evitar el efecto
+// de imagen agrandada/borrosa en monitores grandes.
+const GAME_WIDTH = 900;
+const GAME_HEIGHT = 450;
+let canvasPixelRatio = 1;
+
+function resizeCanvasForDisplay() {
+    const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2.5));
+    canvasPixelRatio = dpr;
+
+    // Usamos el tamaño CSS real del canvas, no el tamaño lógico fijo.
+    // Así, si el canvas se ve grande en pantalla, también tiene más píxeles internos.
+    const cssWidth = Math.max(1, Math.round(canvas.clientWidth || GAME_WIDTH));
+    const cssHeight = Math.max(1, Math.round(canvas.clientHeight || GAME_HEIGHT));
+
+    const displayWidth = Math.round(cssWidth * dpr);
+    const displayHeight = Math.round(cssHeight * dpr);
+
+    if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
+        canvas.width = displayWidth;
+        canvas.height = displayHeight;
+    }
+
+    // Todo el juego sigue dibujando en coordenadas 900x450.
+    // Solo escalamos el dibujo a la resolución real del canvas.
+    ctx.setTransform(displayWidth / GAME_WIDTH, 0, 0, displayHeight / GAME_HEIGHT, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.textRendering = "geometricPrecision";
+}
+
+resizeCanvasForDisplay();
+window.addEventListener("resize", resizeCanvasForDisplay);
+
 const sounds = {
     music: new Audio("assets/audio/battle-theme.mp3"),
     shoot: "assets/audio/shoot.mp3",
@@ -458,8 +492,8 @@ let redFlashAlpha = 0;
 let waveStats;
 
 let mousePosition = {
-    x: canvas.width / 2,
-    y: canvas.height / 2
+    x: GAME_WIDTH / 2,
+    y: GAME_HEIGHT / 2
 };
 
 if (playerNameInput) {
@@ -774,7 +808,7 @@ function damageBarricade(b, amount, sourceEnemy = null) {
     if (!b || !b.active || b.hp <= 0) return;
 
     if (player && player.immortal) {
-        createImpactParticles(b.x, sourceEnemy ? sourceEnemy.y : canvas.height / 2, "#ffe28a");
+        createImpactParticles(b.x, sourceEnemy ? sourceEnemy.y : GAME_HEIGHT / 2, "#ffe28a");
         return;
     }
 
@@ -801,7 +835,7 @@ function explodeBarricade(b) {
     const radius = 120;
     const damage = 10 + wave * 0.6;
 
-    effects.push({ type: "circle", x: b.x, y: canvas.height / 2, radius: 14, maxRadius: radius, life: 34, color: "#ff8d2a" });
+    effects.push({ type: "circle", x: b.x, y: GAME_HEIGHT / 2, radius: 14, maxRadius: radius, life: 34, color: "#ff8d2a" });
 
     enemies.forEach(enemy => {
         if (Math.abs(enemy.x - b.x) <= radius) {
@@ -993,7 +1027,7 @@ function createDefaultState() {
 
     player = {
         x: 80,
-        y: canvas.height / 2,
+        y: GAME_HEIGHT / 2,
         damage: 1,
         fireDelay: 550,
         lastShotTime: 0,
@@ -1263,8 +1297,8 @@ function createEnemyFromType(type, options = {}) {
     const speed = type.speed + speedScaling;
 
     return {
-        x: options.x ?? canvas.width + 30,
-        y: options.y ?? 70 + Math.random() * (canvas.height - 140),
+        x: options.x ?? GAME_WIDTH + 30,
+        y: options.y ?? 70 + Math.random() * (GAME_HEIGHT - 140),
         radius: options.radius ?? 18,
         color: type.color,
         hp: maxHp,
@@ -1352,7 +1386,7 @@ function spawnMiniEnemy(x, y) {
 
     enemies.push(createEnemyFromType(miniType, {
         x,
-        y: Math.max(45, Math.min(canvas.height - 45, y)),
+        y: Math.max(45, Math.min(GAME_HEIGHT - 45, y)),
         radius: 11,
         reward: 1,
         scoreValue: 3 + Math.floor(wave / 4),
@@ -1368,8 +1402,8 @@ function spawnBoss() {
     const speed = type.speed + wave * 0.004;
 
     enemies.push({
-        x: canvas.width + 70,
-        y: canvas.height / 2,
+        x: GAME_WIDTH + 70,
+        y: GAME_HEIGHT / 2,
         radius: 42,
         color: type.color,
         hp: maxHp,
@@ -1563,7 +1597,7 @@ function updatePlayerMovement() {
     // Esto hace que esquivar proyectiles de bosses requiera más anticipación.
     const movementSpeedMultiplier = Math.min(1.25, Math.sqrt(gameSpeed));
     player.y += direction * player.moveSpeed * movementSpeedMultiplier * frameScale;
-    player.y = Math.max(32, Math.min(canvas.height - 32, player.y));
+    player.y = Math.max(32, Math.min(GAME_HEIGHT - 32, player.y));
 }
 
 function updateTowers() {
@@ -1650,7 +1684,7 @@ function updateEnemySpecials(now, defenseLineX) {
             const oldX = enemy.x;
             const oldY = enemy.y;
             enemy.x = Math.max(defenseLineX + 80, enemy.x - (78 + Math.random() * 62));
-            enemy.y = Math.max(45, Math.min(canvas.height - 45, enemy.y + (Math.random() - 0.5) * 120));
+            enemy.y = Math.max(45, Math.min(GAME_HEIGHT - 45, enemy.y + (Math.random() - 0.5) * 120));
 
             effects.push({ type: "line", x1: oldX, y1: oldY, x2: enemy.x, y2: enemy.y, life: 18, color: "#d58cff" });
             effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 6, maxRadius: 40, life: 18, color: "#d58cff" });
@@ -1711,9 +1745,9 @@ function updateBossSpecials(now, defenseLineX) {
 
         if (enemy.bossVariant === "dvd") {
             enemy.y += enemy.dvdVy * gameSpeed * frameScale;
-            if (enemy.y < 55 || enemy.y > canvas.height - 55) {
+            if (enemy.y < 55 || enemy.y > GAME_HEIGHT - 55) {
                 enemy.dvdVy *= -1;
-                enemy.y = Math.max(55, Math.min(canvas.height - 55, enemy.y));
+                enemy.y = Math.max(55, Math.min(GAME_HEIGHT - 55, enemy.y));
                 fireBossProjectile(enemy.x, enemy.y, player.x, player.y, { speed: 3.6, radius: 7, damage: 3, color: "#9be7ff" });
             }
         }
@@ -1731,9 +1765,9 @@ function updateBossSpecials(now, defenseLineX) {
             const oldX = enemy.x;
             const oldY = enemy.y;
             enemy.x = Math.max(defenseLineX + 95, enemy.x - 105);
-            enemy.y = Math.max(60, Math.min(canvas.height - 60, player.y + (Math.random() - 0.5) * 110));
+            enemy.y = Math.max(60, Math.min(GAME_HEIGHT - 60, player.y + (Math.random() - 0.5) * 110));
             fireBossProjectile(enemy.x, enemy.y, player.x, player.y, { speed: 4.3, radius: 8, damage: 4, color: "#d58cff" });
-            enemy.x = Math.min(canvas.width + 60, enemy.x + 55);
+            enemy.x = Math.min(GAME_WIDTH + 60, enemy.x + 55);
             effects.push({ type: "line", x1: oldX, y1: oldY, x2: enemy.x, y2: enemy.y, life: 18, color: "#d58cff" });
             effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 8, maxRadius: 52, life: 20, color: "#d58cff" });
         }
@@ -1770,7 +1804,7 @@ function updateBossProjectiles() {
         p.y += p.dy * p.speed * gameSpeed * frameScale;
         p.life -= 16.666 * frameScale;
 
-        if (p.x < -40 || p.x > canvas.width + 40 || p.y < -40 || p.y > canvas.height + 40 || p.life <= 0) {
+        if (p.x < -40 || p.x > GAME_WIDTH + 40 || p.y < -40 || p.y > GAME_HEIGHT + 40 || p.life <= 0) {
             bossProjectiles.splice(i, 1);
             continue;
         }
@@ -1905,7 +1939,7 @@ function updateProjectiles() {
         p.x += p.dx * p.speed * gameSpeed * frameScale;
         p.y += p.dy * p.speed * gameSpeed * frameScale;
 
-        if (p.x < 0 || p.x > canvas.width || p.y < 0 || p.y > canvas.height) {
+        if (p.x < 0 || p.x > GAME_WIDTH || p.y < 0 || p.y > GAME_HEIGHT) {
             projectiles.splice(i, 1);
             continue;
         }
@@ -2020,7 +2054,7 @@ function splitEnemy(enemy) {
     for (let i = 0; i < 2; i++) {
         enemies.push(createEnemyFromType(childType, {
             x: enemy.x + 18,
-            y: Math.max(42, Math.min(canvas.height - 42, enemy.y + (i === 0 ? -22 : 22))),
+            y: Math.max(42, Math.min(GAME_HEIGHT - 42, enemy.y + (i === 0 ? -22 : 22))),
             radius: Math.max(10, enemy.radius * 0.78),
             ignoreScaling: true,
             splitLevel: nextLevel
@@ -2530,8 +2564,8 @@ function useFreeze() {
 
     effects.push({
         type: "circle",
-        x: canvas.width / 2,
-        y: canvas.height / 2,
+        x: GAME_WIDTH / 2,
+        y: GAME_HEIGHT / 2,
         radius: 20,
         maxRadius: 480,
         life: 35,
@@ -2565,7 +2599,7 @@ function useTsunami() {
         x: -80,
         y: 0,
         width: 80,
-        height: canvas.height,
+        height: GAME_HEIGHT,
         life: 70,
         color: "#4aa3ff"
     });
@@ -2646,8 +2680,8 @@ function useEclipse() {
 
     effects.push({
         type: "eclipse",
-        x: canvas.width / 2,
-        y: canvas.height / 2,
+        x: GAME_WIDTH / 2,
+        y: GAME_HEIGHT / 2,
         radius,
         pulseRadius: 20,
         life: 240,
@@ -2700,14 +2734,14 @@ function drawPath() {
     ctx.strokeStyle = "rgba(255,255,255,0.15)";
     ctx.lineWidth = 40;
     ctx.beginPath();
-    ctx.moveTo(canvas.width, canvas.height / 2);
-    ctx.lineTo(0, canvas.height / 2);
+    ctx.moveTo(GAME_WIDTH, GAME_HEIGHT / 2);
+    ctx.lineTo(0, GAME_HEIGHT / 2);
     ctx.stroke();
 }
 
 function drawBase() {
     ctx.fillStyle = "#444";
-    ctx.fillRect(0, 0, 35, canvas.height);
+    ctx.fillRect(0, 0, 35, GAME_HEIGHT);
 
     ctx.fillStyle = "white";
     ctx.font = "16px Arial";
@@ -2719,11 +2753,11 @@ function drawBarricade() {
         if (!b.active || b.hp <= 0) return;
 
         ctx.fillStyle = b.color;
-        ctx.fillRect(b.x - 10, 45, 20, canvas.height - 90);
+        ctx.fillRect(b.x - 10, 45, 20, GAME_HEIGHT - 90);
 
         if (b.thorns) {
             ctx.fillStyle = "#ff9f55";
-            for (let y = 60; y < canvas.height - 60; y += 28) {
+            for (let y = 60; y < GAME_HEIGHT - 60; y += 28) {
                 ctx.beginPath();
                 ctx.moveTo(b.x + 10, y);
                 ctx.lineTo(b.x + 28, y + 8);
@@ -2736,7 +2770,7 @@ function drawBarricade() {
         ctx.font = "11px Arial";
         ctx.fillText(b.name[0], b.x - 4, 38);
 
-        const barHeight = canvas.height - 90;
+        const barHeight = GAME_HEIGHT - 90;
         const hpPercent = b.maxHp > 0 ? b.hp / b.maxHp : 0;
 
         ctx.fillStyle = "red";
@@ -3205,7 +3239,8 @@ function updateAbilityBar() {
 }
 
 function draw() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    resizeCanvasForDisplay();
+    ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
 
     drawPath();
     drawBase();
@@ -3381,8 +3416,8 @@ function jumpToWave(targetWave) {
 function updateMousePosition(event) {
     const rect = canvas.getBoundingClientRect();
 
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
+    const scaleX = GAME_WIDTH / rect.width;
+    const scaleY = GAME_HEIGHT / rect.height;
 
     mousePosition.x = (event.clientX - rect.left) * scaleX;
     mousePosition.y = (event.clientY - rect.top) * scaleY;
@@ -3877,6 +3912,8 @@ confirmRestartBtn.addEventListener("click", () => {
 window.addEventListener("blur", () => {
     syncMusicState();
 });
+
+window.addEventListener("resize", resizeCanvasForDisplay);
 
 document.addEventListener("visibilitychange", () => {
     syncMusicState();
