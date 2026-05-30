@@ -462,6 +462,16 @@ let frameScale = 1;
 
 let bestScore = Number(localStorage.getItem("towerDefenseBestScore")) || 0;
 let playerName = localStorage.getItem("ardentPlayerName") || "Jugador";
+let alphaTesterName = localStorage.getItem("ardentAlphaTesterName") || "";
+
+const alphaTesterCommands = {
+    aza: "Aza",
+    saki: "Saki",
+    valen: "Valen",
+    lio: "Lio",
+    ema: "Ema",
+    lal: "Lal"
+};
 
 let wave;
 let coins;
@@ -1042,7 +1052,8 @@ function createDefaultState() {
         lifeStealUntil: 0,
         lifeStealPercent: 0,
         immortal: false,
-        name: playerName
+        alphaTester: Boolean(alphaTesterName),
+        name: alphaTesterName || playerName
 
     };
     gameSpeed = 1;
@@ -2805,12 +2816,64 @@ function drawPlayer() {
     ctx.fillText("P", player.x - 5, player.y + 5);
 
     if (player.name) {
-        ctx.fillStyle = "white";
-        ctx.font = "11px Arial";
-        const textWidth = ctx.measureText(player.name).width;
-        ctx.fillText(player.name, player.x - textWidth / 2, player.y - 31);
+        if (player.alphaTester) {
+            drawAlphaTesterName(player.name, player.x, player.y - 31);
+        } else {
+            ctx.fillStyle = "white";
+            ctx.font = "11px Arial";
+            const textWidth = ctx.measureText(player.name).width;
+            ctx.fillText(player.name, player.x - textWidth / 2, player.y - 31);
+        }
     }
 }
+
+function drawAlphaTesterName(name, x, y) {
+    ctx.save();
+
+    ctx.textAlign = "center";
+    ctx.font = "bold 9px Arial";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.85)";
+    ctx.fillStyle = "#ff3333";
+    ctx.strokeText("ALPHA TESTER", x, y - 13);
+    ctx.fillText("ALPHA TESTER", x, y - 13);
+
+    ctx.font = "bold 12px Arial";
+    const chars = [...name];
+    const widths = chars.map(char => ctx.measureText(char).width);
+    const totalWidth = widths.reduce((sum, width) => sum + width, 0);
+    let cursor = x - totalWidth / 2;
+    const hueOffset = (getGameTime() * 0.08) % 360;
+
+    ctx.textAlign = "left";
+    chars.forEach((char, index) => {
+        const charX = cursor;
+        const hue = (hueOffset + index * 55) % 360;
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(0, 0, 0, 0.85)";
+        ctx.fillStyle = `hsl(${hue}, 100%, 62%)`;
+        ctx.strokeText(char, charX, y);
+        ctx.fillText(char, charX, y);
+        cursor += widths[index];
+    });
+
+    ctx.restore();
+}
+
+function activateAlphaTesterBadge(name) {
+    alphaTesterName = name;
+    playerName = name;
+    localStorage.setItem("ardentAlphaTesterName", alphaTesterName);
+    localStorage.setItem("ardentPlayerName", playerName);
+
+    if (player) {
+        player.name = name;
+        player.alphaTester = true;
+    }
+
+    if (playerNameInput) playerNameInput.value = name;
+}
+
 
 function drawTowerPlacementTiles() {
     if (!pendingTowerPurchase) return;
@@ -3336,6 +3399,15 @@ function runConsoleCommand(rawCommand) {
 
     if (!player) {
         appendConsoleLog("No hay una run activa todavía.");
+        return;
+    }
+
+    if (alphaTesterCommands[command]) {
+        const testerName = alphaTesterCommands[command];
+        activateAlphaTesterBadge(testerName);
+        appendConsoleLog(`Easter egg activado: ${testerName} ahora es ALPHA TESTER.`);
+        showCenterMessage("ALPHA TESTER", 1000);
+        updateHud();
         return;
     }
 
