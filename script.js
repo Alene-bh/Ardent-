@@ -532,20 +532,48 @@ let lastDoomWave = -999;
 
 const TOWER_TILE_SIZE = 50;
 const TOWER_TILE_HALF = TOWER_TILE_SIZE / 2;
+
+// Línea reservada para la segunda barricada.
+// No se pueden colocar torretas en esta columna, así la barricada avanzada
+// queda ordenada y no se mezcla visualmente con las torres.
+const ADVANCED_BARRICADE_X = 335;
+const RESERVED_BARRICADE_LANE_X = ADVANCED_BARRICADE_X;
+const RESERVED_BARRICADE_TILES = createReservedBarricadeLaneTiles();
 const towerSlots = createTowerPlacementTiles();
 
 let pendingTowerPurchase = null;
 
-function createTowerPlacementTiles() {
+function createReservedBarricadeLaneTiles() {
     const tiles = [];
-    const xPositions = [185, 245, 365, 425, 485, 545, 605, 665, 725, 785];
-    const yPositions = [70, 130, 190, 310, 370];
+    const yPositions = [];
+
+    for (let y = 55; y <= canvas.height - 45; y += TOWER_TILE_SIZE) {
+        yPositions.push(y);
+    }
 
     yPositions.forEach(y => {
-        xPositions.forEach(x => {
-            tiles.push({ x, y, size: TOWER_TILE_SIZE });
+        tiles.push({
+            x: RESERVED_BARRICADE_LANE_X,
+            y,
+            size: TOWER_TILE_SIZE,
+            reservedForBarricade: true
         });
     });
+
+    return tiles;
+}
+
+function createTowerPlacementTiles() {
+    const tiles = [];
+
+    // Ahora hay grilla en casi todo el mapa. Solo se deja libre la columna
+    // reservada para la barricada avanzada.
+    for (let y = 55; y <= canvas.height - 45; y += TOWER_TILE_SIZE) {
+        for (let x = 185; x <= canvas.width - 65; x += TOWER_TILE_SIZE) {
+            if (Math.abs(x - RESERVED_BARRICADE_LANE_X) < TOWER_TILE_SIZE * 0.55) continue;
+            tiles.push({ x, y, size: TOWER_TILE_SIZE });
+        }
+    }
 
     return tiles;
 }
@@ -1126,7 +1154,7 @@ function createDefaultState() {
 
     barricades = [
         createBarricadeSlot("Inicio", 120),
-        createBarricadeSlot("Avanzada", 335)
+        createBarricadeSlot("Avanzada", ADVANCED_BARRICADE_X)
     ];
     barricade = barricades[0];
 
@@ -3009,6 +3037,15 @@ function drawTowerPlacementTiles() {
 
     const hoveredTile = getTowerTileAt(mousePosition.x, mousePosition.y);
 
+    RESERVED_BARRICADE_TILES.forEach(tile => {
+        ctx.fillStyle = "rgba(255, 180, 75, 0.12)";
+        ctx.fillRect(tile.x - TOWER_TILE_HALF, tile.y - TOWER_TILE_HALF, TOWER_TILE_SIZE, TOWER_TILE_SIZE);
+
+        ctx.strokeStyle = "rgba(255, 180, 75, 0.5)";
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(tile.x - TOWER_TILE_HALF, tile.y - TOWER_TILE_HALF, TOWER_TILE_SIZE, TOWER_TILE_SIZE);
+    });
+
     towerSlots.forEach(tile => {
         const occupied = isTowerTileOccupied(tile);
         const hovered = hoveredTile === tile;
@@ -3029,6 +3066,10 @@ function drawTowerPlacementTiles() {
         ctx.strokeRect(tile.x - TOWER_TILE_HALF, tile.y - TOWER_TILE_HALF, TOWER_TILE_SIZE, TOWER_TILE_SIZE);
     });
 
+    ctx.fillStyle = "rgba(255, 180, 75, 0.82)";
+    ctx.font = "bold 12px Arial";
+    ctx.fillText("Línea de barricada", RESERVED_BARRICADE_LANE_X - 48, 26);
+
     const def = getTowerDefinition(pendingTowerPurchase.defKey);
     if (def && hoveredTile && isTowerTileAvailable(hoveredTile)) {
         ctx.strokeStyle = "rgba(255,255,255,0.35)";
@@ -3042,7 +3083,7 @@ function drawTowerPlacementTiles() {
     ctx.fillRect(145, 12, 610, 34);
     ctx.fillStyle = "white";
     ctx.font = "bold 15px Arial";
-    ctx.fillText("Elegí un tile verde para colocar la torreta · Click derecho o ESC cancela", 160, 34);
+    ctx.fillText("Elegí un tile verde para colocar la torreta · Columna naranja reservada para barricada", 160, 34);
 }
 
 function drawTowers() {
