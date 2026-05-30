@@ -465,6 +465,7 @@ let frameScale = 1;
 let bestScore = Number(localStorage.getItem("towerDefenseBestScore")) || 0;
 let playerName = localStorage.getItem("ardentPlayerName") || "Jugador";
 let alphaTesterName = localStorage.getItem("ardentAlphaTesterName") || "";
+let developerName = localStorage.getItem("ardentDeveloperName") || "";
 
 const alphaTesterCommands = {
     aza: "Aza",
@@ -537,7 +538,7 @@ let pendingTowerPurchase = null;
 
 function createTowerPlacementTiles() {
     const tiles = [];
-    const xPositions = [185, 245, 305, 365, 425, 485, 545, 605, 665, 725, 785];
+    const xPositions = [185, 245, 365, 425, 485, 545, 605, 665, 725, 785];
     const yPositions = [70, 130, 190, 310, 370];
 
     yPositions.forEach(y => {
@@ -777,7 +778,8 @@ function createBarricadeSlot(name, x) {
         regenPerSecond: 0,
         explosive: false,
         thorns: false,
-        lastRegenTime: 0
+        lastRegenTime: 0,
+        level: 0
     };
 }
 
@@ -871,6 +873,37 @@ function regenerateBarricades() {
         b.lastRegenTime = now;
         b.hp = Math.min(b.maxHp, b.hp + b.regenPerSecond * (elapsed / 1000));
     });
+}
+
+
+function scaleShopCost(currentCost, earlyMultiplier, lateMultiplier = 1.14, softCap = 900, hardCap = 100000000) {
+    const current = Math.max(1, Number(currentCost) || 1);
+
+    if (current < softCap) {
+        return Math.min(hardCap, Math.ceil(current * earlyMultiplier));
+    }
+
+    const blend = Math.min(1, Math.pow(softCap / current, 0.65));
+    const multiplier = lateMultiplier + (earlyMultiplier - lateMultiplier) * blend;
+    const next = Math.ceil(current * multiplier);
+
+    return Math.min(hardCap, Math.max(next, current + 1));
+}
+
+function scaleStatCost(currentCost, earlyMultiplier) {
+    return scaleShopCost(currentCost, earlyMultiplier, 1.10, 1200);
+}
+
+function scaleConsumableCost(currentCost, earlyMultiplier) {
+    return scaleShopCost(currentCost, earlyMultiplier, 1.08, 850);
+}
+
+function scaleBarricadeCost(currentCost, earlyMultiplier) {
+    return scaleShopCost(currentCost, earlyMultiplier, 1.10, 1000);
+}
+
+function scaleTowerUpgradeCost(currentCost) {
+    return scaleShopCost(currentCost, 1.42, 1.12, 950);
 }
 
 function getTowerDefinition(keyOrType) {
@@ -984,8 +1017,17 @@ function finishTowerPlacement(tile) {
     updateHud();
 }
 
+function getLateGameGoldMultiplier() {
+    if (wave <= 45) return 1;
+
+    // Acompaña el escalado de precios sin regalar el early-game.
+    // En late sube de forma suave para que las mejoras no pidan 4+ oleadas completas.
+    const lateProgress = (wave - 45) / 55;
+    return Math.min(6.5, 1 + Math.pow(lateProgress, 1.22));
+}
+
 function getGoldAmount(amount) {
-    return Math.ceil(amount * currentGoldMultiplier);
+    return Math.ceil(amount * currentGoldMultiplier * getLateGameGoldMultiplier());
 }
 
 function getRepeatCountForCurrentWave() {
@@ -1055,7 +1097,8 @@ function createDefaultState() {
         lifeStealPercent: 0,
         immortal: false,
         alphaTester: Boolean(alphaTesterName),
-        name: alphaTesterName || playerName
+        developer: Boolean(developerName),
+        name: developerName || alphaTesterName || playerName
 
     };
     gameSpeed = 1;
@@ -1083,7 +1126,7 @@ function createDefaultState() {
 
     barricades = [
         createBarricadeSlot("Inicio", 120),
-        createBarricadeSlot("Avanzada", 315)
+        createBarricadeSlot("Avanzada", 335)
     ];
     barricade = barricades[0];
 
@@ -2853,7 +2896,9 @@ function drawPlayer() {
     ctx.fillText("P", player.x - 5, player.y + 5);
 
     if (player.name) {
-        if (player.alphaTester) {
+        if (player.developer) {
+            drawDeveloperName(player.name, player.x, player.y - 31);
+        } else if (player.alphaTester) {
             drawAlphaTesterName(player.name, player.x, player.y - 31);
         } else {
             ctx.fillStyle = "white";
@@ -2897,15 +2942,62 @@ function drawAlphaTesterName(name, x, y) {
     ctx.restore();
 }
 
+function drawDeveloperName(name, x, y) {
+    ctx.save();
+
+    ctx.textAlign = "center";
+    ctx.font = "bold 9px Arial";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.9)";
+    ctx.fillStyle = "#ff2b2b";
+    ctx.strokeText("DEVELOPER", x, y - 13);
+    ctx.fillText("DEVELOPER", x, y - 13);
+
+    ctx.font = "bold 12px Arial";
+    const pulse = 55 + Math.sin(getGameTime() * 0.008) * 18;
+    const gradient = ctx.createLinearGradient(x - 42, y - 10, x + 42, y + 4);
+    gradient.addColorStop(0, `hsl(42, 100%, ${pulse}%)`);
+    gradient.addColorStop(0.5, `hsl(52, 100%, ${Math.min(78, pulse + 14)}%)`);
+    gradient.addColorStop(1, `hsl(34, 100%, ${pulse}%)`);
+
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.9)";
+    ctx.fillStyle = gradient;
+    ctx.strokeText(name, x, y);
+    ctx.fillText(name, x, y);
+
+    ctx.restore();
+}
+
+function activateDeveloperBadge(name = "Alene") {
+    developerName = name;
+    alphaTesterName = "";
+    playerName = name;
+    localStorage.setItem("ardentDeveloperName", developerName);
+    localStorage.removeItem("ardentAlphaTesterName");
+    localStorage.setItem("ardentPlayerName", playerName);
+
+    if (player) {
+        player.name = name;
+        player.developer = true;
+        player.alphaTester = false;
+    }
+
+    if (playerNameInput) playerNameInput.value = name;
+}
+
 function activateAlphaTesterBadge(name) {
     alphaTesterName = name;
+    developerName = "";
     playerName = name;
     localStorage.setItem("ardentAlphaTesterName", alphaTesterName);
+    localStorage.removeItem("ardentDeveloperName");
     localStorage.setItem("ardentPlayerName", playerName);
 
     if (player) {
         player.name = name;
         player.alphaTester = true;
+        player.developer = false;
     }
 
     if (playerNameInput) playerNameInput.value = name;
@@ -3201,6 +3293,47 @@ function updateBossBar() {
     bossBarFill.style.width = `${Math.max(0, boss.hp / boss.maxHp) * 100}%`;
 }
 
+function getBarricadeStatusText() {
+    const active = getActiveBarricades();
+    if (!active.length) return "Sin barricadas";
+
+    return active.map(b => {
+        const kindLabel = b.kind === "regen" ? "Regen" : b.kind === "explosive" ? "Explosiva" : b.kind === "thorns" ? "Espinas" : "Estándar";
+        const tierLabel = b.kind === "standard" ? ` ${barricadeTiers[Math.max(0, b.tier)]?.name || "Madera"}` : "";
+        const levelLabel = b.level > 0 ? ` +${b.level}` : "";
+        return `${b.name}: ${kindLabel}${tierLabel}${levelLabel}`;
+    }).join(" · ");
+}
+
+function hasDamagedPlayerHp() {
+    return player && player.hp < player.maxHp;
+}
+
+function getBarricadeActionState(kind = "standard") {
+    const activeBarricades = (barricades || []).filter(b => b.active && b.hp > 0);
+    const hasSameKind = activeBarricades.some(b => b.kind === kind);
+    const hasBrokenSlot = (barricades || []).some(b => !b.active || b.hp <= 0);
+
+    return {
+        canBuyOrUpgrade: hasSameKind || hasBrokenSlot,
+        hasSameKind,
+        hasBrokenSlot
+    };
+}
+
+function updateBarricadeButtonState(button, kind, costKey) {
+    if (!button) return;
+
+    const state = getBarricadeActionState(kind);
+    const cost = costs[costKey] || 0;
+    button.disabled = coins < cost || !state.canBuyOrUpgrade;
+
+    const actionText = state.hasSameKind ? "Mejorar" : state.hasBrokenSlot ? "Comprar" : "Bloqueada";
+    button.title = state.canBuyOrUpgrade
+        ? `${actionText} barricada`
+        : "Ya tenés 2 barricadas activas. Para cambiar a este tipo, primero se tiene que romper una.";
+}
+
 function updateHud() {
     waveText.textContent = wave;
     hpText.textContent = `${Math.round(player.hp)}/${player.maxHp}${player.shieldCharges > 0 ? ` 🛡${player.shieldCharges}` : ""}`;
@@ -3225,14 +3358,34 @@ function updateHud() {
     if (attackSpeedPotionCostText) attackSpeedPotionCostText.textContent = costs.attackSpeedPotion;
     if (doubleShotPotionCostText) doubleShotPotionCostText.textContent = costs.doubleShotPotion;
     if (lifeStealPotionCostText) lifeStealPotionCostText.textContent = costs.lifeStealPotion;
+
+    const needsHealing = hasDamagedPlayerHp();
+    buySmallPotionBtn.disabled = coins < costs.smallPotion || !needsHealing;
+    buyMediumPotionBtn.disabled = coins < costs.mediumPotion || !needsHealing;
+    buyLargePotionBtn.disabled = coins < costs.largePotion || !needsHealing;
+    buySmallPotionBtn.title = needsHealing ? "" : "No podés comprar pociones de vida si tenés la vida llena.";
+    buyMediumPotionBtn.title = needsHealing ? "" : "No podés comprar pociones de vida si tenés la vida llena.";
+    buyLargePotionBtn.title = needsHealing ? "" : "No podés comprar pociones de vida si tenés la vida llena.";
+    if (buyShieldPotionBtn) buyShieldPotionBtn.disabled = coins < costs.shieldPotion;
+    if (buyAttackSpeedPotionBtn) buyAttackSpeedPotionBtn.disabled = coins < costs.attackSpeedPotion;
+    if (buyDoubleShotPotionBtn) buyDoubleShotPotionBtn.disabled = coins < costs.doubleShotPotion;
+    if (buyLifeStealPotionBtn) buyLifeStealPotionBtn.disabled = coins < costs.lifeStealPotion;
+
     repairBarricadeCostText.textContent = costs.repairBarricade;
     upgradeBarricadeCostText.textContent = costs.upgradeBarricade;
     if (regenBarricadeCostText) regenBarricadeCostText.textContent = costs.regenBarricade;
     if (explosiveBarricadeCostText) explosiveBarricadeCostText.textContent = costs.explosiveBarricade;
     if (thornsBarricadeCostText) thornsBarricadeCostText.textContent = costs.thornsBarricade;
 
-    const activeBarricades = getActiveBarricades().length;
-    barricadeTierText.textContent = activeBarricades ? `${activeBarricades}/2 activas` : "Sin barricadas";
+    const hasDamagedBarricade = (barricades || []).some(b => b.active && b.hp > 0 && b.hp < b.maxHp);
+    repairBarricadeBtn.disabled = coins < costs.repairBarricade || !hasDamagedBarricade;
+    repairBarricadeBtn.title = hasDamagedBarricade ? "" : "No hay barricadas dañadas para reparar.";
+    updateBarricadeButtonState(upgradeBarricadeBtn, "standard", "upgradeBarricade");
+    updateBarricadeButtonState(buyRegenBarricadeBtn, "regen", "regenBarricade");
+    updateBarricadeButtonState(buyExplosiveBarricadeBtn, "explosive", "explosiveBarricade");
+    updateBarricadeButtonState(buyThornsBarricadeBtn, "thorns", "thornsBarricade");
+
+    barricadeTierText.textContent = getBarricadeStatusText();
 
     towerDefinitions.forEach((def, index) => {
         const el = document.getElementById(`tower${index + 1}CostText`);
@@ -3297,8 +3450,8 @@ function renderTowerSlotsPanel() {
             <div class="towerSlotCard">
                 <strong>Slot ${index + 1}: ${tower.name}</strong><br>
                 <small>Nivel ${tower.level} · Pos: ${Math.round(tower.x)},${Math.round(tower.y)} · Gastado: ${Math.round(tower.spent || 0)} · Venta: ${refund}</small>${buffText}<br>
-                <button data-tower-action="upgrade" data-index="${index}">Mejorar (${tower.upgradeCost})</button>
-                <button data-tower-action="sell" data-index="${index}" class="dangerMiniButton">Vender (${refund})</button>
+                <button type="button" data-tower-action="upgrade" data-index="${index}" ${coins < tower.upgradeCost ? "disabled" : ""}>Mejorar (${tower.upgradeCost})</button>
+                <button type="button" data-tower-action="sell" data-index="${index}" class="dangerMiniButton">Vender (${refund})</button>
             </div>`;
     }).join("");
 }
@@ -3457,6 +3610,14 @@ function runConsoleCommand(rawCommand) {
         return;
     }
 
+    if (command === "alene") {
+        activateDeveloperBadge("Alene");
+        appendConsoleLog("Easter egg activado: Alene ahora es DEVELOPER.");
+        showCenterMessage("DEVELOPER", 1000);
+        updateHud();
+        return;
+    }
+
     if (command === "greedisgood") {
         coins = 999999;
         appendConsoleLog("Easter egg activado: 999.999 monedas agregadas.");
@@ -3465,10 +3626,17 @@ function runConsoleCommand(rawCommand) {
     }
 
     if (command === "canttouchme") {
-        player.immortal = true;
-        player.hp = player.maxHp;
-        appendConsoleLog("Easter egg activado: modo inmortal ON.");
-        showCenterMessage("MODO INMORTAL", 1000);
+        player.immortal = !player.immortal;
+
+        if (player.immortal) {
+            player.hp = player.maxHp;
+            appendConsoleLog("Easter egg activado: modo inmortal ON.");
+            showCenterMessage("MODO INMORTAL", 1000);
+        } else {
+            appendConsoleLog("Modo inmortal OFF.");
+            showCenterMessage("INMORTAL OFF", 800);
+        }
+
         updateHud();
         return;
     }
@@ -3523,7 +3691,79 @@ function runConsoleCommand(rawCommand) {
         return;
     }
 
+    if (command === "killall") {
+        const killed = killAllEnemiesFromConsole();
+        appendConsoleLog(`Comando activado: ${killed} enemigos eliminados.`);
+        showCenterMessage("KILL ALL", 800);
+        updateHud();
+        return;
+    }
+
+    if (command === "reset") {
+        resetRunFromConsole();
+        appendConsoleLog("Run reiniciada desde 0.");
+        return;
+    }
+
     appendConsoleLog(`Comando desconocido: ${command}`);
+}
+
+function killAllEnemiesFromConsole() {
+    if (!enemies || enemies.length === 0) {
+        if (bossProjectiles) bossProjectiles = [];
+        return 0;
+    }
+
+    let killed = 0;
+
+    while (enemies.length > 0) {
+        const enemy = enemies.pop();
+        if (!enemy) continue;
+
+        const goldReward = getGoldAmount(enemy.reward || 0);
+        coins += goldReward;
+        score += enemy.scoreValue || 0;
+
+        if (waveStats) {
+            waveStats.kills++;
+            waveStats.gold += goldReward;
+            waveStats.score += enemy.scoreValue || 0;
+        }
+
+        createDeathExplosion(
+            enemy.x || GAME_WIDTH / 2,
+            enemy.y || GAME_HEIGHT / 2,
+            enemy.color || "#ffffff",
+            enemy.isBoss ? 28 : 14
+        );
+
+        killed++;
+    }
+
+    if (bossProjectiles) bossProjectiles = [];
+    checkWaveComplete();
+    return killed;
+}
+
+function resetRunFromConsole() {
+    stopMusicAndReset();
+    createDefaultState();
+
+    hasActiveRun = true;
+    gameStarted = true;
+    isInMainMenu = false;
+    isPaused = false;
+
+    menu.classList.add("hidden");
+    gameArea.classList.remove("hidden");
+    shop.classList.add("hidden");
+    waveSummaryPanel.classList.add("hidden");
+    gameOverScreen.classList.add("hidden");
+    pausePanel.classList.add("hidden");
+
+    startWave();
+    showCenterMessage("RUN REINICIADA", 900);
+    updateHud();
 }
 
 function jumpToWave(targetWave) {
@@ -3724,7 +3964,7 @@ upgradeDamageBtn.addEventListener("click", () => {
     if (coins >= costs.damage) {
         coins -= costs.damage;
         player.damage += 1;
-        costs.damage = Math.floor(costs.damage * 1.75);
+        costs.damage = scaleStatCost(costs.damage, 1.75);
         updateHud();
     }
 });
@@ -3733,7 +3973,7 @@ upgradeFireRateBtn.addEventListener("click", () => {
     if (coins >= costs.fireRate) {
         coins -= costs.fireRate;
         player.fireDelay = Math.max(160, player.fireDelay - 40);
-        costs.fireRate = Math.floor(costs.fireRate * 1.8);
+        costs.fireRate = scaleStatCost(costs.fireRate, 1.8);
         updateHud();
     }
 });
@@ -3743,7 +3983,7 @@ upgradeMaxHpBtn.addEventListener("click", () => {
         coins -= costs.maxHp;
         player.maxHp += 5;
         player.hp += 5;
-        costs.maxHp = Math.floor(costs.maxHp * 1.7);
+        costs.maxHp = scaleStatCost(costs.maxHp, 1.7);
         updateHud();
     }
 });
@@ -3752,34 +3992,37 @@ upgradeCritBtn.addEventListener("click", () => {
     if (coins >= costs.crit) {
         coins -= costs.crit;
         player.critChance = Math.min(0.6, player.critChance + 0.05);
-        costs.crit = Math.floor(costs.crit * 1.85);
+        costs.crit = scaleStatCost(costs.crit, 1.85);
         updateHud();
     }
 });
 
 buySmallPotionBtn.addEventListener("click", () => {
+    if (!hasDamagedPlayerHp()) return;
     if (coins >= costs.smallPotion) {
         coins -= costs.smallPotion;
         healOverTime(6, 2500);
-        costs.smallPotion = Math.floor(costs.smallPotion * 1.15);
+        costs.smallPotion = scaleConsumableCost(costs.smallPotion, 1.15);
         updateHud();
     }
 });
 
 buyMediumPotionBtn.addEventListener("click", () => {
+    if (!hasDamagedPlayerHp()) return;
     if (coins >= costs.mediumPotion) {
         coins -= costs.mediumPotion;
         healOverTime(14, 3500);
-        costs.mediumPotion = Math.floor(costs.mediumPotion * 1.18);
+        costs.mediumPotion = scaleConsumableCost(costs.mediumPotion, 1.18);
         updateHud();
     }
 });
 
 buyLargePotionBtn.addEventListener("click", () => {
+    if (!hasDamagedPlayerHp()) return;
     if (coins >= costs.largePotion) {
         coins -= costs.largePotion;
         healOverTime(30, 5000);
-        costs.largePotion = Math.floor(costs.largePotion * 1.22);
+        costs.largePotion = scaleConsumableCost(costs.largePotion, 1.22);
         updateHud();
     }
 });
@@ -3788,7 +4031,7 @@ buyShieldPotionBtn?.addEventListener("click", () => {
     if (coins < costs.shieldPotion) return;
     coins -= costs.shieldPotion;
     player.shieldCharges += 1;
-    costs.shieldPotion = Math.floor(costs.shieldPotion * 1.18);
+    costs.shieldPotion = scaleConsumableCost(costs.shieldPotion, 1.18);
     showCenterMessage("¡Escudo listo!", 700);
     updateHud();
 });
@@ -3797,7 +4040,7 @@ buyAttackSpeedPotionBtn?.addEventListener("click", () => {
     if (coins < costs.attackSpeedPotion) return;
     coins -= costs.attackSpeedPotion;
     player.attackSpeedUntil = getGameTime() + 10000;
-    costs.attackSpeedPotion = Math.floor(costs.attackSpeedPotion * 1.2);
+    costs.attackSpeedPotion = scaleConsumableCost(costs.attackSpeedPotion, 1.2);
     showCenterMessage("¡Rapidez!", 700);
     updateHud();
 });
@@ -3806,7 +4049,7 @@ buyDoubleShotPotionBtn?.addEventListener("click", () => {
     if (coins < costs.doubleShotPotion) return;
     coins -= costs.doubleShotPotion;
     player.doubleShotUntil = getGameTime() + 9000;
-    costs.doubleShotPotion = Math.floor(costs.doubleShotPotion * 1.18);
+    costs.doubleShotPotion = scaleConsumableCost(costs.doubleShotPotion, 1.18);
     showCenterMessage("¡Doble disparo!", 800);
     updateHud();
 });
@@ -3816,7 +4059,7 @@ buyLifeStealPotionBtn?.addEventListener("click", () => {
     coins -= costs.lifeStealPotion;
     player.lifeStealPercent = 0.22;
     player.lifeStealUntil = getGameTime() + 10000;
-    costs.lifeStealPotion = Math.floor(costs.lifeStealPotion * 1.18);
+    costs.lifeStealPotion = scaleConsumableCost(costs.lifeStealPotion, 1.18);
     showCenterMessage("¡Vampirismo!", 800);
     updateHud();
 });
@@ -3827,7 +4070,7 @@ repairBarricadeBtn.addEventListener("click", () => {
 
     coins -= costs.repairBarricade;
     damaged.hp = Math.min(damaged.maxHp, damaged.hp + Math.ceil(damaged.maxHp * 0.45));
-    costs.repairBarricade = Math.floor(costs.repairBarricade * 1.25);
+    costs.repairBarricade = scaleBarricadeCost(costs.repairBarricade, 1.25);
     updateHud();
 });
 
@@ -3836,31 +4079,80 @@ buyRegenBarricadeBtn?.addEventListener("click", () => buyOrUpgradeBarricade("reg
 buyExplosiveBarricadeBtn?.addEventListener("click", () => buyOrUpgradeBarricade("explosive"));
 buyThornsBarricadeBtn?.addEventListener("click", () => buyOrUpgradeBarricade("thorns"));
 
+function getBarricadeUpgradeTarget(kind) {
+    const inactive = (barricades || []).find(b => !b.active || b.hp <= 0);
+    const sameKind = (barricades || [])
+        .filter(b => b.active && b.hp > 0 && b.kind === kind)
+        .sort((a, b) => (a.level || 0) - (b.level || 0) || a.maxHp - b.maxHp)[0];
+
+    if (sameKind) return { target: sameKind, isNew: false };
+    if (inactive) return { target: inactive, isNew: true };
+
+    return null;
+}
+
 function buyOrUpgradeBarricade(kind = "standard") {
     const costKey = kind === "regen" ? "regenBarricade" : kind === "explosive" ? "explosiveBarricade" : kind === "thorns" ? "thornsBarricade" : "upgradeBarricade";
     if (coins < costs[costKey]) return;
 
-    const target = (barricades || []).find(b => !b.active || b.hp <= 0) || (barricades || []).sort((a, b) => a.maxHp - b.maxHp)[0];
-    if (!target) return;
+    const result = getBarricadeUpgradeTarget(kind);
+    const target = result?.target;
+    if (!target) {
+        showCenterMessage("Primero debe romperse una barricada", 900);
+        return;
+    }
 
     coins -= costs[costKey];
+    upgradeBarricadeInstance(target, kind, Boolean(result.isNew));
 
-    target.kind = kind;
-    target.active = true;
-    target.tier = Math.min((target.tier || -1) + 1, barricadeTiers.length - 1);
+    costs[costKey] = scaleBarricadeCost(costs[costKey], kind === "standard" ? 1.55 : 1.42);
+    updateHud();
+}
 
-    let baseHp = kind === "regen" ? 38 : kind === "explosive" ? 45 : kind === "thorns" ? 34 : 55;
+function upgradeBarricadeInstance(target, kind, resetKind = false) {
+    const wasInactive = !target.active || target.hp <= 0;
+
+    if (wasInactive || resetKind || target.kind !== kind) {
+        target.kind = kind;
+        target.active = true;
+        target.tier = -1;
+        target.level = 0;
+    }
+
+    if (kind === "standard") {
+        if (target.tier < barricadeTiers.length - 1) {
+            target.tier += 1;
+        } else {
+            target.level = (target.level || 0) + 1;
+        }
+    } else {
+        if (wasInactive || resetKind || target.kind !== kind) {
+            target.level = 0;
+        } else {
+            target.level = (target.level || 0) + 1;
+        }
+        target.tier = Math.max(0, target.tier || 0);
+    }
+
     const tier = barricadeTiers[Math.max(0, target.tier)];
+    const level = Math.max(0, target.level || 0);
+
+    const baseHp = kind === "regen" ? 38 : kind === "explosive" ? 45 : kind === "thorns" ? 34 : 55;
+    const tierHp = kind === "standard" ? Math.max(0, target.tier) * 32 : 0;
+    const levelHp = level * (kind === "standard" ? 38 : kind === "regen" ? 24 : kind === "explosive" ? 28 : 22);
+
     target.color = kind === "regen" ? "#8a5cff" : kind === "explosive" ? "#d9792b" : kind === "thorns" ? "#9c6b35" : tier.color;
-    target.maxHp = baseHp + target.tier * (kind === "standard" ? 28 : 18);
+    target.maxHp = baseHp + tierHp + levelHp;
     target.hp = target.maxHp;
-    target.regenPerSecond = kind === "regen" ? 1.15 + target.tier * 0.25 : 0;
+    target.regenPerSecond = kind === "regen" ? 1.15 + level * 0.28 : 0;
     target.explosive = kind === "explosive";
     target.thorns = kind === "thorns";
     target.lastRegenTime = getGameTime();
 
-    costs[costKey] = Math.floor(costs[costKey] * (kind === "standard" ? 1.75 : 1.55));
-    updateHud();
+    const kindLabel = kind === "regen" ? "regenerativa" : kind === "explosive" ? "explosiva" : kind === "thorns" ? "con espinas" : "estándar";
+    const tierLabel = kind === "standard" ? ` ${tier.name}` : "";
+    const levelLabel = level > 0 ? ` +${level}` : "";
+    showCenterMessage(`Barricada ${kindLabel}${tierLabel}${levelLabel}`, 850);
 }
 
 towerDefinitions.forEach((def, index) => {
@@ -3868,14 +4160,35 @@ towerDefinitions.forEach((def, index) => {
     btn?.addEventListener("click", () => buyTower(def.key));
 });
 
-towerSlotsPanel?.addEventListener("click", event => {
+function handleTowerSlotActionClick(event) {
     const button = event.target.closest("button[data-tower-action]");
     if (!button) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
     const index = Number(button.dataset.index);
     const action = button.dataset.towerAction;
+
+    if (!Number.isInteger(index)) return;
     if (action === "upgrade") upgradeTower(index);
     if (action === "sell") sellTower(index);
-});
+}
+
+// El panel de torres se re-renderiza constantemente desde updateHud/gameLoop.
+// Si esperamos al evento click, el botón puede ser reemplazado entre mousedown y mouseup
+// y el navegador nunca llega a emitir el click. Por eso resolvemos la acción en pointerdown.
+function handleTowerSlotActionPointer(event) {
+    if (!shop || shop.classList.contains("hidden")) return;
+    if (!event.target.closest("#towerSlotsPanel")) return;
+    handleTowerSlotActionClick(event);
+}
+
+towerSlotsPanel?.addEventListener("pointerdown", handleTowerSlotActionPointer);
+document.addEventListener("pointerdown", handleTowerSlotActionPointer);
+
+// Fallback para navegadores viejos o eventos disparados por teclado.
+towerSlotsPanel?.addEventListener("click", handleTowerSlotActionClick);
 
 function buyTower(defKey) {
     beginTowerPlacement(defKey);
@@ -3883,11 +4196,18 @@ function buyTower(defKey) {
 
 function upgradeTower(index) {
     const tower = towers[index];
-    if (!tower || coins < tower.upgradeCost) return;
+    if (!tower) return;
+
+    tower.upgradeCost = Number(tower.upgradeCost) || Math.floor((tower.cost || 100) * 1.35);
+
+    if (coins < tower.upgradeCost) {
+        showCenterMessage(`Faltan ${tower.upgradeCost - coins} monedas`, 800);
+        return;
+    }
 
     coins -= tower.upgradeCost;
-    tower.spent += tower.upgradeCost;
-    tower.level += 1;
+    tower.spent = (Number(tower.spent) || 0) + tower.upgradeCost;
+    tower.level = (Number(tower.level) || 1) + 1;
 
     if (tower.type === "basic") {
         tower.damage += 1;
@@ -3946,7 +4266,7 @@ function upgradeTower(index) {
         tower.buffSpeed += 0.025;
     }
 
-    tower.upgradeCost = Math.floor(tower.upgradeCost * 1.62);
+    tower.upgradeCost = scaleTowerUpgradeCost(tower.upgradeCost);
     updateHud();
 }
 
