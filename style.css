@@ -630,3 +630,74 @@ canvas {
     background: #2eaf5d !important;
     border: 1px solid #73ff9f;
 }
+
+
+.leaderboardBox {
+    background: rgba(12, 12, 18, 0.82);
+    border: 1px solid #4f4f76;
+    border-radius: 12px;
+    padding: 12px;
+    max-width: 620px;
+    margin: 18px auto 0;
+    text-align: left;
+}
+
+.leaderboardHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.leaderboardHeader h3 {
+    margin: 0;
+    color: #ffe28a;
+}
+
+.leaderboardStatus {
+    color: #bfc1d9;
+    font-size: 13px;
+    margin: 6px 0 10px;
+}
+
+.leaderboardList {
+    margin: 0;
+    padding-left: 26px;
+    display: grid;
+    gap: 6px;
+}
+
+.leaderboardList li {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+
+.leaderboardEntry {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+}
+
+.leaderboardName {
+    font-weight: bold;
+    color: #ffffff;
+}
+
+.leaderboardMeta {
+    color: #bfc1d9;
+    font-size: 12px;
+}
+
+.leaderboardScore {
+    color: #73ff9f;
+    font-weight: bold;
+    white-space: nowrap;
+}
+
+.gameOverLeaderboardBox {
+    max-width: 680px;
+}
