@@ -2783,12 +2783,8 @@ function findClosestEnemy(x, y, maxDistance = Infinity, ignored = []) {
 }
 
 function drawPath() {
-    ctx.strokeStyle = "rgba(255,255,255,0.15)";
-    ctx.lineWidth = 40;
-    ctx.beginPath();
-    ctx.moveTo(GAME_WIDTH, GAME_HEIGHT / 2);
-    ctx.lineTo(0, GAME_HEIGHT / 2);
-    ctx.stroke();
+    // Camino visual desactivado: se mantiene la lógica del juego,
+    // pero ya no se dibuja la franja gris horizontal.
 }
 
 function drawBase() {
@@ -3480,6 +3476,35 @@ function runConsoleCommand(rawCommand) {
     if (command === "beginner") {
         coins += 500;
         appendConsoleLog("Comando activado: +500 monedas.");
+        updateHud();
+        return;
+    }
+
+    if (command === "add" || command.startsWith("add ")) {
+        const parts = command.split(/\s+/);
+
+        if (!parts[1]) {
+            appendConsoleLog("Uso correcto: add 5000. Máximo: 100.000.000 monedas.");
+            return;
+        }
+
+        const rawAmount = parts.slice(1).join("").replace(/[.,]/g, "");
+        const amount = Math.floor(Number(rawAmount));
+
+        if (!Number.isFinite(amount) || amount <= 0) {
+            appendConsoleLog("Uso correcto: add 5000. La cantidad debe ser un número mayor a 0.");
+            return;
+        }
+
+        const cappedAmount = Math.min(amount, 100000000);
+        coins = Math.min(100000000, coins + cappedAmount);
+
+        if (amount > 100000000) {
+            appendConsoleLog("Comando activado: se aplicó el máximo permitido de 100.000.000 monedas.");
+        } else {
+            appendConsoleLog(`Comando activado: +${cappedAmount.toLocaleString("es-AR")} monedas.`);
+        }
+
         updateHud();
         return;
     }
