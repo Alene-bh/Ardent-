@@ -1165,7 +1165,7 @@ function createDefaultState() {
             name: "Bomba",
             key: codeToLabel(controlBindings.bomb),
             owned: false,
-            cost: 180,
+            cost: 580,
             cooldown: 8000,
             lastUsed: -Infinity
         },
@@ -1173,7 +1173,7 @@ function createDefaultState() {
             name: "Congelar",
             key: codeToLabel(controlBindings.freeze),
             owned: false,
-            cost: 280,
+            cost: 2080,
             cooldown: 14000,
             lastUsed: -Infinity
         },
@@ -1181,7 +1181,7 @@ function createDefaultState() {
             name: "Tsunami",
             key: codeToLabel(controlBindings.tsunami),
             owned: false,
-            cost: 560,
+            cost: 5060,
             cooldown: 24000,
             lastUsed: -Infinity
         },
@@ -1189,7 +1189,7 @@ function createDefaultState() {
             name: "Rayo",
             key: codeToLabel(controlBindings.lightning),
             owned: false,
-            cost: 650,
+            cost: 7050,
             cooldown: 22000,
             lastUsed: -Infinity
         },
@@ -1197,7 +1197,7 @@ function createDefaultState() {
             name: "Meteorito",
             key: codeToLabel(controlBindings.meteor),
             owned: false,
-            cost: 950,
+            cost: 9050,
             cooldown: 30000,
             lastUsed: -Infinity
         },
@@ -1205,7 +1205,7 @@ function createDefaultState() {
             name: "Eclipse",
             key: codeToLabel(controlBindings.eclipse),
             owned: false,
-            cost: 1350,
+            cost: 25050,
             cooldown: 42000,
             lastUsed: -Infinity
         }
