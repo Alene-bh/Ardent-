@@ -47,6 +47,36 @@
                 </label>
             </div>
 
+            <div class="controlsSettingsBox">
+                <h3>Controles</h3>
+                <p class="controlsHint">Tocá una tecla para cambiarla. Si elegís una ya usada, se intercambian.</p>
+
+                <div class="controlsGrid">
+                    <span>Mover arriba</span>
+                    <button class="controlKeyButton" data-control="moveUp">W</button>
+
+                    <span>Mover abajo</span>
+                    <button class="controlKeyButton" data-control="moveDown">S</button>
+
+                    <span>Habilidad 1 · Bomba</span>
+                    <button class="controlKeyButton" data-control="bomb">1</button>
+
+                    <span>Habilidad 2 · Congelar</span>
+                    <button class="controlKeyButton" data-control="freeze">2</button>
+
+                    <span>Habilidad 3 · Tsunami</span>
+                    <button class="controlKeyButton" data-control="tsunami">3</button>
+
+                    <span>Habilidad 4 · Rayo</span>
+                    <button class="controlKeyButton" data-control="lightning">4</button>
+
+                    <span>Habilidad 5 · Meteorito</span>
+                    <button class="controlKeyButton" data-control="meteor">5</button>
+                </div>
+
+                <button class="resetControlsBtn">Restaurar controles</button>
+            </div>
+
             <button id="startGameBtn">Jugar</button>
         </div>
 
@@ -64,11 +94,11 @@
             </div>
 
             <div id="abilityBar">
-                <div class="abilitySlot locked" id="abilityBombSlot">Q · Bomba</div>
-                <div class="abilitySlot locked" id="abilityFreezeSlot">W · Freezeo</div>
-                <div class="abilitySlot locked" id="abilityTsunamiSlot">E · Tsunami</div>
-                <div class="abilitySlot locked" id="abilityLightningSlot">R · Rayo</div>
-                <div class="abilitySlot locked" id="abilityMeteorSlot">F · Meteorito</div>
+                <div class="abilitySlot locked" id="abilityBombSlot">1 · Bomba</div>
+                <div class="abilitySlot locked" id="abilityFreezeSlot">2 · Freezeo</div>
+                <div class="abilitySlot locked" id="abilityTsunamiSlot">3 · Tsunami</div>
+                <div class="abilitySlot locked" id="abilityLightningSlot">4 · Rayo</div>
+                <div class="abilitySlot locked" id="abilityMeteorSlot">5 · Meteorito</div>
             </div>
 
             <div id="playStage">
@@ -150,6 +180,10 @@
                                 <small>Cura 30 en 5s</small><br>
                                 <span id="largePotionCostText">70</span> monedas
                             </button>
+                        </section>
+
+                        <section class="shopSection barricadeShop">
+                            <h3>Barricadas</h3>
 
                             <button id="repairBarricadeBtn">
                                 Reparar barricada<br>
@@ -214,6 +248,54 @@
                                     <span id="tower3UpgradeCostText">240</span> monedas
                                 </button>
                             </div>
+
+                            <div id="tower4BuyBox">
+                                <button id="buyTower4Btn">
+                                    Comprar torre doble<br>
+                                    <small>Dispara 2 proyectiles</small><br>
+                                    <span id="tower4CostText">260</span> monedas
+                                </button>
+                            </div>
+
+                            <div id="tower4UpgradeBox" class="hidden">
+                                <button id="upgradeTower4Btn">
+                                    Mejorar torre doble<br>
+                                    <small>Nivel: <span id="tower4LevelText">1</span></small><br>
+                                    <span id="tower4UpgradeCostText">300</span> monedas
+                                </button>
+                            </div>
+
+                            <div id="tower5BuyBox">
+                                <button id="buyTower5Btn">
+                                    Comprar ballesta<br>
+                                    <small>Mucho daño, lento</small><br>
+                                    <span id="tower5CostText">360</span> monedas
+                                </button>
+                            </div>
+
+                            <div id="tower5UpgradeBox" class="hidden">
+                                <button id="upgradeTower5Btn">
+                                    Mejorar ballesta<br>
+                                    <small>Nivel: <span id="tower5LevelText">1</span></small><br>
+                                    <span id="tower5UpgradeCostText">420</span> monedas
+                                </button>
+                            </div>
+
+                            <div id="tower6BuyBox">
+                                <button id="buyTower6Btn">
+                                    Comprar torre de veneno<br>
+                                    <small>Área con daño por ticks</small><br>
+                                    <span id="tower6CostText">310</span> monedas
+                                </button>
+                            </div>
+
+                            <div id="tower6UpgradeBox" class="hidden">
+                                <button id="upgradeTower6Btn">
+                                    Mejorar torre de veneno<br>
+                                    <small>Nivel: <span id="tower6LevelText">1</span></small><br>
+                                    <span id="tower6UpgradeCostText">350</span> monedas
+                                </button>
+                            </div>
                         </section>
 
                         <section class="shopSection abilitiesShop">
@@ -221,36 +303,37 @@
 
                             <button id="buyBombBtn">
                                 Comprar Bomba<br>
-                                <small>Q · Daño en área</small><br>
+                                <small><span id="bombKeyText">1</span> · Daño en área</small><br>
                                 <span id="bombCostText">180</span> monedas
                             </button>
 
                             <button id="buyFreezeBtn">
                                 Comprar Congelar<br>
-                                <small>W · Ralentiza a todos</small><br>
+                                <small><span id="freezeKeyText">2</span> · Ralentiza a todos</small><br>
                                 <span id="freezeCostText">280</span> monedas
                             </button>
 
                             <button id="buyTsunamiBtn">
                                 Comprar Tsunami<br>
-                                <small>E · Empuja y daña</small><br>
-                                <span id="tsunamiCostText">430</span> monedas
+                                <small><span id="tsunamiKeyText">3</span> · Empuja y daña</small><br>
+                                <span id="tsunamiCostText">560</span> monedas
                             </button>
 
                             <button id="buyLightningBtn">
                                 Comprar Rayo ramificado<br>
-                                <small>R · Salta entre enemigos</small><br>
+                                <small><span id="lightningKeyText">4</span> · Salta entre enemigos</small><br>
                                 <span id="lightningCostText">650</span> monedas
                             </button>
 
                             <button id="buyMeteorBtn">
                                 Comprar Meteorito<br>
-                                <small>F · Gran explosión</small><br>
+                                <small><span id="meteorKeyText">5</span> · Gran explosión</small><br>
                                 <span id="meteorCostText">950</span> monedas
                             </button>
                         </section>
                     </div>
 
+                    <button id="repeatWaveBtn" class="repeatWaveButton">Repetir oleada</button>
                     <button id="nextWaveBtn" class="nextWaveButton">Siguiente oleada</button>
                 </div>
 
@@ -288,6 +371,36 @@
                         </label>
                     </div>
 
+                            <div class="controlsSettingsBox">
+                        <h3>Controles</h3>
+                        <p class="controlsHint">Tocá una tecla para cambiarla. Si elegís una ya usada, se intercambian.</p>
+
+                                <div class="controlsGrid">
+                            <span>Mover arriba</span>
+                                    <button class="controlKeyButton" data-control="moveUp">W</button>
+
+                            <span>Mover abajo</span>
+                                    <button class="controlKeyButton" data-control="moveDown">S</button>
+
+                            <span>Habilidad 1 · Bomba</span>
+                                    <button class="controlKeyButton" data-control="bomb">1</button>
+
+                            <span>Habilidad 2 · Congelar</span>
+                                    <button class="controlKeyButton" data-control="freeze">2</button>
+
+                            <span>Habilidad 3 · Tsunami</span>
+                                    <button class="controlKeyButton" data-control="tsunami">3</button>
+
+                            <span>Habilidad 4 · Rayo</span>
+                                    <button class="controlKeyButton" data-control="lightning">4</button>
+
+                            <span>Habilidad 5 · Meteorito</span>
+                                    <button class="controlKeyButton" data-control="meteor">5</button>
+                                </div>
+
+                        <button class="resetControlsBtn">Restaurar controles</button>
+                    </div>
+
                     <div class="pauseButtons">
                         <button id="resumeBtn">Continuar</button>
                         <button id="backToMenuBtn">Volver al menú</button>
@@ -305,7 +418,7 @@
             <div id="info">
                 <p>
                     Hecho por Alene <br>
-                    Habilidades de la Q a la F, Disparo: Click izquierdo - Spacebar
+                    Movimiento: W/S · Habilidades: 1 a 5 · Disparo: Click izquierdo / Spacebar
                 </p>
             </div>
         </div>
