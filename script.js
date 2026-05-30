@@ -344,6 +344,7 @@ const buyEclipseBtn = document.getElementById("buyEclipseBtn");
 
 const nextWaveBtn = document.getElementById("nextWaveBtn");
 const repeatWaveBtn = document.getElementById("repeatWaveBtn");
+const autoRepeatWaveBtn = document.getElementById("autoRepeatWaveBtn");
 const newRunBtn = document.getElementById("newRunBtn");
 
 const playerDamageText = document.getElementById("playerDamageText");
@@ -453,6 +454,7 @@ let speedOptions = [1, 2, 2.5];
 let speedIndex = 0;
 
 let autoMode = false;
+let autoRepeatWaveMode = false;
 
 let gameTime = 0;
 let lastFrameTime = performance.now();
@@ -1059,12 +1061,18 @@ function createDefaultState() {
     gameSpeed = 1;
     speedIndex = 0;
     autoMode = false;
+    autoRepeatWaveMode = false;
 
     if (speedBtn) speedBtn.textContent = "Velocidad x1";
 
     if (autoModeBtn) {
         autoModeBtn.textContent = "Auto OFF";
         autoModeBtn.classList.remove("autoActive");
+    }
+
+    if (autoRepeatWaveBtn) {
+        autoRepeatWaveBtn.textContent = "Auto repetir OFF";
+        autoRepeatWaveBtn.classList.remove("autoActive");
     }
 
     pressedKeys.clear();
@@ -2425,6 +2433,37 @@ function completeWave() {
     waveStats.gold += goldBonus;
     waveStats.bonus = waveBonus;
 
+    if (autoRepeatWaveMode) {
+        const repeats = getRepeatCountForCurrentWave();
+
+        if (repeats < REPEAT_LIMIT_PER_WAVE) {
+            showCenterMessage(`Auto repetir ${repeats + 1}/${REPEAT_LIMIT_PER_WAVE}`, 700);
+
+            setTimeout(() => {
+                if (!autoRepeatWaveMode) {
+                    showWaveSummary();
+                    return;
+                }
+
+                if (!hasActiveRun) return;
+
+                repeatCountsByWave[wave] = getRepeatCountForCurrentWave() + 1;
+                isRepeatingWave = true;
+                currentGoldMultiplier = 0.5;
+                startWave();
+            }, 900);
+
+            return;
+        }
+
+        autoRepeatWaveMode = false;
+        if (autoRepeatWaveBtn) {
+            autoRepeatWaveBtn.textContent = "Auto repetir OFF";
+            autoRepeatWaveBtn.classList.remove("autoActive");
+        }
+        showCenterMessage("Auto repetir: límite alcanzado", 900);
+    }
+
     if (autoMode) {
         showCenterMessage(`Wave ${wave} completada`, 700);
 
@@ -2437,6 +2476,8 @@ function completeWave() {
             if (!hasActiveRun) return;
 
             wave++;
+            isRepeatingWave = false;
+            currentGoldMultiplier = 1;
             startWave();
         }, 900);
 
@@ -3227,10 +3268,19 @@ function updateTowerShopVisibility() {
 
     if (repeatWaveBtn) {
         const repeats = getRepeatCountForCurrentWave();
-        repeatWaveBtn.disabled = repeats >= REPEAT_LIMIT_PER_WAVE;
+        repeatWaveBtn.disabled = repeats >= REPEAT_LIMIT_PER_WAVE || autoRepeatWaveMode;
         repeatWaveBtn.textContent = repeats >= REPEAT_LIMIT_PER_WAVE
             ? "Repetir oleada: límite alcanzado"
             : `Repetir oleada (${repeats}/${REPEAT_LIMIT_PER_WAVE}) · 50% oro`;
+    }
+
+    if (autoRepeatWaveBtn) {
+        const repeats = getRepeatCountForCurrentWave();
+        autoRepeatWaveBtn.disabled = repeats >= REPEAT_LIMIT_PER_WAVE;
+        autoRepeatWaveBtn.textContent = autoRepeatWaveMode
+            ? `Auto repetir ON (${repeats}/${REPEAT_LIMIT_PER_WAVE})`
+            : `Auto repetir OFF (${repeats}/${REPEAT_LIMIT_PER_WAVE})`;
+        autoRepeatWaveBtn.classList.toggle("autoActive", autoRepeatWaveMode);
     }
 
     renderTowerSlotsPanel();
@@ -4061,8 +4111,23 @@ repeatWaveBtn.addEventListener("click", () => {
     startWave();
 });
 
+if (autoRepeatWaveBtn) autoRepeatWaveBtn.addEventListener("click", () => {
+    const repeats = getRepeatCountForCurrentWave();
+    if (repeats >= REPEAT_LIMIT_PER_WAVE) {
+        autoRepeatWaveMode = false;
+        showCenterMessage("Límite de repeticiones", 900);
+        updateHud();
+        return;
+    }
+
+    autoRepeatWaveMode = !autoRepeatWaveMode;
+    showCenterMessage(autoRepeatWaveMode ? "Auto repetir ON" : "Auto repetir OFF", 700);
+    updateHud();
+});
+
 nextWaveBtn.addEventListener("click", () => {
     wave++;
+    autoRepeatWaveMode = false;
     isRepeatingWave = false;
     currentGoldMultiplier = 1;
     startWave();
