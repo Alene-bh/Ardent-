@@ -120,6 +120,15 @@
                 <div class="abilitySlot locked" id="abilityEclipseSlot">6 · Eclipse</div>
             </div>
 
+            <div id="inventoryBar">
+                <div class="inventoryHeader">
+                    <strong>Inventario de consumibles</strong>
+                    <span id="inventoryCooldownText">Listo · Inventario 0/25</span>
+                </div>
+                <div id="inventorySlots" class="inventorySlots"></div>
+                <small>Comprá pociones en tienda y usalas durante una oleada. Cooldown global: 5s.</small>
+            </div>
+
             <div id="playStage">
                 <canvas id="gameCanvas" width="900" height="450"></canvas>
 
@@ -203,43 +212,43 @@
 
                             <button id="buySmallPotionBtn">
                                 Poción chica<br>
-                                <small>Cura 6 en 2.5s</small><br>
+                                <small>Guarda x1 · Cura 6 en 2.5s</small><br>
                                 <span id="smallPotionCostText">15</span> monedas
                             </button>
 
                             <button id="buyMediumPotionBtn">
                                 Poción mediana<br>
-                                <small>Cura 14 en 3.5s</small><br>
+                                <small>Guarda x1 · Cura 14 en 3.5s</small><br>
                                 <span id="mediumPotionCostText">35</span> monedas
                             </button>
 
                             <button id="buyLargePotionBtn">
                                 Poción grande<br>
-                                <small>Cura 30 en 5s</small><br>
+                                <small>Guarda x1 · Cura 30 en 5s</small><br>
                                 <span id="largePotionCostText">70</span> monedas
                             </button>
 
                             <button id="buyShieldPotionBtn">
                                 Amuleto protector<br>
-                                <small>Bloquea el próximo golpe</small><br>
+                                <small>Guarda x1 · Bloquea el próximo golpe</small><br>
                                 <span id="shieldPotionCostText">110</span> monedas
                             </button>
 
                             <button id="buyAttackSpeedPotionBtn">
                                 Poción de rapidez<br>
-                                <small>+45% velocidad de ataque por 10s</small><br>
+                                <small>Guarda x1 · +45% velocidad por 10s</small><br>
                                 <span id="attackSpeedPotionCostText">260</span> monedas
                             </button>
 
                             <button id="buyDoubleShotPotionBtn">
                                 Poción de doble disparo<br>
-                                <small>Disparo doble por 9s</small><br>
+                                <small>Guarda x1 · Disparo doble por 9s</small><br>
                                 <span id="doubleShotPotionCostText">620</span> monedas
                             </button>
 
                             <button id="buyLifeStealPotionBtn">
                                 Poción vampírica<br>
-                                <small>Robo de vida temporal</small><br>
+                                <small>Guarda x1 · Robo de vida temporal</small><br>
                                 <span id="lifeStealPotionCostText">520</span> monedas
                             </button>
                         </section>
