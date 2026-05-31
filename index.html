@@ -117,7 +117,10 @@
 
                 <div id="hud" class="inGameHud">
                     <span>Wave: <strong id="waveText">1</strong></span>
-                    <span>Vida: <strong id="hpText">20/20</strong></span>
+                    <span id="hpHudBox" class="hpHudBox">
+                        <span class="hpHudLabel">Vida</span>
+                        <span class="hpHudBar"><span id="hpBarFill" class="hpHudFill"></span><strong id="hpText" class="hpHudText">20/20</strong></span>
+                    </span>
                     <span>Barricada: <strong id="barricadeText">0/0</strong></span>
                     <span>Monedas: <strong id="coinsText">0</strong></span>
                     <span>Puntos: <strong id="scoreText">0</strong></span>
@@ -411,6 +414,12 @@
                                 Comprar torre lancera<br>
                                 <small>Ataca en línea frontal · rota con R</small><br>
                                 <span id="tower12CostText">135</span> monedas
+                            </button>
+
+                            <button id="buyTower13Btn">
+                                Comprar torre láser<br>
+                                <small>Objetivo único · DPS continuo</small><br>
+                                <span id="tower13CostText">1450</span> monedas
                             </button>
 
                             <div id="towerSlotsPanel" class="towerSlotsPanel"></div>
