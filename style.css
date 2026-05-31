@@ -501,7 +501,8 @@ canvas {
     background: #555;
 }
 
-.audioSettingsBox {
+.audioSettingsBox,
+.visualSettingsBox {
     background: #181818;
     border: 1px solid #444;
     border-radius: 12px;
@@ -511,24 +512,28 @@ canvas {
     text-align: left;
 }
 
-.audioSettingsBox h3 {
+.audioSettingsBox h3,
+.visualSettingsBox h3 {
     text-align: center;
     margin-top: 0;
     color: #9be7ff;
 }
 
-.audioSettingsBox label {
+.audioSettingsBox label,
+.visualSettingsBox label {
     display: block;
     margin: 10px 0;
     color: #ddd;
 }
 
-.audioSettingsBox input[type="range"] {
+.audioSettingsBox input[type="range"],
+.visualSettingsBox input[type="range"] {
     width: 100%;
     margin-top: 6px;
 }
 
-.pauseAudioBox {
+.pauseAudioBox,
+.pauseVisualBox {
     max-width: 500px;
 }
 
@@ -1622,4 +1627,82 @@ canvas {
         padding: 5px 9px;
         font-size: 12px;
     }
+}
+
+.leaderboardBeginnerTag {
+    color: #ff5a5a;
+    font-size: 10px;
+    font-weight: 700;
+    margin-left: 4px;
+    text-transform: lowercase;
+}
+
+
+.titanRewardPanel {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background: rgba(8, 4, 18, 0.82);
+    color: white;
+    text-align: center;
+    backdrop-filter: blur(4px);
+}
+
+.titanRewardPanel h2 {
+    margin: 0;
+    color: #d9a8ff;
+    text-shadow: 0 0 14px #7a21c9;
+}
+
+.titanRewardPanel p {
+    margin: 0 0 8px;
+    color: #ddd;
+}
+
+.titanRewardOptions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(160px, 230px));
+    gap: 14px;
+    max-width: 760px;
+    width: min(92vw, 760px);
+}
+
+.titanRewardOptions button {
+    min-height: 150px;
+    padding: 14px;
+    border: 2px solid #8d45d7;
+    background: radial-gradient(circle at top, rgba(182,77,255,0.36), rgba(18,10,32,0.96));
+    color: white;
+    border-radius: 16px;
+    box-shadow: 0 0 18px rgba(182,77,255,0.38);
+}
+
+.titanRewardOptions button strong {
+    display: block;
+    font-size: 42px;
+    color: #f3d7ff;
+    line-height: 1;
+}
+
+.titanRewardOptions button span {
+    display: block;
+    margin-top: 8px;
+    font-weight: bold;
+    color: #ffe28a;
+}
+
+.titanRewardOptions button small {
+    display: block;
+    margin-top: 7px;
+    color: #ddd;
+    line-height: 1.25;
+}
+
+@media (max-width: 680px) {
+    .titanRewardOptions { grid-template-columns: 1fr; }
 }
