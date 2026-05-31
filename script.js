@@ -5887,14 +5887,8 @@ function drawVisualEffects() {
 }
 
 function drawAimLine() {
-    if (!waveInProgress) return;
-
-    ctx.strokeStyle = "rgba(255,255,255,0.20)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(player.x, player.y);
-    ctx.lineTo(mousePosition.x, mousePosition.y);
-    ctx.stroke();
+    // Línea de apuntado desactivada: molestaba visualmente y podía bugearse.
+    // El disparo sigue usando mousePosition/crosshair normalmente.
 }
 
 function updateBossBar() {
@@ -6526,7 +6520,6 @@ function draw() {
     drawPlayer();
     drawTowerPlacementTiles();
     drawTowers();
-    drawAimLine();
     drawSlowZones();
     drawEnemies();
     drawProjectiles();
