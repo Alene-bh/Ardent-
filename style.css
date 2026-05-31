@@ -1706,3 +1706,53 @@ canvas {
 @media (max-width: 680px) {
     .titanRewardOptions { grid-template-columns: 1fr; }
 }
+
+#autoRepeatWaveBtn.autoActive {
+    background: #8a5a2f;
+    border-color: #ffc46b;
+    box-shadow: 0 0 10px rgba(255, 196, 107, 0.35);
+}
+
+#autoRepeatWaveBtn.autoActive:hover {
+    background: #a96f3b;
+}
+
+/* =========================================================
+   Fix anti-selección azul / UX de combate
+   Evita que el HUD, botones y canvas queden seleccionados al clickear rápido.
+   ========================================================= */
+html,
+body,
+#gameWrapper,
+#gameArea,
+#playStage,
+#hud,
+#abilityBar,
+#inventoryBar,
+#bottomGameUi,
+.overlayPanel,
+.structurePanel,
+button,
+canvas {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+canvas,
+button {
+    -webkit-user-drag: none;
+}
+
+button:focus,
+button:focus-visible,
+canvas:focus,
+canvas:focus-visible {
+    outline: none;
+}
+
+input,
+textarea {
+    -webkit-user-select: text;
+    user-select: text;
+}
