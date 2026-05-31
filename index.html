@@ -13,10 +13,10 @@
         <h1>Ardent Tower Defense</h1>
 
         <div id="menu">
-            <h2>Defendé la base</h2>
+            <h2>Sobreviví al asedio</h2>
             <p>
-                Cada run arranca desde cero. Aguantá oleadas, comprá torres,
-                desbloqueá habilidades y superá tu récord.
+                Cada run arranca desde cero. Construí muros y torres,
+                sobreviví a oleadas desde todos los bordes y superá tu récord.
             </p>
 
             <p class="recordText">
@@ -104,39 +104,54 @@
         </div>
 
         <div id="gameArea" class="hidden">
-            <div id="hud">
-                <span>Wave: <strong id="waveText">1</strong></span>
-                <span>Vida: <strong id="hpText">20/20</strong></span>
-                <span>Barricada: <strong id="barricadeText">0/0</strong></span>
-                <span>Monedas: <strong id="coinsText">0</strong></span>
-                <span>Puntos: <strong id="scoreText">0</strong></span>
-
-                <button id="speedBtn" class="smallHudButton">Velocidad x1</button>
-                <button id="autoModeBtn" class="smallHudButton">Auto OFF</button>
-                <button id="pauseBtn" class="smallHudButton">Pausa</button>
-                <button id="consoleBtn" class="smallHudButton">Consola</button>
-            </div>
-
-            <div id="abilityBar">
-                <div class="abilitySlot locked" id="abilityBombSlot">1 · Bomba</div>
-                <div class="abilitySlot locked" id="abilityFreezeSlot">2 · Freezeo</div>
-                <div class="abilitySlot locked" id="abilityTsunamiSlot">3 · Tsunami</div>
-                <div class="abilitySlot locked" id="abilityLightningSlot">4 · Rayo</div>
-                <div class="abilitySlot locked" id="abilityMeteorSlot">5 · Meteorito</div>
-                <div class="abilitySlot locked" id="abilityEclipseSlot">6 · Eclipse</div>
-            </div>
-
-            <div id="inventoryBar">
-                <div class="inventoryHeader">
-                    <strong>Inventario de consumibles</strong>
-                    <span id="inventoryCooldownText">Listo · Inventario 0/25</span>
-                </div>
-                <div id="inventorySlots" class="inventorySlots"></div>
-                <small>Comprá pociones en tienda y usalas durante una oleada. Cooldown global: 5s.</small>
-            </div>
-
             <div id="playStage">
                 <canvas id="gameCanvas" width="900" height="450"></canvas>
+
+                <div id="hud" class="inGameHud">
+                    <span>Wave: <strong id="waveText">1</strong></span>
+                    <span>Vida: <strong id="hpText">20/20</strong></span>
+                    <span>Barricada: <strong id="barricadeText">0/0</strong></span>
+                    <span>Monedas: <strong id="coinsText">0</strong></span>
+                    <span>Puntos: <strong id="scoreText">0</strong></span>
+
+                    <button id="speedBtn" class="smallHudButton">Velocidad x1</button>
+                    <button id="autoModeBtn" class="smallHudButton">Auto OFF</button>
+                    <button id="openShopHudBtn" class="smallHudButton shopHudButton">Tienda</button>
+                    <button id="pauseBtn" class="smallHudButton">Pausa</button>
+                    <button id="consoleBtn" class="smallHudButton">Consola</button>
+                </div>
+
+                <button id="constructionBtn" class="smallHudButton constructionHudButton" type="button">Construcción</button>
+
+                <button id="cancelBuildBtn" class="smallHudButton cancelBuildButton hidden" type="button">Cancelar construcción</button>
+
+                <div id="structurePanel" class="structurePanel hidden">
+                    <div class="structurePanelHeader">
+                        <strong id="structurePanelTitle">Estructura</strong>
+                        <button id="closeStructurePanelBtn" type="button">×</button>
+                    </div>
+                    <div id="structurePanelInfo" class="structurePanelInfo"></div>
+                    <div id="structurePanelActions" class="structurePanelActions"></div>
+                </div>
+
+                <div id="bottomGameUi">
+                    <div id="abilityBar">
+                        <div class="abilitySlot locked" id="abilityBombSlot">1 · Bomba</div>
+                        <div class="abilitySlot locked" id="abilityFreezeSlot">2 · Freezeo</div>
+                        <div class="abilitySlot locked" id="abilityTsunamiSlot">3 · Tsunami</div>
+                        <div class="abilitySlot locked" id="abilityLightningSlot">4 · Rayo</div>
+                        <div class="abilitySlot locked" id="abilityMeteorSlot">5 · Meteorito</div>
+                        <div class="abilitySlot locked" id="abilityEclipseSlot">6 · Eclipse</div>
+                    </div>
+
+                    <div id="inventoryBar">
+                        <div class="inventoryHeader">
+                            <strong>Inventario</strong>
+                            <span id="inventoryCooldownText">Listo · Inventario 0/25</span>
+                        </div>
+                        <div id="inventorySlots" class="inventorySlots"></div>
+                    </div>
+                </div>
 
                 <div id="redFlash"></div>
 
@@ -174,7 +189,8 @@
                 </div>
 
                 <div id="shop" class="overlayPanel hidden">
-                    <h2>Tienda</h2>
+                    <button id="closeShopBtn" class="shopCloseButton" type="button">Cerrar</button>
+                    <h2 id="shopTitle">Tienda</h2>
 
                     <div class="shopTabs">
                         <button class="shopTabButton active" data-shop-tab="stats">Stats</button>
@@ -263,9 +279,7 @@
                             <h3>Barricadas</h3>
 
                             <div class="barricadeSlotChoice">
-                                <span>Próxima barricada nueva:</span>
-                                <button id="barricadeSlot1Btn" type="button" class="barricadeSlotChoiceButton active">Slot 1 · Izquierda</button>
-                                <button id="barricadeSlot2Btn" type="button" class="barricadeSlotChoiceButton">Slot 2 · Derecha</button>
+                                <span>Construcción libre: tocá una barricada, elegí posición con el mouse y usá <strong>R</strong> para rotar.</span>
                             </div>
 
                             <button id="repairBarricadeBtn">
@@ -275,25 +289,25 @@
                             </button>
 
                             <button id="upgradeBarricadeBtn">
-                                Barricada estándar / mejorar<br>
+                                Construir barricada estándar<br>
                                 <small><span id="barricadeTierText">Sin barricadas</span></small><br>
                                 <span id="upgradeBarricadeCostText">100</span> monedas
                             </button>
 
                             <button id="buyRegenBarricadeBtn">
-                                Barricada regenerativa / mejorar<br>
+                                Construir barricada regenerativa<br>
                                 <small>Regenera vida por segundo</small><br>
                                 <span id="regenBarricadeCostText">180</span> monedas
                             </button>
 
                             <button id="buyExplosiveBarricadeBtn">
-                                Barricada explosiva / mejorar<br>
+                                Construir barricada explosiva<br>
                                 <small>Explota al romperse</small><br>
                                 <span id="explosiveBarricadeCostText">220</span> monedas
                             </button>
 
                             <button id="buyThornsBarricadeBtn">
-                                Barricada con espinas / mejorar<br>
+                                Construir barricada con espinas<br>
                                 <small>Devuelve 50% del daño recibido</small><br>
                                 <span id="thornsBarricadeCostText">130</span> monedas
                             </button>
@@ -310,7 +324,7 @@
 
                             <button id="buyTower1Btn">
                                 Comprar torre básica<br>
-                                <small>Dispara al más cercano</small><br>
+                                <small>Colocación libre · dispara al más cercano</small><br>
                                 <span id="tower1CostText">70</span> monedas
                             </button>
 
