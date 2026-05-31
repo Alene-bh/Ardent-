@@ -3664,8 +3664,11 @@ function updatePlayerMovement() {
     player.lastMoveX = dx;
     player.lastMoveY = dy;
 
-    const movementSpeedMultiplier = Math.min(1.12, Math.sqrt(gameSpeed) * 0.82);
-    const speed = player.moveSpeed * movementSpeedMultiplier * frameScale;
+    // La velocidad x2/x4 debe acelerar al jugador en la misma proporción que al resto
+    // del juego. Antes el jugador solo escalaba con sqrt(gameSpeed), pero los enemigos
+    // escalaban linealmente, entonces en x4 los bichos pasaban a ser mucho más rápidos
+    // que el jugador aunque en x1 fueran más lentos.
+    const speed = player.moveSpeed * gameSpeed * frameScale;
 
     player.x += dx * speed;
     player.y += dy * speed;
