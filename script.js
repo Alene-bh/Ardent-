@@ -1700,10 +1700,11 @@ function getMineCostForCount(count = (mines || []).length) {
 
 function getMineIncomeForWave(targetWave = wave) {
     const safeWave = Math.max(1, Number(targetWave) || 1);
-    // Mina buffeada: más retorno temprano/medio, pero curva más plana en late.
-    // No usa el multiplicador late-game general para no transformarse en impresora infinita.
+    // Mina estable: más retorno temprano/medio, curva plana en late.
+    // Importante: no usa currentGoldMultiplier, el multiplicador late-game global
+    // ni el nerf de oro por repetir. Las minas son inversión fija y siempre pagan normal.
     const baseIncome = 28 + Math.floor(Math.sqrt(safeWave) * 5);
-    return Math.ceil(baseIncome * BUILD_ECONOMY_GOLD_MULTIPLIER * currentGoldMultiplier * (player?.goldBonusMultiplier || 1));
+    return Math.ceil(baseIncome * BUILD_ECONOMY_GOLD_MULTIPLIER);
 }
 
 function isMinePositionValid(x, y) {
@@ -6448,7 +6449,7 @@ function updateTowerShopVisibility() {
         repeatWaveBtn.textContent = repeats >= REPEAT_LIMIT_PER_WAVE
             ? `Repetir ${targetWave}: límite`
             : `Repetir ${targetWave} (${repeats}/${REPEAT_LIMIT_PER_WAVE})`;
-        repeatWaveBtn.title = "Repite la misma oleada: enemigos +20% y 60% de oro. Máximo 3 repeticiones por oleada.";
+        repeatWaveBtn.title = "Repite la misma oleada: enemigos +20% y 60% del oro de enemigos/bonus. Las minas pagan normal. Máximo 3 repeticiones por oleada.";
     }
 
     updateAutoRepeatWaveButton();
