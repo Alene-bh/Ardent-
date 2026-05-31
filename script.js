@@ -678,7 +678,15 @@ const FIRST_TOWER_SLOT_COST = 850;
 const TOWER_SLOT_COST_MULTIPLIER = 1.58;
 const TOWER_SELL_REFUND = 0.7;
 const REPEAT_LIMIT_PER_WAVE = 3;
+// Repetir oleada: desafío leve y recompensa reducida, sin acumulación por repetición.
+const REPEAT_ENEMY_STRENGTH_MULTIPLIER = 1.2;
+const REPEAT_GOLD_MULTIPLIER = 0.6;
 const BOSS_BARRICADE_DAMAGE_MULTIPLIER = 1.2;
+// Control anti-lag: cada summoner puede sostener como máximo
+// 2 tandas activas de 5 bichitos invocados.
+const SUMMONER_BATCH_SIZE = 5;
+const SUMMONER_MAX_ACTIVE_BATCHES = 2;
+const SUMMONER_MAX_ACTIVE_MINIONS = SUMMONER_BATCH_SIZE * SUMMONER_MAX_ACTIVE_BATCHES;
 let repeatCountsByWave = {};
 let isRepeatingWave = false;
 let currentGoldMultiplier = 1;
@@ -1905,6 +1913,16 @@ function getGoldAmount(amount) {
     return Math.ceil(amount * BUILD_ECONOMY_GOLD_MULTIPLIER * currentGoldMultiplier * getLateGameGoldMultiplier() * (player?.goldBonusMultiplier || 1));
 }
 
+function getRepeatEnemyStrengthMultiplier() {
+    return isRepeatingWave ? REPEAT_ENEMY_STRENGTH_MULTIPLIER : 1;
+}
+
+function scaleEnemyDamageForRepeat(damage) {
+    const base = Number(damage) || 0;
+    if (!isRepeatingWave) return base;
+    return Math.max(1, Math.ceil(base * REPEAT_ENEMY_STRENGTH_MULTIPLIER));
+}
+
 function clampRepeatCount(value) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return 0;
@@ -1952,7 +1970,7 @@ function updateAutoRepeatWaveButton() {
     autoRepeatWaveBtn.disabled = atLimit && !waveInProgress && buildPhaseActive;
     autoRepeatWaveBtn.title = atLimit
         ? "Esta oleada ya alcanzó el máximo de 3 repeticiones."
-        : "Repite automáticamente la misma oleada durante el descanso. Máximo 3 veces por oleada.";
+        : "Repite automáticamente la misma oleada durante el descanso: enemigos +20% y 60% de oro. Máximo 3 veces por oleada.";
 }
 
 function canAutoRepeatTargetWave(targetWave = getRepeatTargetWave()) {
@@ -1972,7 +1990,7 @@ function prepareRepeatWave(targetWave, source = "manual") {
 
     repeatCountsByWave[normalizedWave] = Math.min(REPEAT_LIMIT_PER_WAVE, repeats + 1);
     isRepeatingWave = true;
-    currentGoldMultiplier = 0.5;
+    currentGoldMultiplier = REPEAT_GOLD_MULTIPLIER;
     buildPhaseActive = false;
     buildPhaseEndsAt = 0;
     pausedBuildPhaseRemainingMs = 0;
@@ -2386,6 +2404,7 @@ function restoreSavedRun() {
         repeatCountsByWave = normalizeRepeatCountsByWave(data.repeatCountsByWave || {});
         isRepeatingWave = Boolean(data.isRepeatingWave);
         currentGoldMultiplier = Number(data.currentGoldMultiplier) || 1;
+        if (isRepeatingWave) currentGoldMultiplier = REPEAT_GOLD_MULTIPLIER;
         doomSpawnedThisWave = Boolean(data.doomSpawnedThisWave);
         lastDoomWave = Number.isFinite(Number(data.lastDoomWave)) ? Number(data.lastDoomWave) : -999;
         selectedBarricadeSlotIndex = Number.isInteger(data.selectedBarricadeSlotIndex) ? Math.max(0, Math.min(1, data.selectedBarricadeSlotIndex)) : 0;
@@ -2426,6 +2445,13 @@ function restoreSavedRun() {
         applyControlsToAbilities();
 
         enemies = Array.isArray(data.enemies) ? data.enemies : [];
+        enemies.forEach((enemy, index) => {
+            if (!enemy.id) enemy.id = Date.now() + Math.random() + index;
+            if (!enemy.isMini) {
+                enemy.summonedById = null;
+                enemy.summonBatchId = null;
+            }
+        });
         projectiles = Array.isArray(data.projectiles) ? data.projectiles : [];
         bossProjectiles = Array.isArray(data.bossProjectiles) ? data.bossProjectiles : [];
         slowZones = Array.isArray(data.slowZones) ? data.slowZones : [];
@@ -2712,11 +2738,13 @@ function getWaveScoreBonus() {
 function createEnemyFromType(type, options = {}) {
     const hpScaling = options.ignoreScaling ? 1 : getEnemyHpScaling();
     const speedScaling = options.ignoreScaling ? 0 : getEnemySpeedScaling();
-    const maxHp = Math.max(1, Math.ceil(type.hp * hpScaling));
+    const repeatStrength = getRepeatEnemyStrengthMultiplier();
+    const maxHp = Math.max(1, Math.ceil(type.hp * hpScaling * repeatStrength));
     const speed = (type.speed + speedScaling) * ENEMY_SURVIVAL_SPEED_MULTIPLIER;
     const spawnPoint = options.spawnPoint || getRandomSpawnPoint();
 
     const enemy = {
+        id: options.id ?? Date.now() + Math.random(),
         x: options.x ?? spawnPoint.x,
         y: options.y ?? spawnPoint.y,
         radius: options.radius ?? 18,
@@ -2728,7 +2756,7 @@ function createEnemyFromType(type, options = {}) {
         speed,
         reward: options.reward ?? getEnemyRewardForWave(type.reward),
         scoreValue: options.scoreValue ?? type.score + getWaveScoreBonus(),
-        damageToDefense: type.damageToDefense,
+        damageToDefense: scaleEnemyDamageForRepeat(type.damageToDefense),
         attackDelay: type.attackDelay,
         originalAttackDelay: type.attackDelay,
         lastAttackTime: 0,
@@ -2760,6 +2788,8 @@ function createEnemyFromType(type, options = {}) {
         invisibleUntil: 0,
         untargetable: false,
         isMini: Boolean(options.isMini),
+        summonedById: options.summonedById || null,
+        summonBatchId: options.summonBatchId || null,
         healerFollowTargetId: null
     };
 
@@ -2835,7 +2865,7 @@ function getBossSpeedScaling() {
     return 80 * 0.0045 + Math.min(0.75, Math.log10(wave - 70) * 0.08);
 }
 
-function spawnMiniEnemy(x, y) {
+function spawnMiniEnemy(x, y, options = {}) {
     const miniType = {
         name: "Bichito Invocado",
         color: "#ffffff",
@@ -2854,14 +2884,31 @@ function spawnMiniEnemy(x, y) {
         reward: 1,
         scoreValue: 3 + Math.floor(wave / 4),
         ignoreScaling: true,
-        isMini: true
+        isMini: true,
+        summonedById: options.summonedById || null,
+        summonBatchId: options.summonBatchId || null
     }));
+}
+
+function getActiveSummonedMinionsFor(summoner) {
+    if (!summoner || !summoner.id) return [];
+    return (enemies || []).filter(enemy => (
+        enemy &&
+        enemy.hp > 0 &&
+        enemy.isMini &&
+        enemy.summonedById === summoner.id
+    ));
+}
+
+function canSummonerCreateBatch(summoner) {
+    return getActiveSummonedMinionsFor(summoner).length <= SUMMONER_MAX_ACTIVE_MINIONS - SUMMONER_BATCH_SIZE;
 }
 
 function spawnBoss() {
     const type = getBossTypeForWave();
     const hpScaling = getBossHpScaling();
-    const maxHp = Math.ceil(type.hp * hpScaling);
+    const repeatStrength = getRepeatEnemyStrengthMultiplier();
+    const maxHp = Math.ceil(type.hp * hpScaling * repeatStrength);
     const speed = (type.speed + getBossSpeedScaling()) * ENEMY_SURVIVAL_SPEED_MULTIPLIER;
 
     const spawn = getBossSpawnPoint();
@@ -2877,7 +2924,7 @@ function spawnBoss() {
         speed,
         reward: getBossRewardForWave(type.reward),
         scoreValue: type.score + getWaveScoreBonus() * 10,
-        damageToDefense: type.damageToDefense,
+        damageToDefense: scaleEnemyDamageForRepeat(type.damageToDefense),
         attackDelay: type.attackDelay,
         originalAttackDelay: type.attackDelay,
         lastAttackTime: 0,
@@ -3334,23 +3381,40 @@ function updateEnemySpecials(now, defenseLineX) {
             effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 6, maxRadius: 40, life: 18, color: "#d58cff" });
         }
 
-        if (enemy.special === "summoner" && !enemy.isAttacking && enemies.length < 85 && now - enemy.lastSummonTime >= enemy.summonDelay) {
+        if (enemy.special === "summoner" && !enemy.isAttacking && enemies.length < 120 && now - enemy.lastSummonTime >= enemy.summonDelay) {
             enemy.lastSummonTime = now;
 
-            for (let i = 0; i < 6; i++) {
-                const angle = (Math.PI * 2 / 6) * i;
-                spawnMiniEnemy(enemy.x + Math.cos(angle) * 28, enemy.y + Math.sin(angle) * 28);
-            }
+            if (canSummonerCreateBatch(enemy)) {
+                const batchId = `${enemy.id}-${now}`;
 
-            effects.push({
-                type: "circle",
-                x: enemy.x,
-                y: enemy.y,
-                radius: 6,
-                maxRadius: 58,
-                life: 26,
-                color: "#ffffff"
-            });
+                for (let i = 0; i < SUMMONER_BATCH_SIZE; i++) {
+                    const angle = (Math.PI * 2 / SUMMONER_BATCH_SIZE) * i;
+                    spawnMiniEnemy(enemy.x + Math.cos(angle) * 28, enemy.y + Math.sin(angle) * 28, {
+                        summonedById: enemy.id,
+                        summonBatchId: batchId
+                    });
+                }
+
+                effects.push({
+                    type: "circle",
+                    x: enemy.x,
+                    y: enemy.y,
+                    radius: 6,
+                    maxRadius: 58,
+                    life: 26,
+                    color: "#ffffff"
+                });
+            } else {
+                effects.push({
+                    type: "circle",
+                    x: enemy.x,
+                    y: enemy.y,
+                    radius: 6,
+                    maxRadius: 34,
+                    life: 14,
+                    color: "#8f8f8f"
+                });
+            }
         }
 
         if (enemy.special === "invisible") {
@@ -4578,6 +4642,11 @@ function getBuildPhaseRemainingMs() {
 function beginNextWaveFromBuildPhase(source = "timer") {
     if (!buildPhaseActive || buildPhaseStartingWave) return;
 
+    // Importante: calcular el objetivo ANTES de apagar buildPhaseActive.
+    // Si no, auto-repetir tomaba la próxima oleada y parecía que los bichos
+    // escalaban muchísimo más de lo esperado.
+    const repeatTargetWave = getRepeatTargetWave();
+
     buildPhaseStartingWave = true;
     buildPhaseActive = false;
     buildPhaseEndsAt = 0;
@@ -4586,7 +4655,6 @@ function beginNextWaveFromBuildPhase(source = "timer") {
     gameRunning = false;
     waveInProgress = false;
 
-    const repeatTargetWave = getRepeatTargetWave();
     if (canAutoRepeatTargetWave(repeatTargetWave)) {
         updateBuildPhaseUI();
         prepareRepeatWave(repeatTargetWave, "auto");
@@ -6283,7 +6351,7 @@ function updateTowerShopVisibility() {
         repeatWaveBtn.textContent = repeats >= REPEAT_LIMIT_PER_WAVE
             ? `Repetir ${targetWave}: límite`
             : `Repetir ${targetWave} (${repeats}/${REPEAT_LIMIT_PER_WAVE})`;
-        repeatWaveBtn.title = "Repite la misma oleada con 50% de oro. Máximo 3 repeticiones por oleada.";
+        repeatWaveBtn.title = "Repite la misma oleada: enemigos +20% y 60% de oro. Máximo 3 repeticiones por oleada.";
     }
 
     updateAutoRepeatWaveButton();
