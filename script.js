@@ -255,9 +255,13 @@ function getEnemySpriteFrameData() {
     const rows = Math.max(1, Math.floor(img.naturalHeight / frameHeight));
     const frameCount = columns * rows;
     const validFrames = [];
+    const frameBounds = {};
 
     // Algunas sheets tienen celdas vacías. Las detectamos para que el enemigo
     // no "desaparezca" durante un frame de animación.
+    // Además calculamos el recorte real de píxeles visibles: la sheet tiene mucho
+    // padding transparente, y si dibujamos el tile completo el bicho se ve más
+    // chico que su hitbox. Con este recorte, el sprite se escala acorde al radio real.
     const source = getEnemySpriteSourceCanvas();
     if (source) {
         const sctx = source.getContext("2d");
@@ -266,18 +270,44 @@ function getEnemySpriteFrameData() {
             const sy = Math.floor(index / columns) * frameHeight;
             const data = sctx.getImageData(sx, sy, frameWidth, frameHeight).data;
             let opaquePixels = 0;
-            for (let i = 3; i < data.length; i += 4) {
-                if (data[i] > 16) opaquePixels++;
+            let minX = frameWidth;
+            let minY = frameHeight;
+            let maxX = -1;
+            let maxY = -1;
+
+            for (let py = 0; py < frameHeight; py++) {
+                for (let px = 0; px < frameWidth; px++) {
+                    const alpha = data[(py * frameWidth + px) * 4 + 3];
+                    if (alpha > 16) {
+                        opaquePixels++;
+                        minX = Math.min(minX, px);
+                        minY = Math.min(minY, py);
+                        maxX = Math.max(maxX, px);
+                        maxY = Math.max(maxY, py);
+                    }
+                }
             }
-            if (opaquePixels > 10) validFrames.push(index);
+
+            if (opaquePixels > 10) {
+                validFrames.push(index);
+                frameBounds[index] = {
+                    x: minX,
+                    y: minY,
+                    width: Math.max(1, maxX - minX + 1),
+                    height: Math.max(1, maxY - minY + 1)
+                };
+            }
         }
     }
 
     if (!validFrames.length) {
-        for (let i = 0; i < frameCount; i++) validFrames.push(i);
+        for (let i = 0; i < frameCount; i++) {
+            validFrames.push(i);
+            frameBounds[i] = { x: 0, y: 0, width: frameWidth, height: frameHeight };
+        }
     }
 
-    enemySpriteFrameDataCache = { frameWidth, frameHeight, columns, rows, frameCount, validFrames };
+    enemySpriteFrameDataCache = { frameWidth, frameHeight, columns, rows, frameCount, validFrames, frameBounds };
     return enemySpriteFrameDataCache;
 }
 function getEnemySpriteSourceCanvas() {
@@ -339,14 +369,24 @@ function drawEnemySprite(enemy, drawRadius) {
     const sprite = enemy.hitFlash > 0 ? getTintedEnemySprite("#ffffff") : getTintedEnemySprite(enemy.color);
     if (!sprite) return false;
 
-    const { frameWidth, frameHeight, columns, validFrames } = frameData;
+    const { frameWidth, frameHeight, columns, validFrames, frameBounds } = frameData;
     const usableFrames = validFrames && validFrames.length ? validFrames : [0];
     const fps = enemy.isMini ? 7 : 8;
     const animIndex = Math.floor((getGameTime() * fps / 1000) + ((enemy.id || 0) % usableFrames.length)) % usableFrames.length;
     const frameIndex = usableFrames[animIndex];
-    const sx = (frameIndex % columns) * frameWidth;
-    const sy = Math.floor(frameIndex / columns) * frameHeight;
-    const drawSize = Math.max(34, Math.min(82, (drawRadius || enemy.radius || 18) * 3.05));
+    const frameBaseX = (frameIndex % columns) * frameWidth;
+    const frameBaseY = Math.floor(frameIndex / columns) * frameHeight;
+    const bounds = frameBounds?.[frameIndex] || { x: 0, y: 0, width: frameWidth, height: frameHeight };
+    const sx = frameBaseX + bounds.x;
+    const sy = frameBaseY + bounds.y;
+    const sw = bounds.width;
+    const sh = bounds.height;
+
+    // El sprite base tiene mucho padding transparente. Dibujamos solo la silueta real
+    // y la escalamos por radio para que el tamaño visual coincida con la hitbox.
+    const hitboxRadius = drawRadius || enemy.radius || 18;
+    const drawHeight = Math.max(38, Math.min(96, hitboxRadius * (enemy.isMini ? 2.25 : 2.65)));
+    const drawWidth = drawHeight * (sw / Math.max(1, sh));
 
     const targetX = enemy.targetX ?? player?.x ?? enemy.x + 1;
     const shouldFlip = targetX < enemy.x;
@@ -355,7 +395,7 @@ function drawEnemySprite(enemy, drawRadius) {
     ctx.translate(enemy.x, enemy.y);
     if (shouldFlip) ctx.scale(-1, 1);
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(sprite, sx, sy, frameWidth, frameHeight, -drawSize / 2, -drawSize / 2, drawSize, drawSize);
+    ctx.drawImage(sprite, sx, sy, sw, sh, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
     ctx.restore();
     return true;
 }
