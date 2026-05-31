@@ -1,1758 +1,611 @@
-* {
-    box-sizing: border-box;
-}
-
-body {
-    margin: 0;
-    background: #161616;
-    color: white;
-    font-family: Arial, sans-serif;
-    display: flex;
-    justify-content: center;
-    align-items: flex-start;
-    padding: 6px;
-    overflow: hidden;
-}
-
-#gameWrapper {
-    width: min(100vw, 1700px);
-    height: calc(100vh - 12px);
-    text-align: center;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-}
-
-h1 {
-    margin: 0 0 5px;
-    font-size: clamp(18px, 2.3vh, 28px);
-    line-height: 1.05;
-    flex: 0 0 auto;
-}
-
-#gameArea {
-    height: 100%;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-}
-
-#gameArea.hidden {
-    display: none !important;
-}
-
-#menu {
-    background: #242424;
-    padding: 30px;
-    border-radius: 14px;
-    border: 2px solid #555;
-}
-
-#menu p {
-    color: #ccc;
-}
-
-.recordText {
-    font-size: 18px;
-    color: #ffe28a !important;
-}
-
-button {
-    border: none;
-    border-radius: 8px;
-    background: #6d4aff;
-    color: white;
-    font-size: 14px;
-    cursor: pointer;
-    transition: 0.15s;
-}
-
-button:hover {
-    background: #8b70ff;
-    transform: translateY(-1px);
-}
-
-button:disabled {
-    background: #444;
-    cursor: not-allowed;
-    transform: none;
-}
-
-#menu button,
-#gameOverScreen button,
-#waveSummaryPanel button {
-    padding: 11px 18px;
-    font-size: 15px;
-}
-
-#hud {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 5px;
-    background: #242424;
-    padding: 6px 8px;
-    border-radius: 10px;
-    margin-bottom: 0;
-    font-size: clamp(11px, 1.45vh, 14px);
-    flex: 0 0 auto;
-}
-
-#hud span {
-    min-width: 96px;
-    line-height: 1.15;
-}
-
-#abilityBar {
-    display: flex;
-    gap: 5px;
-    justify-content: center;
-    margin-bottom: 0;
-    flex-wrap: nowrap;
-    flex: 0 0 auto;
-}
-
-.abilitySlot {
-    background: #242424;
-    border: 1px solid #555;
-    border-radius: 8px;
-    padding: 5px 6px;
-    min-width: 0;
-    flex: 1 1 0;
-    font-size: clamp(10px, 1.25vh, 12px);
-    line-height: 1.1;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.abilitySlot.ready {
-    border-color: #73ff9f;
-    color: #73ff9f;
-}
-
-.abilitySlot.cooldown {
-    border-color: #ffe28a;
-    color: #ffe28a;
-}
-
-.abilitySlot.locked {
-    border-color: #555;
-    color: #777;
-}
-
-#inventoryBar {
-    background: linear-gradient(180deg, #202020, #171717);
-    border: 1px solid #454545;
-    border-radius: 10px;
-    padding: 4px 6px;
-    margin-bottom: 0;
-    box-shadow: inset 0 0 18px rgba(0, 0, 0, 0.28);
-    flex: 0 0 auto;
-}
-
-.inventoryHeader {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    margin-bottom: 3px;
-    color: #ffe28a;
-    font-size: clamp(10px, 1.25vh, 12px);
-}
-
-#inventoryCooldownText {
-    color: #cfcfcf;
-    font-weight: normal;
-}
-
-.inventorySlots {
-    display: flex;
-    justify-content: center;
-    gap: 5px;
-    flex-wrap: nowrap;
-}
-
-.inventorySlotButton {
-    --potion-color: #9be7ff;
-    position: relative;
-    overflow: hidden;
-    width: 68px;
-    min-height: 42px;
-    padding: 4px 4px 3px;
-    background: radial-gradient(circle at top, rgba(255, 255, 255, 0.08), rgba(25, 25, 25, 0.95));
-    border: 1px solid #5e5e5e;
-    border-radius: 12px;
-    display: grid;
-    grid-template-rows: 14px 1fr 12px;
-    justify-items: center;
-    align-items: center;
-    text-align: center;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
-}
-
-.inventorySlotButton::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: conic-gradient(rgba(0, 0, 0, 0.64) var(--cooldown, 0deg), transparent 0deg);
-    opacity: 0;
-    pointer-events: none;
-    z-index: 3;
-}
-
-.inventorySlotButton.cooldown::after {
-    opacity: 1;
-}
-
-.inventorySlotButton.empty {
-    color: #777;
-    background: rgba(12, 12, 12, 0.55);
-    border: 1px dashed #555;
-    box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.45);
-}
-
-.inventorySlotButton:disabled {
-    transform: none;
-}
-
-.inventorySlotButton:not(.empty):hover {
-    border-color: var(--potion-color);
-    box-shadow: 0 0 12px color-mix(in srgb, var(--potion-color) 42%, transparent);
-}
-
-.inventoryPotionDot,
-.inventoryEmptyDot {
-    width: 13px;
-    height: 13px;
-    border-radius: 50%;
-    z-index: 1;
-}
-
-.inventoryPotionDot {
-    background: var(--potion-color);
-    border: 2px solid rgba(255, 255, 255, 0.62);
-    box-shadow: 0 0 10px var(--potion-color), inset 0 0 8px rgba(255, 255, 255, 0.35);
-}
-
-.inventoryEmptyDot {
-    border: 2px solid #555;
-    background: transparent;
-}
-
-.inventoryName,
-.inventoryQty {
-    z-index: 1;
-    line-height: 1.05;
-}
-
-.inventoryName {
-    max-width: 62px;
-    font-size: 9px;
-    font-weight: bold;
-    white-space: normal;
-}
-
-.inventoryQty {
-    min-width: 18px;
-    padding: 0 5px;
-    border-radius: 999px;
-    background: #101010;
-    border: 1px solid #444;
-    font-size: 10px;
-    color: #9be7ff;
-}
-
-.inventorySlotButton.empty .inventoryQty {
-    color: #777;
-}
-
-#inventoryBar small {
-    display: block;
-    margin-top: 6px;
-    color: #aaa;
-    font-size: 10px;
-}
-
-
-#playStage {
-    position: relative;
-    flex: 1 1 auto;
-    min-height: 0;
-    width: min(100%, calc((100vh - 155px) * 2));
-    max-height: calc(100vh - 155px);
-    aspect-ratio: 2 / 1;
-    margin: 0 auto;
-}
-
-canvas {
-    width: 100%;
-    height: 100%;
-    image-rendering: auto;
-    background: #2e3b2e;
-    border: 3px solid #555;
-    border-radius: 10px;
-    cursor: crosshair;
-    display: block;
-}
-
-#redFlash {
-    pointer-events: none;
-    position: absolute;
-    inset: 3px;
-    border-radius: 8px;
-    background: rgba(255, 0, 0, 0);
-}
-
-#bossBarBox {
-    position: absolute;
-    top: 12px;
-    left: 160px;
-    width: 580px;
-    background: rgba(0, 0, 0, 0.65);
-    padding: 8px;
-    border-radius: 10px;
-    border: 1px solid #ff7b00;
-}
-
-#bossNameText {
-    font-weight: bold;
-    color: #ffb36b;
-    margin-bottom: 4px;
-}
-
-#bossBarBg {
-    height: 16px;
-    background: #4a1111;
-    border-radius: 8px;
-    overflow: hidden;
-}
-
-#bossBarFill {
-    height: 100%;
-    width: 100%;
-    background: #ff7b00;
-}
-
-#centerMessage {
-    position: absolute;
-    top: 165px;
-    left: 0;
-    width: 100%;
-    font-size: 54px;
-    font-weight: bold;
-    color: #ffb36b;
-    text-shadow: 0 0 18px black;
-    pointer-events: none;
-}
-
-.overlayPanel {
-    position: absolute;
-    inset: 10px;
-    background: rgba(20, 20, 20, 0.96);
-    border: 2px solid #777;
-    border-radius: 14px;
-    padding: 12px;
-    overflow-y: auto;
-}
-
-.summaryGrid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 6px;
-    margin: 18px auto;
-    max-width: 600px;
-}
-
-.summaryGrid p {
-    background: #181818;
-    padding: 12px;
-    border-radius: 8px;
-    margin: 0;
-}
-
-.shopTabs {
-    display: flex;
-    gap: 8px;
-    justify-content: center;
-    flex-wrap: wrap;
-    margin: 8px 0 14px;
-    position: sticky;
-    top: 0;
-    z-index: 3;
-    background: rgba(20, 20, 20, 0.96);
-    padding: 8px 0;
-}
-
-.shopTabButton {
-    padding: 10px 13px;
-    background: #242424;
-    border: 1px solid #555;
-    min-width: 112px;
-}
-
-.shopTabButton.active {
-    background: #6d4aff;
-    border-color: #a998ff;
-    box-shadow: 0 0 12px rgba(109, 74, 255, 0.45);
-}
-
-.shopSections {
-    display: block;
-}
-
-.shopSection {
-    display: none;
-    background: #181818;
-    border: 1px solid #444;
-    border-radius: 12px;
-    padding: 14px;
-    max-width: 760px;
-    margin: 0 auto;
-}
-
-.shopSection.active {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-    gap: 10px;
-    align-items: stretch;
-}
-
-.shopSection h3 {
-    grid-column: 1 / -1;
-    margin-top: 0;
-    color: #ffe28a;
-    border-bottom: 1px solid #444;
-    padding-bottom: 8px;
-}
-
-.shopSection button {
-    width: 100%;
-    min-height: 76px;
-    margin-bottom: 0;
-    padding: 8px;
-}
-
-.towerSlotsPanel {
-    grid-column: 1 / -1;
-}
-
-.abilitiesShop button,
-.towerShopWide > button,
-.barricadeShop button {
-    text-align: center;
-}
-
-.shopSection small {
-    color: #d0d0d0;
-}
-
-.abilitiesShop h3 {
-    color: #9be7ff;
-}
-
-.nextWaveButton,
-.repeatWaveButton {
-    margin-top: 12px;
-    width: 100%;
-    padding: 13px;
-}
-
-.nextWaveButton {
-    background: #2eaf5d !important;
-}
-
-.nextWaveButton:hover {
-    background: #39c96f !important;
-}
-
-.repeatWaveButton {
-    background: #8a5a2f !important;
-}
-
-.repeatWaveButton:hover {
-    background: #a96f3b !important;
-}
-
-#gameOverScreen {
-    background: rgba(51, 28, 28, 0.97);
-    border-color: #a33;
-}
-
-#info {
-    color: #ccc;
-}
-
-.hidden {
-    display: none !important;
-}
-
-.smallHudButton {
-    padding: 5px 9px;
-    min-width: 76px;
-    background: #333;
-    border: 1px solid #777;
-}
-
-.smallHudButton:hover {
-    background: #555;
-}
-
-.audioSettingsBox,
-.visualSettingsBox {
-    background: #181818;
-    border: 1px solid #444;
-    border-radius: 12px;
-    padding: 14px;
-    max-width: 420px;
-    margin: 18px auto;
-    text-align: left;
-}
-
-.audioSettingsBox h3,
-.visualSettingsBox h3 {
-    text-align: center;
-    margin-top: 0;
-    color: #9be7ff;
-}
-
-.audioSettingsBox label,
-.visualSettingsBox label {
-    display: block;
-    margin: 10px 0;
-    color: #ddd;
-}
-
-.audioSettingsBox input[type="range"],
-.visualSettingsBox input[type="range"] {
-    width: 100%;
-    margin-top: 6px;
-}
-
-.pauseAudioBox,
-.pauseVisualBox {
-    max-width: 500px;
-}
-
-.pauseButtons {
-    display: grid;
-    gap: 12px;
-    max-width: 420px;
-    margin: 20px auto;
-}
-
-.pauseButtons button {
-    padding: 13px;
-    font-size: 16px;
-}
-
-.dangerButton {
-    background: #b93030 !important;
-}
-
-.dangerButton:hover {
-    background: #e04444 !important;
-}
-
-.confirmBox {
-    background: #2a1616;
-    border: 1px solid #b93030;
-    border-radius: 12px;
-    padding: 15px;
-    max-width: 500px;
-    margin: 15px auto;
-}
-
-.confirmBox button {
-    padding: 10px 14px;
-    margin: 6px;
-}
-
-#autoModeBtn.autoActive {
-    background: #2eaf5d;
-    border-color: #73ff9f;
-}
-
-#autoModeBtn.autoActive:hover {
-    background: #39c96f;
-}
-
-#speedBtn {
-    background: #30405c;
-}
-
-#speedBtn:hover {
-    background: #40577e;
-}
-.controlsSettingsBox {
-    background: #181818;
-    border: 1px solid #444;
-    border-radius: 12px;
-    padding: 14px;
-    max-width: 520px;
-    margin: 18px auto;
-    text-align: left;
-}
-
-.controlsSettingsBox h3 {
-    text-align: center;
-    margin-top: 0;
-    color: #ffe28a;
-}
-
-.controlsHint {
-    color: #bbb;
-    font-size: 13px;
-    text-align: center;
-    margin-top: -4px;
-}
-
-.controlsGrid {
-    display: grid;
-    grid-template-columns: 1fr 95px;
-    gap: 8px;
-    align-items: center;
-}
-
-.controlsGrid span {
-    color: #ddd;
-    font-size: 14px;
-}
-
-.controlKeyButton {
-    min-height: 34px;
-    padding: 7px 10px;
-    background: #30405c;
-    border: 1px solid #7085b8;
-    font-weight: bold;
-}
-
-.controlKeyButton.listening {
-    background: #9d7d23;
-    border-color: #ffe28a;
-}
-
-.resetControlsBtn {
-    width: 100%;
-    margin-top: 12px;
-    padding: 10px;
-    background: #333;
-    border: 1px solid #777;
-}
-
-.barricadeShop h3 {
-    color: #d6a05f;
-}
-
-@media (max-width: 900px) {
-    .shopTabButton {
-        min-width: 96px;
-        padding: 9px 10px;
-    }
-}
-
-.towerShopWide button {
-    min-height: 70px;
-}
-
-.towerSlotsPanel {
-    margin-top: 10px;
-    display: grid;
-    gap: 8px;
-    max-height: 280px;
-    overflow-y: auto;
-    padding-right: 4px;
-}
-
-.towerSlotCard {
-    background: #101010;
-    border: 1px solid #555;
-    border-radius: 10px;
-    padding: 8px;
-    text-align: left;
-    font-size: 10px;
-}
-
-.towerSlotCard button {
-    width: 31%;
-    min-height: auto;
-    margin: 6px 1% 0 0;
-    padding: 6px;
-    font-size: 10px;
-}
-
-.towerSlotEmpty {
-    color: #aaa;
-    font-size: 10px;
-    margin: 6px 0 0;
-}
-
-.dangerMiniButton {
-    background: #8d2c2c !important;
-}
-
-.repeatWaveButton {
-    margin-top: 12px;
-    width: 100%;
-    padding: 12px;
-    background: #5a3d22 !important;
-}
-
-.repeatWaveButton:hover {
-    background: #7b5430 !important;
-}
-
-
-.playerNameBox {
-    background: #181818;
-    border: 1px solid #444;
-    border-radius: 12px;
-    padding: 16px;
-    max-width: 420px;
-    margin: 18px auto;
-    text-align: left;
-}
-
-.playerNameBox label {
-    display: block;
-    margin-bottom: 8px;
-    color: #ffe28a;
-    font-weight: bold;
-}
-
-.playerNameBox input,
-.consoleRow input {
-    width: 100%;
-    border: 1px solid #555;
-    border-radius: 8px;
-    background: #111;
-    color: white;
-    padding: 12px;
-    font-size: 16px;
-    outline: none;
-}
-
-.playerNameBox input:focus,
-.consoleRow input:focus {
-    border-color: #8b70ff;
-    box-shadow: 0 0 0 2px rgba(109, 74, 255, 0.22);
-}
-
-.consolePanel {
-    z-index: 9999;
-    max-width: 720px;
-    margin: 0 auto;
-    text-align: left;
-}
-
-.consolePanel h2 {
-    text-align: center;
-}
-
-.consoleHint {
-    color: #ccc;
-    text-align: center;
-}
-
-.consoleRow {
-    display: grid;
-    grid-template-columns: 1fr 130px;
-    gap: 8px;
-    margin: 14px 0;
-}
-
-.consoleRow button,
-#closeConsoleBtn {
-    padding: 11px 14px;
-}
-
-.consoleLog {
-    min-height: 120px;
-    max-height: 220px;
-    overflow-y: auto;
-    background: #0d0d0d;
-    border: 1px solid #444;
-    border-radius: 10px;
-    padding: 12px;
-    color: #9be7ff;
-    font-family: Consolas, monospace;
-    font-size: 14px;
-    line-height: 1.45;
-    white-space: pre-wrap;
-    margin-bottom: 12px;
-}
-
-@media (max-width: 700px) {
-    .consoleRow {
-        grid-template-columns: 1fr;
-    }
-}
-
-
-
-
-.leaderboardBox {
-    background: rgba(12, 12, 18, 0.82);
-    border: 1px solid #4f4f76;
-    border-radius: 12px;
-    padding: 12px;
-    max-width: 620px;
-    margin: 18px auto 0;
-    text-align: left;
-}
-
-.leaderboardHeader {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    margin-bottom: 8px;
-}
-
-.leaderboardHeader h3 {
-    margin: 0;
-    color: #ffe28a;
-}
-
-.leaderboardStatus {
-    color: #bfc1d9;
-    font-size: 13px;
-    margin: 6px 0 10px;
-}
-
-.leaderboardList {
-    margin: 0;
-    padding-left: 26px;
-    display: grid;
-    gap: 6px;
-}
-
-.leaderboardList li {
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 8px;
-    padding: 8px 10px;
-}
-
-.leaderboardEntry {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    align-items: center;
-}
-
-.leaderboardName {
-    font-weight: bold;
-    color: #ffffff;
-}
-
-.leaderboardMeta {
-    color: #bfc1d9;
-    font-size: 10px;
-}
-
-.leaderboardScore {
-    color: #73ff9f;
-    font-weight: bold;
-    white-space: nowrap;
-}
-
-.gameOverLeaderboardBox {
-    max-width: 680px;
-}
-
-/* Estado visual de tienda: no alcanza la plata */
-.shopSection button.cantAfford,
-.towerSlotCard button.cantAfford,
-button.cantAfford {
-    background: #303030 !important;
-    border: 1px solid #555 !important;
-    color: #8f8f8f !important;
-    opacity: 0.72;
-    filter: grayscale(1);
-    box-shadow: none !important;
-}
-
-.shopSection button.cantAfford small,
-.towerSlotCard button.cantAfford small,
-button.cantAfford small {
-    color: #7f7f7f !important;
-}
-
-/* =========================================================
-   Menú inicial compacto v5
-   Objetivo: que Jugar/Continuar, nombre y leaderboard entren
-   en pantalla sin que los beta testers tengan que scrollear.
-   ========================================================= */
-body {
-    padding-top: 8px;
-}
-
-h1 {
-    margin: 0 0 6px;
-    font-size: clamp(24px, 3vh, 36px);
-    line-height: 1.05;
-}
-
-#menu {
-    width: min(96vw, 1120px);
-    min-height: 0;
-    max-height: calc(100vh - 58px);
-    margin: 0 auto;
-    padding: clamp(14px, 2vh, 22px);
-    display: grid;
-    grid-template-columns: minmax(280px, 410px) minmax(360px, 1fr);
-    grid-template-areas:
-        "menuTitle leaderboard"
-        "menuDesc leaderboard"
-        "menuRecord leaderboard"
-        "menuName leaderboard"
-        "menuPlay leaderboard";
-    gap: 8px 18px;
-    align-items: start;
-    overflow: hidden;
-}
-
-#menu h2 {
-    grid-area: menuTitle;
-    margin: 0;
-    font-size: clamp(20px, 2.5vh, 28px);
-    line-height: 1.1;
-}
-
-#menu > p:not(.recordText) {
-    grid-area: menuDesc;
-    margin: 0;
-    font-size: 14px;
-    line-height: 1.35;
-}
-
-#menu .recordText {
-    grid-area: menuRecord;
-    margin: 4px 0;
-    font-size: 16px;
-}
-
-#menu .playerNameBox {
-    grid-area: menuName;
-    width: 100%;
-    max-width: none;
-    margin: 4px 0 0;
-    padding: 12px;
-}
-
-#menu .playerNameBox label {
-    margin-bottom: 6px;
-    font-size: 14px;
-}
-
-#menu .playerNameBox input {
-    padding: 10px;
-    font-size: 15px;
-}
-
-#startGameBtn {
-    grid-area: menuPlay;
-    width: 100%;
-    min-height: 52px;
-    margin-top: 2px;
-    font-size: 20px !important;
-    font-weight: bold;
-    letter-spacing: 0.2px;
-}
-
-#menu .menuLeaderboardBox {
-    grid-area: leaderboard;
-    width: 100%;
-    max-width: none;
-    height: 100%;
-    min-height: 0;
-    max-height: calc(100vh - 98px);
-    margin: 0;
-    padding: 10px;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-}
-
-#menu .leaderboardHeader {
-    margin-bottom: 6px;
-}
-
-#menu .leaderboardHeader h3 {
-    font-size: 17px;
-}
-
-#menu .leaderboardStatus {
-    margin: 4px 0 8px;
-    font-size: 10px;
-}
-
-#menu .leaderboardList {
-    min-height: 0;
-    overflow-y: auto;
-    padding-left: 22px;
-    gap: 5px;
-    scrollbar-width: thin;
-}
-
-#menu .leaderboardList li {
-    padding: 7px 9px;
-}
-
-#menu .leaderboardEntry {
-    gap: 8px;
-}
-
-#menu button.smallHudButton {
-    padding: 7px 10px;
-    min-width: 86px;
-    font-size: 13px;
-}
-
-@media (max-width: 860px) {
-    #menu {
-        max-height: none;
-        overflow: visible;
-        grid-template-columns: 1fr;
-        grid-template-areas:
-            "menuTitle"
-            "menuDesc"
-            "menuRecord"
-            "menuName"
-            "menuPlay"
-            "leaderboard";
-    }
-
-    #menu .menuLeaderboardBox {
-        max-height: 34vh;
-    }
-}
-
-@media (max-height: 660px) and (min-width: 861px) {
-    h1 {
-        font-size: 24px;
-        margin-bottom: 4px;
-    }
-
-    #menu {
-        max-height: calc(100vh - 42px);
-        padding: 12px;
-        gap: 6px 14px;
-    }
-
-    #menu h2 {
-        font-size: 21px;
-    }
-
-    #menu > p:not(.recordText) {
-        font-size: 13px;
-        line-height: 1.25;
-    }
-
-    #menu .playerNameBox {
-        padding: 10px;
-    }
-
-    #startGameBtn {
-        min-height: 46px;
-    }
-
-    #menu .menuLeaderboardBox {
-        max-height: calc(100vh - 70px);
-    }
-}
-
-/* Fix inventario: evita que los spans internos intercepten el hover/click del botón. */
-.inventorySlotButton > * {
-    pointer-events: none;
-}
-
-.inventorySlotButton.cooldown {
-    cursor: wait;
-}
-
-.towerSlotUpgradeButton {
-    grid-column: 1 / -1;
-    background: linear-gradient(135deg, #4b348f, #2f6d55) !important;
-    border: 1px solid #9be7ff;
-    box-shadow: 0 0 14px rgba(155, 231, 255, 0.16);
-}
-
-.towerSlotUpgradeButton:hover {
-    background: linear-gradient(135deg, #6042b5, #3a8a6b) !important;
-}
-
-.barricadeSlotChoice {
-    grid-column: 1 / -1;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    background: #202020;
-    border: 1px solid #444;
-    border-radius: 10px;
-    padding: 10px;
-    color: #ddd;
-}
-
-.barricadeSlotChoice span {
-    color: #ffe28a;
-    font-weight: bold;
-}
-
-.barricadeSlotChoiceButton {
-    width: auto !important;
-    min-height: 36px !important;
-    padding: 8px 12px !important;
-    background: #303030;
-    border: 1px solid #666;
-}
-
-.barricadeSlotChoiceButton.active {
-    background: #2eaf5d;
-    border-color: #73ff9f;
-    box-shadow: 0 0 10px rgba(115, 255, 159, 0.35);
-}
-
-
-.shopHudButton {
-    background: #6d4aff;
-    border-color: #a998ff;
-}
-
-.shopHudButton.shopOpen {
-    background: #2eaf5d;
-    border-color: #73ff9f;
-}
-
-.shopCloseButton {
-    position: sticky;
-    top: 8px;
-    float: right;
-    z-index: 5;
-    padding: 8px 12px;
-    background: #333;
-    border: 1px solid #777;
-}
-
-.shopCloseButton:hover {
-    background: #555;
-}
-
-
-@media (max-height: 760px) {
-    body { padding: 4px; }
-    #gameWrapper { height: calc(100vh - 8px); }
-    h1 { font-size: 18px; margin-bottom: 3px; }
-    #hud { padding: 4px 6px; gap: 4px; }
-    #hud span { min-width: 86px; }
-    .smallHudButton { padding: 4px 7px; min-width: 68px; }
-    #abilityBar { gap: 4px; }
-    .abilitySlot { padding: 4px 5px; }
-    #inventoryBar { padding: 3px 5px; }
-    .inventoryHeader strong { display: none; }
-    .inventorySlotButton { width: 58px; min-height: 34px; grid-template-rows: 10px 1fr 10px; }
-    .inventoryPotionDot, .inventoryEmptyDot { width: 10px; height: 10px; }
-    .inventoryName { font-size: 8px; max-width: 54px; }
-    .inventoryQty { font-size: 9px; }
-    #playStage { width: min(100%, calc((100vh - 125px) * 2)); max-height: calc(100vh - 125px); }
-}
-
-@media (max-height: 620px) {
-    #inventoryBar { display: none; }
-    #playStage { width: min(100%, calc((100vh - 95px) * 2)); max-height: calc(100vh - 95px); }
-}
-
-@media (max-width: 900px) {
-    #abilityBar { flex-wrap: wrap; }
-    .abilitySlot { flex-basis: calc(33.33% - 6px); }
-    #playStage { width: 100%; max-height: calc(100vw / 2); }
-}
-
-
-/* === UI dentro de la ventana del juego === */
-#gameWrapper > h1 {
-    display: none;
-}
-
-#gameArea {
-    height: 100%;
-    min-height: 0;
-    display: block;
-}
-
-#playStage {
-    width: min(100vw - 12px, calc((100vh - 12px) * 2));
-    max-height: calc(100vh - 12px);
-    height: min(calc(100vh - 12px), calc((100vw - 12px) / 2));
-    aspect-ratio: 2 / 1;
-    margin: 0 auto;
-    overflow: hidden;
-}
-
-canvas {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-}
-
-#hud.inGameHud {
-    position: absolute;
-    top: 8px;
-    left: 8px;
-    right: 8px;
-    z-index: 20;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 5px;
-    padding: 6px 8px;
-    border-radius: 12px;
-    background: rgba(14, 14, 18, 0.78);
-    border: 1px solid rgba(255, 255, 255, 0.13);
-    backdrop-filter: blur(5px);
-    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
-    font-size: clamp(10px, 1.2vw, 13px);
-}
-
-#hud.inGameHud span {
-    min-width: auto;
-    padding: 3px 6px;
-    border-radius: 999px;
-    background: rgba(0, 0, 0, 0.24);
-    white-space: nowrap;
-}
-
-#hud.inGameHud .smallHudButton {
-    min-width: auto;
-    padding: 5px 8px;
-    font-size: clamp(10px, 1.15vw, 12px);
-}
-
-.constructionHudButton {
-    position: absolute;
-    top: 58px;
-    right: 12px;
-    z-index: 22;
-    padding: 8px 12px;
-    background: #8a5a2f;
-    border: 1px solid #d19a5f;
-    box-shadow: 0 4px 14px rgba(0,0,0,.35);
-}
-
-.constructionHudButton:hover,
-.constructionHudButton.constructionOpen {
-    background: #a96f3b;
-}
-
-#bottomGameUi {
-    position: absolute;
-    left: 8px;
-    right: 8px;
-    bottom: 8px;
-    z-index: 20;
-    display: grid;
-    grid-template-columns: minmax(360px, 1.25fr) minmax(250px, 0.75fr);
-    gap: 8px;
-    align-items: end;
-    pointer-events: none;
-}
-
-#bottomGameUi #abilityBar,
-#bottomGameUi #inventoryBar {
-    pointer-events: auto;
-    margin: 0;
-    background: rgba(14, 14, 18, 0.78);
-    border: 1px solid rgba(255,255,255,0.13);
-    backdrop-filter: blur(5px);
-    box-shadow: 0 4px 18px rgba(0,0,0,.35);
-}
-
-#bottomGameUi #abilityBar {
-    padding: 6px;
-    border-radius: 12px;
-}
-
-#bottomGameUi #inventoryBar {
-    border-radius: 12px;
-}
-
-#inventoryBar small {
-    display: none;
-}
-
-#shop:not(.constructionMode) .shopTabButton[data-shop-tab="barricades"],
-#shop:not(.constructionMode) .shopTabButton[data-shop-tab="towers"] {
-    display: none;
-}
-
-#shop.constructionMode .shopTabButton[data-shop-tab="stats"],
-#shop.constructionMode .shopTabButton[data-shop-tab="consumables"],
-#shop.constructionMode .shopTabButton[data-shop-tab="abilities"] {
-    display: none;
-}
-
-#shop.constructionMode {
-    border-color: #d19a5f;
-}
-
-#shop.constructionMode #shopTitle {
-    color: #ffe28a;
-}
-
-#shopTitle {
-    margin-top: 0;
-}
-
-#bossBarBox {
-    z-index: 18;
-    top: 54px;
-}
-
-#centerMessage,
-#redFlash,
-.overlayPanel,
-#bossBarBox {
-    z-index: 25;
-}
-
-#redFlash { z-index: 12; }
-#centerMessage { z-index: 19; }
-#bossBarBox { z-index: 18; }
-.overlayPanel { z-index: 30; }
-
-@media (max-width: 980px), (max-height: 620px) {
-    #hud.inGameHud {
-        justify-content: flex-start;
-        gap: 3px;
-        padding: 4px 5px;
-    }
-
-    #hud.inGameHud span {
-        padding: 2px 4px;
-        font-size: 10px;
-    }
-
-    #hud.inGameHud .smallHudButton {
-        padding: 4px 5px;
-        font-size: 10px;
-    }
-
-    .constructionHudButton {
-        top: 50px;
-        right: 8px;
-        padding: 6px 8px;
-        font-size: 11px;
-    }
-
-    #bottomGameUi {
-        grid-template-columns: 1fr;
-        gap: 4px;
-        bottom: 5px;
-    }
-
-    #bottomGameUi #inventoryBar {
-        display: none;
-    }
-
-    .abilitySlot {
-        font-size: 10px;
-        padding: 4px 5px;
-    }
-}
-
-/* === Ajuste final: todo dentro de una sola pantalla sin estirar === */
-html,
-body {
-    width: 100%;
-    height: 100%;
-    min-height: 100%;
-    overflow: hidden;
-}
-
-body {
-    padding: 6px;
-    align-items: center;
-}
-
-#gameWrapper {
-    width: 100%;
-    height: calc(100dvh - 12px);
-    max-width: none;
-    max-height: calc(100dvh - 12px);
-    overflow: hidden;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-#gameArea {
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-}
-
-#playStage {
-    width: min(calc(100vw - 12px), calc((100dvh - 12px) * 2));
-    height: min(calc(100dvh - 12px), calc((100vw - 12px) / 2));
-    max-width: calc(100vw - 12px);
-    max-height: calc(100dvh - 12px);
-    aspect-ratio: 2 / 1;
-    margin: 0 auto;
-    flex: none;
-    transform: none;
-}
-
-canvas {
-    width: 100% !important;
-    height: 100% !important;
-}
-
-#hud.inGameHud {
-    max-height: 76px;
-    overflow: hidden;
-    gap: clamp(2px, 0.45vw, 5px);
-    padding: clamp(4px, 0.55vw, 7px);
-    font-size: clamp(9px, 0.9vw, 13px);
-}
-
-#hud.inGameHud span {
-    padding: 2px 5px;
-}
-
-#hud.inGameHud .smallHudButton {
-    padding: 4px 7px;
-    font-size: clamp(9px, 0.85vw, 12px);
-}
-
-#bottomGameUi {
-    grid-template-columns: minmax(320px, 1.2fr) minmax(220px, 0.8fr);
-    gap: clamp(4px, 0.6vw, 8px);
-}
-
-#bottomGameUi #abilityBar,
-#bottomGameUi #inventoryBar {
-    max-height: 82px;
-    overflow: hidden;
-}
-
-#bottomGameUi #abilityBar {
-    gap: 4px;
-}
-
-#bottomGameUi .abilitySlot {
-    padding: 4px 5px;
-    font-size: clamp(9px, 0.82vw, 12px);
-}
-
-#bottomGameUi .inventorySlotButton {
-    width: clamp(48px, 4.7vw, 64px);
-    min-height: clamp(32px, 4.4vh, 42px);
-}
-
-#bottomGameUi .inventoryHeader {
-    margin-bottom: 2px;
-    font-size: clamp(9px, 0.8vw, 11px);
-}
-
-.constructionHudButton {
-    top: clamp(46px, 5.6vh, 58px);
-    right: clamp(8px, 0.8vw, 12px);
-    padding: 6px 10px;
-    font-size: clamp(10px, 0.9vw, 13px);
-}
-
-@media (max-height: 760px) {
-    body { padding: 4px; }
-    #gameWrapper {
-        height: calc(100dvh - 8px);
-        max-height: calc(100dvh - 8px);
-    }
-
-    #playStage {
-        width: min(calc(100vw - 8px), calc((100dvh - 8px) * 2));
-        height: min(calc(100dvh - 8px), calc((100vw - 8px) / 2));
-        max-width: calc(100vw - 8px);
-        max-height: calc(100dvh - 8px);
-    }
-
-    #hud.inGameHud {
-        max-height: 58px;
-        justify-content: flex-start;
-    }
-
-    #hud.inGameHud span:nth-of-type(3) {
-        display: none;
-    }
-
-    #bottomGameUi #inventoryBar {
-        display: none;
-    }
-
-    #bottomGameUi {
-        grid-template-columns: 1fr;
-    }
-}
-
-@media (max-height: 560px), (max-width: 820px) {
-    #hud.inGameHud span {
-        font-size: 9px;
-        padding: 1px 4px;
-    }
-
-    #hud.inGameHud .smallHudButton {
-        padding: 3px 5px;
-        font-size: 9px;
-    }
-
-    .constructionHudButton {
-        top: 42px;
-        padding: 5px 7px;
-    }
-
-    #bottomGameUi {
-        bottom: 4px;
-        left: 5px;
-        right: 5px;
-    }
-}
-
-
-.cancelBuildButton {
-    position: absolute;
-    right: 12px;
-    top: 52px;
-    z-index: 8;
-    background: #9b3f32 !important;
-    border: 1px solid #ff9a8f !important;
-    min-width: 190px;
-    padding: 8px 10px;
-    box-shadow: 0 3px 14px rgba(0, 0, 0, 0.35);
-}
-
-.cancelBuildButton:hover {
-    background: #c44f40 !important;
-}
-
-
-.structurePanel {
-    position: absolute;
-    top: 72px;
-    right: 12px;
-    width: 250px;
-    max-width: calc(100% - 24px);
-    background: rgba(13, 13, 16, 0.92);
-    border: 1px solid rgba(255, 226, 138, 0.65);
-    border-radius: 12px;
-    padding: 10px;
-    z-index: 16;
-    text-align: left;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-    backdrop-filter: blur(4px);
-}
-
-.structurePanelHeader {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    color: #ffe28a;
-    margin-bottom: 8px;
-}
-
-#closeStructurePanelBtn {
-    width: 28px;
-    height: 28px;
-    min-height: 0;
-    padding: 0;
-    border-radius: 8px;
-    background: #3a2b2b;
-    font-size: 18px;
-    line-height: 1;
-}
-
-.structurePanelInfo {
-    color: #ddd;
-    font-size: 12px;
-    line-height: 1.35;
-    margin-bottom: 9px;
-}
-
-.structurePanelActions {
-    display: grid;
-    gap: 7px;
-}
-
-.structurePanelActions button {
-    min-height: 34px;
-    padding: 7px 9px;
-    font-size: 12px;
-}
-
-@media (max-height: 760px) {
-    .structurePanel {
-        top: 58px;
-        width: 220px;
-        padding: 8px;
-    }
-    .structurePanelInfo { font-size: 11px; }
-    .structurePanelActions button { min-height: 30px; padding: 5px 7px; }
-}
-
-.buildPhaseButton {
-    position: absolute;
-    top: 54px;
-    right: 118px;
-    z-index: 12;
-    background: rgba(46, 175, 93, 0.94);
-    border-color: #73ff9f;
-    box-shadow: 0 0 12px rgba(46, 175, 93, 0.45);
-}
-
-.buildPhaseButton:hover {
-    background: rgba(57, 201, 111, 0.98);
-}
-
-@media (max-height: 720px) {
-    .buildPhaseButton {
-        top: 46px;
-        right: 104px;
-        padding: 5px 9px;
-        font-size: 12px;
-    }
-}
-
-.leaderboardBeginnerTag {
-    color: #ff5a5a;
-    font-size: 10px;
-    font-weight: 700;
-    margin-left: 4px;
-    text-transform: lowercase;
-}
-
-
-.titanRewardPanel {
-    position: fixed;
-    inset: 0;
-    z-index: 9999;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 12px;
-    background: rgba(8, 4, 18, 0.82);
-    color: white;
-    text-align: center;
-    backdrop-filter: blur(4px);
-}
-
-.titanRewardPanel h2 {
-    margin: 0;
-    color: #d9a8ff;
-    text-shadow: 0 0 14px #7a21c9;
-}
-
-.titanRewardPanel p {
-    margin: 0 0 8px;
-    color: #ddd;
-}
-
-.titanRewardOptions {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(160px, 230px));
-    gap: 14px;
-    max-width: 760px;
-    width: min(92vw, 760px);
-}
-
-.titanRewardOptions button {
-    min-height: 150px;
-    padding: 14px;
-    border: 2px solid #8d45d7;
-    background: radial-gradient(circle at top, rgba(182,77,255,0.36), rgba(18,10,32,0.96));
-    color: white;
-    border-radius: 16px;
-    box-shadow: 0 0 18px rgba(182,77,255,0.38);
-}
-
-.titanRewardOptions button strong {
-    display: block;
-    font-size: 42px;
-    color: #f3d7ff;
-    line-height: 1;
-}
-
-.titanRewardOptions button span {
-    display: block;
-    margin-top: 8px;
-    font-weight: bold;
-    color: #ffe28a;
-}
-
-.titanRewardOptions button small {
-    display: block;
-    margin-top: 7px;
-    color: #ddd;
-    line-height: 1.25;
-}
-
-@media (max-width: 680px) {
-    .titanRewardOptions { grid-template-columns: 1fr; }
-}
-
-#autoRepeatWaveBtn.autoActive {
-    background: #8a5a2f;
-    border-color: #ffc46b;
-    box-shadow: 0 0 10px rgba(255, 196, 107, 0.35);
-}
-
-#autoRepeatWaveBtn.autoActive:hover {
-    background: #a96f3b;
-}
-
-/* =========================================================
-   Fix anti-selección azul / UX de combate
-   Evita que el HUD, botones y canvas queden seleccionados al clickear rápido.
-   ========================================================= */
-html,
-body,
-#gameWrapper,
-#gameArea,
-#playStage,
-#hud,
-#abilityBar,
-#inventoryBar,
-#bottomGameUi,
-.overlayPanel,
-.structurePanel,
-button,
-canvas {
-    -webkit-user-select: none;
-    user-select: none;
-    -webkit-tap-highlight-color: transparent;
-}
-
-canvas,
-button {
-    -webkit-user-drag: none;
-}
-
-button:focus,
-button:focus-visible,
-canvas:focus,
-canvas:focus-visible {
-    outline: none;
-}
-
-input,
-textarea {
-    -webkit-user-select: text;
-    user-select: text;
-}
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ardent Tower Defense</title>
+    <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+    <div id="gameWrapper">
+        <h1>Ardent Tower Defense</h1>
+
+        <div id="menu">
+            <h2>Sobreviví al asedio</h2>
+            <p>
+                Cada run arranca desde cero. Construí muros y torres,
+                sobreviví a oleadas desde todos los bordes y superá tu récord.
+            </p>
+
+            <p class="recordText">
+                Récord actual: <strong id="bestScoreMenuText">0</strong> puntos
+            </p>
+
+            <div class="audioSettingsBox hidden">
+                <h3>Audio</h3>
+
+                <label>
+                    <input type="checkbox" id="menuMusicToggle" checked>
+                    Música
+                </label>
+
+                <label>
+                    Volumen música
+                    <input type="range" id="menuMusicVolume" min="0" max="1" step="0.01" value="0.28">
+                </label>
+
+                <label>
+                    <input type="checkbox" id="menuSfxToggle" checked>
+                    Efectos
+                </label>
+
+                <label>
+                    Volumen efectos
+                    <input type="range" id="menuSfxVolume" min="0" max="1" step="0.01" value="0.28">
+                </label>
+            </div>
+
+            <div class="visualSettingsBox hidden">
+                <h3>Visual</h3>
+                <label>
+                    Tamaño del minimapa: <strong id="menuMinimapSizeText">82%</strong>
+                    <input type="range" id="menuMinimapSize" min="0.65" max="1.35" step="0.05" value="0.82">
+                </label>
+            </div>
+
+            <div class="controlsSettingsBox hidden">
+                <h3>Controles</h3>
+                <p class="controlsHint">Tocá una tecla para cambiarla. Si elegís una ya usada, se intercambian.</p>
+
+                <div class="controlsGrid">
+                    <span>Mover arriba</span>
+                    <button class="controlKeyButton" data-control="moveUp">W</button>
+
+                    <span>Mover abajo</span>
+                    <button class="controlKeyButton" data-control="moveDown">S</button>
+
+                    <span>Mover izquierda</span>
+                    <button class="controlKeyButton" data-control="moveLeft">A</button>
+
+                    <span>Mover derecha</span>
+                    <button class="controlKeyButton" data-control="moveRight">D</button>
+
+                    <span>Habilidad 1 · Bomba</span>
+                    <button class="controlKeyButton" data-control="bomb">1</button>
+
+                    <span>Habilidad 2 · Congelar</span>
+                    <button class="controlKeyButton" data-control="freeze">2</button>
+
+                    <span>Habilidad 3 · Tsunami</span>
+                    <button class="controlKeyButton" data-control="tsunami">3</button>
+
+                    <span>Habilidad 4 · Rayo</span>
+                    <button class="controlKeyButton" data-control="lightning">4</button>
+
+                    <span>Habilidad 5 · Meteorito</span>
+                    <button class="controlKeyButton" data-control="meteor">5</button>
+
+                    <span>Habilidad 6 · Eclipse</span>
+                    <button class="controlKeyButton" data-control="eclipse">6</button>
+                </div>
+
+                <button class="resetControlsBtn">Restaurar controles</button>
+            </div>
+
+            <div class="playerNameBox">
+                <label for="playerNameInput">Nombre del jugador</label>
+                <input id="playerNameInput" type="text" maxlength="18" placeholder="Tu nombre" autocomplete="off">
+            </div>
+
+            <button id="startGameBtn">Jugar</button>
+
+            <div class="leaderboardBox menuLeaderboardBox">
+                <div class="leaderboardHeader">
+                    <h3>Leaderboard global</h3>
+                    <button id="refreshLeaderboardBtn" class="smallHudButton" type="button">Actualizar</button>
+                </div>
+                <p id="leaderboardStatusText" class="leaderboardStatus">Cargando leaderboard...</p>
+                <ol id="leaderboardList" class="leaderboardList"></ol>
+            </div>
+        </div>
+
+        <div id="gameArea" class="hidden">
+            <div id="playStage">
+                <canvas id="gameCanvas" width="900" height="450"></canvas>
+
+                <div id="hud" class="inGameHud">
+                    <span>Wave: <strong id="waveText">1</strong></span>
+                    <span>Vida: <strong id="hpText">20/20</strong></span>
+                    <span>Barricada: <strong id="barricadeText">0/0</strong></span>
+                    <span>Monedas: <strong id="coinsText">0</strong></span>
+                    <span>Puntos: <strong id="scoreText">0</strong></span>
+
+                    <button id="speedBtn" class="smallHudButton">Velocidad x1</button>
+                    <button id="autoModeBtn" class="smallHudButton">Auto OFF</button>
+                    <button id="repeatWaveBtn" class="smallHudButton repeatHudButton hidden">Repetir 0/3</button>
+                    <button id="autoRepeatWaveBtn" class="smallHudButton autoRepeatHudButton">Auto repetir OFF</button>
+                    <button id="openShopHudBtn" class="smallHudButton shopHudButton">Tienda</button>
+                    <button id="pauseBtn" class="smallHudButton">Pausa</button>
+                    <button id="consoleBtn" class="smallHudButton">Consola</button>
+                </div>
+
+                <button id="constructionBtn" class="smallHudButton constructionHudButton" type="button">Construcción</button>
+                <button id="skipBuildPhaseBtn" class="smallHudButton buildPhaseButton hidden" type="button">Saltar preparación</button>
+
+                <button id="cancelBuildBtn" class="smallHudButton cancelBuildButton hidden" type="button">Cancelar construcción</button>
+
+                <div id="structurePanel" class="structurePanel hidden">
+                    <div class="structurePanelHeader">
+                        <strong id="structurePanelTitle">Estructura</strong>
+                        <button id="closeStructurePanelBtn" type="button">×</button>
+                    </div>
+                    <div id="structurePanelInfo" class="structurePanelInfo"></div>
+                    <div id="structurePanelActions" class="structurePanelActions"></div>
+                </div>
+
+                <div id="bottomGameUi">
+                    <div id="abilityBar">
+                        <div class="abilitySlot locked" id="abilityBombSlot">1 · Bomba</div>
+                        <div class="abilitySlot locked" id="abilityFreezeSlot">2 · Freezeo</div>
+                        <div class="abilitySlot locked" id="abilityTsunamiSlot">3 · Tsunami</div>
+                        <div class="abilitySlot locked" id="abilityLightningSlot">4 · Rayo</div>
+                        <div class="abilitySlot locked" id="abilityMeteorSlot">5 · Meteorito</div>
+                        <div class="abilitySlot locked" id="abilityEclipseSlot">6 · Eclipse</div>
+                    </div>
+
+                    <div id="inventoryBar">
+                        <div class="inventoryHeader">
+                            <strong>Inventario</strong>
+                            <span id="inventoryCooldownText">Listo · Inventario 0/25</span>
+                        </div>
+                        <div id="inventorySlots" class="inventorySlots"></div>
+                    </div>
+                </div>
+
+                <div id="redFlash"></div>
+
+                <div id="bossBarBox" class="hidden">
+                    <div id="bossNameText">BOSS</div>
+                    <div id="bossBarBg">
+                        <div id="bossBarFill"></div>
+                    </div>
+                </div>
+
+                <div id="centerMessage" class="hidden"></div>
+
+                <div id="consolePanel" class="overlayPanel hidden consolePanel">
+                    <h2>Consola</h2>
+                    <p class="consoleHint">Escribí comandos para debuggear o activar easter eggs.</p>
+                    <div class="consoleRow">
+                        <input id="consoleInput" type="text" placeholder="Ingresar comando..." autocomplete="off">
+                        <button id="consoleRunBtn">Ejecutar</button>
+                    </div>
+                    <div id="consoleLog" class="consoleLog">Consola lista.</div>
+                    <button id="closeConsoleBtn">Cerrar</button>
+                </div>
+
+                <div id="waveSummaryPanel" class="overlayPanel hidden">
+                    <h2>Wave completada</h2>
+                    <div class="summaryGrid">
+                        <p>Enemigos eliminados: <strong id="summaryKillsText">0</strong></p>
+                        <p>Oro ganado: <strong id="summaryGoldText">0</strong></p>
+                        <p>Puntos ganados: <strong id="summaryScoreText">0</strong></p>
+                        <p>Vida restante: <strong id="summaryHpText">0/0</strong></p>
+                        <p>Barricada: <strong id="summaryBarricadeText">0/0</strong></p>
+                        <p>Bonus por wave: <strong id="summaryBonusText">0</strong></p>
+                    </div>
+                    <button id="openShopBtn">Ir a la tienda</button>
+                </div>
+
+                <div id="shop" class="overlayPanel hidden">
+                    <button id="closeShopBtn" class="shopCloseButton" type="button">Cerrar</button>
+                    <h2 id="shopTitle">Tienda</h2>
+
+                    <div class="shopTabs">
+                        <button class="shopTabButton active" data-shop-tab="stats">Stats</button>
+                        <button class="shopTabButton" data-shop-tab="consumables">Consumibles</button>
+                        <button class="shopTabButton" data-shop-tab="barricades">Barricadas</button>
+                        <button class="shopTabButton" data-shop-tab="towers">Torres</button>
+                        <button class="shopTabButton" data-shop-tab="traps">Trampas</button>
+                        <button class="shopTabButton" data-shop-tab="mines">Minas</button>
+                        <button class="shopTabButton" data-shop-tab="abilities">Habilidades</button>
+                    </div>
+
+                    <div class="shopSections">
+                        <section class="shopSection active" data-shop-section="stats">
+                            <h3>Stats</h3>
+
+                            <button id="upgradeDamageBtn">
+                                Mejorar daño<br>
+                                <small>Actual: <span id="playerDamageText">1</span></small><br>
+                                <span id="damageCostText">35</span> monedas
+                            </button>
+
+                            <button id="upgradeFireRateBtn">
+                                Mejorar velocidad<br>
+                                <small>Delay: <span id="playerFireDelayText">550</span>ms</small><br>
+                                <span id="fireRateCostText">50</span> monedas
+                            </button>
+
+                            <button id="upgradeMaxHpBtn">
+                                Mejorar vida máxima<br>
+                                <small>Actual: <span id="playerMaxHpText">20</span></small><br>
+                                <span id="maxHpCostText">80</span> monedas
+                            </button>
+
+                            <button id="upgradeCritBtn">
+                                Mejorar crítico<br>
+                                <small>Chance: <span id="critChanceText">0</span>%</small><br>
+                                <span id="critCostText">120</span> monedas
+                            </button>
+                        </section>
+
+                        <section class="shopSection" data-shop-section="consumables">
+                            <h3>Consumibles</h3>
+
+                            <button id="buySmallPotionBtn">
+                                Poción chica<br>
+                                <small>Guarda x1 · Cura 6 en 2.5s</small><br>
+                                <span id="smallPotionCostText">15</span> monedas
+                            </button>
+
+                            <button id="buyMediumPotionBtn">
+                                Poción mediana<br>
+                                <small>Guarda x1 · Cura 14 en 3.5s</small><br>
+                                <span id="mediumPotionCostText">35</span> monedas
+                            </button>
+
+                            <button id="buyLargePotionBtn">
+                                Poción grande<br>
+                                <small>Guarda x1 · Cura 30 en 5s</small><br>
+                                <span id="largePotionCostText">70</span> monedas
+                            </button>
+
+                            <button id="buyShieldPotionBtn">
+                                Amuleto protector<br>
+                                <small>Guarda x1 · Bloquea el próximo golpe</small><br>
+                                <span id="shieldPotionCostText">110</span> monedas
+                            </button>
+
+                            <button id="buyAttackSpeedPotionBtn">
+                                Poción de rapidez<br>
+                                <small>Guarda x1 · +45% velocidad por 10s</small><br>
+                                <span id="attackSpeedPotionCostText">260</span> monedas
+                            </button>
+
+                            <button id="buyDoubleShotPotionBtn">
+                                Poción de doble disparo<br>
+                                <small>Guarda x1 · Disparo doble por 9s</small><br>
+                                <span id="doubleShotPotionCostText">620</span> monedas
+                            </button>
+
+                            <button id="buyLifeStealPotionBtn">
+                                Poción vampírica<br>
+                                <small>Guarda x1 · Robo de vida temporal</small><br>
+                                <span id="lifeStealPotionCostText">520</span> monedas
+                            </button>
+                        </section>
+
+                        <section class="shopSection barricadeShop" data-shop-section="barricades">
+                            <h3>Barricadas</h3>
+
+                            <div class="barricadeSlotChoice">
+                                <span>Construcción libre: tocá una barricada, elegí posición con el mouse y usá <strong>R</strong> para rotar.</span>
+                            </div>
+
+                            <button id="repairBarricadeBtn">
+                                Reparar barricadas<br>
+                                <small>Repara la más dañada</small><br>
+                                <span id="repairBarricadeCostText">45</span> monedas
+                            </button>
+
+                            <button id="upgradeBarricadeBtn">
+                                Construir barricada estándar<br>
+                                <small><span id="barricadeTierText">Sin barricadas</span></small><br>
+                                <span id="upgradeBarricadeCostText">70</span> monedas
+                            </button>
+
+                            <button id="buyRegenBarricadeBtn">
+                                Construir barricada regenerativa<br>
+                                <small>Regenera vida por segundo</small><br>
+                                <span id="regenBarricadeCostText">125</span> monedas
+                            </button>
+
+                            <button id="buyExplosiveBarricadeBtn">
+                                Construir barricada explosiva<br>
+                                <small>Explota al romperse</small><br>
+                                <span id="explosiveBarricadeCostText">150</span> monedas
+                            </button>
+
+                            <button id="buyThornsBarricadeBtn">
+                                Construir barricada con espinas<br>
+                                <small>Devuelve 50% del daño recibido</small><br>
+                                <span id="thornsBarricadeCostText">95</span> monedas
+                            </button>
+                            <button id="buyDoorBarricadeBtn">
+                                Construir puerta
+                                <small>Se abre/cierra con click · 75% más débil</small><br>
+                                <span id="doorBarricadeCostText">48</span> monedas
+                            </button>
+
+                        </section>
+
+                        <section class="shopSection towerShopWide" data-shop-section="towers">
+                            <h3>Torres <small id="towerLimitText">0/12 slots · máx 20</small></h3>
+
+                            <button id="buyTowerSlotBtn" class="towerSlotUpgradeButton">
+                                Comprar slot de torre
+                                <small>Compra 1 slot por toque · 12/20</small><br>
+                                <span id="towerSlotCostText">850</span> monedas
+                            </button>
+
+                            <button id="buyTower1Btn">
+                                Comprar torre básica<br>
+                                <small>Colocación libre · dispara al más cercano</small><br>
+                                <span id="tower1CostText">70</span> monedas
+                            </button>
+
+                            <button id="buyTower2Btn">
+                                Comprar torre rápida<br>
+                                <small>Early barato · muchos disparos, poco daño</small><br>
+                                <span id="tower2CostText">40</span> monedas
+                            </button>
+
+                            <button id="buyTower3Btn">
+                                Comprar torre perforante<br>
+                                <small>Golpea a 2 enemigos</small><br>
+                                <span id="tower3CostText">160</span> monedas
+                            </button>
+
+                            <button id="buyTower4Btn">
+                                Comprar torre de hielo<br>
+                                <small>Ralentiza en área</small><br>
+                                <span id="tower4CostText">220</span> monedas
+                            </button>
+
+                            <button id="buyTower5Btn">
+                                Comprar torre doble<br>
+                                <small>Dispara 2 proyectiles</small><br>
+                                <span id="tower5CostText">260</span> monedas
+                            </button>
+
+                            <button id="buyTower6Btn">
+                                Comprar torre de veneno<br>
+                                <small>Área con daño por ticks</small><br>
+                                <span id="tower6CostText">310</span> monedas
+                            </button>
+
+                            <button id="buyTower7Btn">
+                                Comprar ballesta<br>
+                                <small>Mucho daño, lento</small><br>
+                                <span id="tower7CostText">360</span> monedas
+                            </button>
+
+                            <button id="buyTower8Btn">
+                                Comprar torre sanguijuela<br>
+                                <small>Succiona vida y cura defensas</small><br>
+                                <span id="tower8CostText">420</span> monedas
+                            </button>
+
+                            <button id="buyTower9Btn">
+                                Comprar torre buffer<br>
+                                <small>Bufea daño y velocidad en área</small><br>
+                                <span id="tower9CostText">620</span> monedas
+                            </button>
+
+                            <button id="buyTower10Btn">
+                                Comprar Lucky Block<br>
+                                <small>Se convierte en una torre aleatoria</small><br>
+                                <span id="tower10CostText">240</span> monedas
+                            </button>
+
+                            <button id="buyTower11Btn">
+                                Comprar torre cuchilla<br>
+                                <small>Melee por ticks · vulnerable pero resistente</small><br>
+                                <span id="tower11CostText">90</span> monedas
+                            </button>
+
+                            <button id="buyTower12Btn">
+                                Comprar torre lancera<br>
+                                <small>Ataca en línea frontal · rota con R</small><br>
+                                <span id="tower12CostText">135</span> monedas
+                            </button>
+
+                            <div id="towerSlotsPanel" class="towerSlotsPanel"></div>
+                        </section>
+
+                        <section class="shopSection" data-shop-section="traps">
+                            <h3>Trampas</h3>
+
+                            <button id="buyTrapSnareBtn">
+                                Colocar trampa de agarre<br>
+                                <small>1 uso · atrapa 1.5s al primer enemigo que la pisa</small><br>
+                                <span id="trapSnareCostText">55</span> monedas
+                            </button>
+
+                            <button id="buyTrapBleedBtn">
+                                Colocar trampa serrada<br>
+                                <small>1 uso · slow 0.5s + sangrado por 3s</small><br>
+                                <span id="trapBleedCostText">75</span> monedas
+                            </button>
+                        </section>
+
+                        <section class="shopSection mineShop" data-shop-section="mines">
+                            <h3>Minas</h3>
+
+                            <button id="buyMineGoldBtn">
+                                Construir mina de eco<br>
+                                <small>No se mejora · genera oro al completar cada oleada</small><br>
+                                <span id="mineGoldCostText">220</span> monedas
+                            </button>
+
+                            <div class="mineInfoBox">
+                                <strong id="mineLimitText">0/5 minas · +0 c/u próxima oleada</strong>
+                                <small>Balance: costo escalonado, límite bajo y pago por oleada para evitar abuso en peleas largas.</small>
+                            </div>
+                        </section>
+
+                        <section class="shopSection abilitiesShop" data-shop-section="abilities">
+                            <h3>Habilidades</h3>
+
+                            <button id="buyBombBtn">
+                                Comprar Bomba<br>
+                                <small><span id="bombKeyText">1</span> · Daño en área</small><br>
+                                <span id="bombCostText">180</span> monedas
+                            </button>
+
+                            <button id="buyFreezeBtn">
+                                Comprar Congelar<br>
+                                <small><span id="freezeKeyText">2</span> · Ralentiza a todos</small><br>
+                                <span id="freezeCostText">280</span> monedas
+                            </button>
+
+                            <button id="buyTsunamiBtn">
+                                Comprar Tsunami<br>
+                                <small><span id="tsunamiKeyText">3</span> · Empuja y daña</small><br>
+                                <span id="tsunamiCostText">560</span> monedas
+                            </button>
+
+                            <button id="buyLightningBtn">
+                                Comprar Rayo ramificado<br>
+                                <small><span id="lightningKeyText">4</span> · Salta entre enemigos</small><br>
+                                <span id="lightningCostText">980</span> monedas
+                            </button>
+
+                            <button id="buyMeteorBtn">
+                                Comprar Meteorito<br>
+                                <small><span id="meteorKeyText">5</span> · Gran explosión</small><br>
+                                <span id="meteorCostText">1750</span> monedas
+                            </button>
+
+                            <button id="buyEclipseBtn">
+                                Comprar Eclipse<br>
+                                <small><span id="eclipseKeyText">6</span> · Zona oscura de daño y slow</small><br>
+                                <span id="eclipseCostText">2800</span> monedas
+                            </button>
+                        </section>
+                    </div>
+
+                    <button id="nextWaveBtn" class="nextWaveButton">Siguiente oleada</button>
+                </div>
+
+                <div id="gameOverScreen" class="overlayPanel hidden">
+                    <h2>Run terminada</h2>
+                    <p id="deathMessageText">El jugador cayó.</p>
+                    <p>Puntos de esta run: <strong id="finalScoreText">0</strong></p>
+                    <p>Récord: <strong id="bestScoreText">0</strong></p>
+
+                    <div class="leaderboardBox gameOverLeaderboardBox">
+                        <div class="leaderboardHeader">
+                            <h3>Leaderboard global</h3>
+                            <button id="refreshLeaderboardGameBtn" class="smallHudButton" type="button">Actualizar</button>
+                        </div>
+                        <p id="leaderboardGameStatusText" class="leaderboardStatus">Guardando puntuación...</p>
+                        <ol id="leaderboardGameList" class="leaderboardList"></ol>
+                    </div>
+
+                    <button id="newRunBtn">Nueva run</button>
+                </div>
+                <div id="pausePanel" class="overlayPanel hidden">
+                    <h2>Pausa</h2>
+
+                    <div class="audioSettingsBox pauseAudioBox">
+                        <h3>Audio</h3>
+
+                        <label>
+                            <input type="checkbox" id="pauseMusicToggle" checked>
+                            Música
+                        </label>
+
+                        <label>
+                            Volumen música
+                            <input type="range" id="pauseMusicVolume" min="0" max="1" step="0.01" value="0.28">
+                        </label>
+
+                        <label>
+                            <input type="checkbox" id="pauseSfxToggle" checked>
+                            Efectos
+                        </label>
+
+                        <label>
+                            Volumen efectos
+                            <input type="range" id="pauseSfxVolume" min="0" max="1" step="0.01" value="0.28">
+                        </label>
+                    </div>
+
+                    <div class="visualSettingsBox pauseVisualBox">
+                        <h3>Visual</h3>
+                        <label>
+                            Tamaño del minimapa: <strong id="pauseMinimapSizeText">82%</strong>
+                            <input type="range" id="pauseMinimapSize" min="0.65" max="1.35" step="0.05" value="0.82">
+                        </label>
+                    </div>
+
+                            <div class="controlsSettingsBox">
+                        <h3>Controles</h3>
+                        <p class="controlsHint">Tocá una tecla para cambiarla. Si elegís una ya usada, se intercambian.</p>
+
+                                <div class="controlsGrid">
+                            <span>Mover arriba</span>
+                                    <button class="controlKeyButton" data-control="moveUp">W</button>
+
+                            <span>Mover abajo</span>
+                                    <button class="controlKeyButton" data-control="moveDown">S</button>
+
+                            <span>Mover izquierda</span>
+                                    <button class="controlKeyButton" data-control="moveLeft">A</button>
+
+                            <span>Mover derecha</span>
+                                    <button class="controlKeyButton" data-control="moveRight">D</button>
+
+                            <span>Habilidad 1 · Bomba</span>
+                                    <button class="controlKeyButton" data-control="bomb">1</button>
+
+                            <span>Habilidad 2 · Congelar</span>
+                                    <button class="controlKeyButton" data-control="freeze">2</button>
+
+                            <span>Habilidad 3 · Tsunami</span>
+                                    <button class="controlKeyButton" data-control="tsunami">3</button>
+
+                            <span>Habilidad 4 · Rayo</span>
+                                    <button class="controlKeyButton" data-control="lightning">4</button>
+
+                            <span>Habilidad 5 · Meteorito</span>
+                                    <button class="controlKeyButton" data-control="meteor">5</button>
+
+                            <span>Habilidad 6 · Eclipse</span>
+                                    <button class="controlKeyButton" data-control="eclipse">6</button>
+                                </div>
+
+                        <button class="resetControlsBtn">Restaurar controles</button>
+                    </div>
+
+                    <div class="pauseButtons">
+                        <button id="resumeBtn">Continuar</button>
+                        <button id="backToMenuBtn">Volver al menú</button>
+                        <button id="restartRunBtn" class="dangerButton">Reiniciar run</button>
+                    </div>
+
+                    <div id="confirmRestartBox" class="confirmBox hidden">
+                        <p>¿Seguro que querés reiniciar la run? Vas a perder todo el progreso actual.</p>
+                        <button id="confirmRestartBtn" class="dangerButton">Sí, reiniciar</button>
+                        <button id="cancelRestartBtn">Cancelar</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="info">
+                <p>
+                    Hecho por Alene <br>
+                    Movimiento: WASD · C construcción · T tienda · Ctrl+1-5 consumibles · Disparo: Click izquierdo / Spacebar
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
