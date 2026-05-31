@@ -16,7 +16,7 @@ const BARRICADE_THICKNESS = 24;
 const BASE_RADIUS = 34;
 const PLAYER_SURVIVAL_SPEED = 1.75;
 const ENEMY_SURVIVAL_SPEED_MULTIPLIER = 0.72;
-const BUILD_PHASE_DURATION = 90000;
+const BUILD_PHASE_DURATION = 120000;
 const BOSS_SPAWN_ZONE = {
     x: WORLD_WIDTH / 2,
     y: WORLD_HEIGHT / 2,
@@ -25,6 +25,7 @@ const BOSS_SPAWN_ZONE = {
     height: BARRICADE_LENGTH * 2
 };
 const TRAP_COLLISION_RADIUS = 18;
+const MINE_COLLISION_RADIUS = 24;
 const TOWER_ROTATION_STEP = Math.PI / 2;
 
 // Balance infinito: las oleadas deben volverse más intensas, no más largas.
@@ -43,6 +44,7 @@ let basePlaced = false;
 let pendingBasePlacement = false;
 let pendingBarricadePlacement = null;
 let pendingTrapPlacement = null;
+let pendingMinePlacement = null;
 let barricadeBuildOrientation = "horizontal";
 let towerBuildRotation = 0;
 let canvasPixelRatio = 1;
@@ -510,8 +512,11 @@ const tower11CostText = document.getElementById("tower11CostText");
 const tower12CostText = document.getElementById("tower12CostText");
 const trapSnareCostText = document.getElementById("trapSnareCostText");
 const trapBleedCostText = document.getElementById("trapBleedCostText");
+const mineGoldCostText = document.getElementById("mineGoldCostText");
+const mineLimitText = document.getElementById("mineLimitText");
 const buyTrapSnareBtn = document.getElementById("buyTrapSnareBtn");
 const buyTrapBleedBtn = document.getElementById("buyTrapBleedBtn");
+const buyMineGoldBtn = document.getElementById("buyMineGoldBtn");
 
 const bombCostText = document.getElementById("bombCostText");
 const freezeCostText = document.getElementById("freezeCostText");
@@ -634,6 +639,7 @@ let damageTexts;
 let particles;
 let effects;
 let traps;
+let mines;
 let titanShards;
 let pendingTitanReward = null;
 let inventory;
@@ -725,6 +731,15 @@ const BARRICADE_DOOR_UPGRADE_MULTIPLIER = 1.48;
 const trapDefinitions = {
     snare: { key: "trapSnare", name: "Trampa de agarre", cost: 55, color: "#9be7ff", radius: 24, duration: 1500 },
     bleed: { key: "trapBleed", name: "Trampa serrada", cost: 75, color: "#ff6b6b", radius: 26, slowAmount: 0.45, slowDuration: 500, bleedDuration: 3000 }
+};
+
+// Minas: economía estable por oleada, no por segundo.
+// Esto evita abusos en oleadas largas, repeat y late game infinito.
+const MINE_LIMIT = 5;
+const FIRST_MINE_COST = 220;
+const MINE_COST_MULTIPLIER = 1.62;
+const mineDefinitions = {
+    gold: { key: "mineGold", name: "Mina de eco", cost: FIRST_MINE_COST, color: "#ffd76a", radius: MINE_COLLISION_RADIUS }
 };
 const BARRICADE_UNLOCK_WAVE = 3;
 const TOWER_REPAIR_COST_FACTOR = 0.28;
@@ -924,6 +939,7 @@ function isTowerPositionOccupied(x, y, ignoredTower = null) {
     if ((towers || []).some(t => t !== ignoredTower && rectsOverlap(towerRect, getEntityRect({ x: t.x, y: t.y, radius: TOWER_COLLISION_RADIUS }), 6))) return true;
     if ((barricades || []).some(b => b.active && b.hp > 0 && !b.isOpen && rectsOverlap(towerRect, getEntityRect({ ...b, isBuildBarricade: true }), 6))) return true;
     if ((traps || []).some(trap => Math.hypot(trap.x - x, trap.y - y) < TRAP_COLLISION_RADIUS + TOWER_COLLISION_RADIUS + 6)) return true;
+    if ((mines || []).some(mine => Math.hypot(mine.x - x, mine.y - y) < MINE_COLLISION_RADIUS + TOWER_COLLISION_RADIUS + 8)) return true;
     return false;
 }
 
@@ -937,6 +953,7 @@ function isBarricadePositionValid(x, y, orientation = barricadeBuildOrientation,
     if ((towers || []).some(t => rectsOverlap(rect, getEntityRect({ x: t.x, y: t.y, radius: TOWER_COLLISION_RADIUS }), 6))) return false;
     if ((barricades || []).some(b => b !== ignoredBarricade && b.active && b.hp > 0 && !b.isOpen && rectsOverlap(rect, getEntityRect({ ...b, isBuildBarricade: true }), 4))) return false;
     if ((traps || []).some(trap => circleIntersectsRect(trap.x, trap.y, TRAP_COLLISION_RADIUS + 6, rect, 0))) return false;
+    if ((mines || []).some(mine => circleIntersectsRect(mine.x, mine.y, MINE_COLLISION_RADIUS + 8, rect, 0))) return false;
     return true;
 }
 
@@ -949,6 +966,7 @@ function isTrapPositionValid(x, y) {
     if ((towers || []).some(t => Math.hypot(t.x - x, t.y - y) < TOWER_COLLISION_RADIUS + TRAP_COLLISION_RADIUS + 6)) return false;
     if ((barricades || []).some(b => b.active && b.hp > 0 && !b.isOpen && circleIntersectsRect(x, y, TRAP_COLLISION_RADIUS + 4, getEntityRect({ ...b, isBuildBarricade: true }), 0))) return false;
     if ((traps || []).some(trap => Math.hypot(trap.x - x, trap.y - y) < TRAP_COLLISION_RADIUS * 2 + 4)) return false;
+    if ((mines || []).some(mine => Math.hypot(mine.x - x, mine.y - y) < MINE_COLLISION_RADIUS + TRAP_COLLISION_RADIUS + 6)) return false;
     return true;
 }
 
@@ -1605,6 +1623,33 @@ function isTrapPositionValid(x, y) {
     if ((towers || []).some(t => Math.hypot(t.x - x, t.y - y) < TOWER_COLLISION_RADIUS + TRAP_COLLISION_RADIUS + 6)) return false;
     if ((barricades || []).some(b => b.active && b.hp > 0 && !b.isOpen && circleIntersectsRect(x, y, TRAP_COLLISION_RADIUS + 4, getEntityRect({ ...b, isBuildBarricade: true }), 0))) return false;
     if ((traps || []).some(trap => Math.hypot(trap.x - x, trap.y - y) < TRAP_COLLISION_RADIUS * 2 + 4)) return false;
+    if ((mines || []).some(mine => Math.hypot(mine.x - x, mine.y - y) < MINE_COLLISION_RADIUS + TRAP_COLLISION_RADIUS + 6)) return false;
+    return true;
+}
+
+function getMineCostForCount(count = (mines || []).length) {
+    const safeCount = Math.max(0, Math.min(MINE_LIMIT, Math.floor(Number(count) || 0)));
+    if (safeCount >= MINE_LIMIT) return 0;
+    return Math.ceil((FIRST_MINE_COST * Math.pow(MINE_COST_MULTIPLIER, safeCount)) / 10) * 10;
+}
+
+function getMineIncomeForWave(targetWave = wave) {
+    const safeWave = Math.max(1, Number(targetWave) || 1);
+    // Escala suave: ayuda mucho en early, acompaña en late, pero no reemplaza matar enemigos.
+    return getGoldAmount(10 + Math.floor(Math.pow(safeWave, 0.72) * 4.2));
+}
+
+function isMinePositionValid(x, y) {
+    const mineRect = getEntityRect({ x, y, radius: MINE_COLLISION_RADIUS });
+    if (!isBuildRectInsideWorld(mineRect)) return false;
+    if (isCircleInBossSpawnZone(x, y, MINE_COLLISION_RADIUS, 8)) return false;
+    if (player && Math.hypot(x - player.x, y - player.y) < MINE_COLLISION_RADIUS + 24) return false;
+    if (baseCore && Math.hypot(x - baseCore.x, y - baseCore.y) < BASE_RADIUS + MINE_COLLISION_RADIUS + 18) return false;
+    if (buildCircleOverlapsEnemy(x, y, MINE_COLLISION_RADIUS, 10)) return false;
+    if ((towers || []).some(t => Math.hypot(t.x - x, t.y - y) < TOWER_COLLISION_RADIUS + MINE_COLLISION_RADIUS + 8)) return false;
+    if ((barricades || []).some(b => b.active && b.hp > 0 && !b.isOpen && circleIntersectsRect(x, y, MINE_COLLISION_RADIUS + 6, getEntityRect({ ...b, isBuildBarricade: true }), 0))) return false;
+    if ((traps || []).some(trap => Math.hypot(trap.x - x, trap.y - y) < TRAP_COLLISION_RADIUS + MINE_COLLISION_RADIUS + 6)) return false;
+    if ((mines || []).some(mine => Math.hypot(mine.x - x, mine.y - y) < MINE_COLLISION_RADIUS * 2 + 10)) return false;
     return true;
 }
 
@@ -1661,6 +1706,7 @@ function beginTowerPlacement(defKey) {
     pendingTowerPurchase = { defKey, price };
     towerBuildRotation = 0;
     pendingBarricadePlacement = null;
+    pendingMinePlacement = null;
     closeShop();
     waveSummaryPanel.classList.add("hidden");
     showCenterMessage(`Colocá: ${def.name} · podés seguir colocando hasta quedarte sin monedas`, 1300);
@@ -1886,6 +1932,7 @@ function prepareRepeatWave(targetWave, source = "manual") {
     clearStructureSelection();
     cancelBarricadePlacement(false);
     cancelTrapPlacement(false);
+    cancelMinePlacement(false);
     cancelTowerPlacement(false);
     showCenterMessage(`${source === "auto" ? "Auto repitiendo" : "Repitiendo"} oleada ${normalizedWave}`, 900);
     startWave();
@@ -2090,7 +2137,8 @@ function createDefaultState() {
         tower11: 90,
         tower12: 135,
         trapSnare: 55,
-        trapBleed: 75
+        trapBleed: 75,
+        mineGold: FIRST_MINE_COST
     };
 
     enemies = [];
@@ -2103,6 +2151,7 @@ function createDefaultState() {
     particles = [];
     effects = [];
     traps = [];
+    mines = [];
     titanShards = [];
     pendingTitanReward = null;
     inventory = createEmptyInventory();
@@ -2192,6 +2241,7 @@ function buildSavePayload() {
         particles,
         effects,
         traps,
+        mines,
         titanShards,
         pendingTitanReward,
         inventory,
@@ -2322,6 +2372,7 @@ function restoreSavedRun() {
         if (!Number.isFinite(Number(costs.doorBarricade))) costs.doorBarricade = getBarricadeBaseCost("door");
         if (!Number.isFinite(Number(costs.trapSnare))) costs.trapSnare = trapDefinitions.snare.cost;
         if (!Number.isFinite(Number(costs.trapBleed))) costs.trapBleed = trapDefinitions.bleed.cost;
+        if (!Number.isFinite(Number(costs.mineGold))) costs.mineGold = getMineCostForCount(Array.isArray(data.mines) ? data.mines.length : 0);
         if (!Number.isFinite(Number(costs.towerSlot))) costs.towerSlot = getTowerSlotCostForLimit(towerSlotLimit);
         applyControlsToAbilities();
 
@@ -2335,6 +2386,8 @@ function restoreSavedRun() {
         particles = Array.isArray(data.particles) ? data.particles : [];
         effects = Array.isArray(data.effects) ? data.effects : [];
         traps = Array.isArray(data.traps) ? data.traps : [];
+        mines = Array.isArray(data.mines) ? data.mines : [];
+        mines.forEach((mine, index) => { if (!mine.id) mine.id = Date.now() + Math.random() + index; mine.radius = mine.radius || MINE_COLLISION_RADIUS; mine.name = mine.name || mineDefinitions.gold.name; });
         titanShards = Array.isArray(data.titanShards) ? data.titanShards : [];
         pendingTitanReward = data.pendingTitanReward || null;
         inventory = normalizeInventory(data.inventory);
@@ -2457,7 +2510,10 @@ function startWave() {
     buildPhaseEndsAt = 0;
     updateBuildPhaseUI();
     cancelTowerPlacement(false);
+    cancelTowerMove(false);
     cancelBarricadePlacement(false);
+    cancelTrapPlacement(false);
+    cancelMinePlacement(false);
     if (structurePanel) structurePanel.classList.add("hidden");
     selectedStructureIds = [];
     selectedStructureType = null;
@@ -4367,6 +4423,23 @@ function checkWaveComplete() {
     }
 }
 
+function awardMineIncome(completedWave = wave) {
+    if (!mines || !mines.length) return 0;
+    const perMine = getMineIncomeForWave(completedWave);
+    const total = perMine * mines.length;
+    if (total <= 0) return 0;
+
+    coins = Math.min(Number.MAX_SAFE_INTEGER, coins + total);
+    waveStats.gold += total;
+    mines.forEach(mine => {
+        mine.totalGold = (Number(mine.totalGold) || 0) + perMine;
+        mine.lastIncome = perMine;
+        mine.pulseUntil = getGameTime() + 1200;
+    });
+    addDamageText(player.x, player.y - 42, `+${formatMoney(total)} minas`, false, "#ffd76a");
+    return total;
+}
+
 function completeWave() {
     waveInProgress = false;
     gameRunning = false;
@@ -4382,9 +4455,11 @@ function completeWave() {
     waveStats.gold += goldBonus;
     waveStats.bonus = waveBonus;
 
+    const mineGold = awardMineIncome(completedWave);
+
     waveSummaryPanel.classList.add("hidden");
     autoSaveRun(true);
-    enterBuildPhase(completedWave, goldBonus);
+    enterBuildPhase(completedWave, goldBonus + mineGold);
 }
 
 function enterBuildPhase(completedWave, goldBonus = 0) {
@@ -4399,7 +4474,7 @@ function enterBuildPhase(completedWave, goldBonus = 0) {
     resetWaveStats();
     closeShop();
     updateBuildPhaseUI();
-    showCenterMessage(`Wave ${completedWave} completada · +${formatMoney(goldBonus)} oro · 1 minuto y medio antes de la próxima oleada`, 1900);
+    showCenterMessage(`Wave ${completedWave} completada · +${formatMoney(goldBonus)} oro · 2 minutos antes de la próxima oleada`, 1900);
     autoSaveRun(true);
 }
 
@@ -5067,6 +5142,24 @@ function drawBuildPreview() {
         ctx.font = "bold 14px Arial";
         ctx.fillText(`${def ? def.name : "Trampa"} · click coloca · Esc/click derecho cancela`, point.x - 160, point.y - radius - 12);
     }
+
+    if (pendingMinePlacement) {
+        const point = getSnappedBuildPoint();
+        const valid = isMinePositionValid(point.x, point.y);
+        const radius = MINE_COLLISION_RADIUS;
+        ctx.fillStyle = valid ? "rgba(255,215,106,0.38)" : "rgba(255,80,80,0.35)";
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = valid ? "rgba(255,215,106,0.95)" : "rgba(255,80,80,0.95)";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = "white";
+        ctx.font = "bold 14px Arial";
+        ctx.fillText(`Mina · +${formatMoney(getMineIncomeForWave())}/oleada · click coloca`, point.x - 150, point.y - radius - 12);
+    }
 }
 
 function drawPlayer() {
@@ -5387,6 +5480,25 @@ function drawTitanShards() {
         ctx.strokeStyle = "rgba(255,255,255,0.85)";
         ctx.lineWidth = 2;
         ctx.stroke();
+    });
+}
+
+function drawMines() {
+    (mines || []).forEach(mine => {
+        const radius = mine.radius || MINE_COLLISION_RADIUS;
+        const pulse = mine.pulseUntil && mine.pulseUntil > getGameTime();
+        ctx.fillStyle = pulse ? "rgba(255,215,106,0.78)" : "rgba(255,215,106,0.48)";
+        ctx.beginPath();
+        ctx.arc(mine.x, mine.y, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = mine.color || "#ffd76a";
+        ctx.lineWidth = pulse ? 4 : 2;
+        ctx.beginPath();
+        ctx.arc(mine.x, mine.y, radius + (pulse ? 7 : 3), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = "#2b2100";
+        ctx.font = "bold 13px Arial";
+        ctx.fillText("$", mine.x - 4, mine.y + 5);
     });
 }
 
@@ -6015,6 +6127,17 @@ function updateTowerShopVisibility() {
     if (trapSnareCostText) trapSnareCostText.textContent = formatMoney(costs.trapSnare ?? trapDefinitions.snare.cost);
     if (trapBleedCostText) trapBleedCostText.textContent = formatMoney(costs.trapBleed ?? trapDefinitions.bleed.cost);
 
+    const currentMineCount = (mines || []).length;
+    const mineAtLimit = currentMineCount >= MINE_LIMIT;
+    const minePrice = mineAtLimit ? 0 : (costs.mineGold ?? getMineCostForCount(currentMineCount));
+    if (buyMineGoldBtn) {
+        const disabled = !buildPhaseActive || !!pendingMinePlacement || mineAtLimit;
+        const title = !buildPhaseActive ? "Solo durante el descanso entre oleadas." : mineAtLimit ? `Máximo ${MINE_LIMIT} minas.` : pendingMinePlacement ? "Ya estás colocando una mina." : `Genera aproximadamente ${formatMoney(getMineIncomeForWave())} oro por mina al completar la próxima oleada.`;
+        setShopButtonAffordability(buyMineGoldBtn, minePrice, disabled, title);
+    }
+    if (mineGoldCostText) mineGoldCostText.textContent = mineAtLimit ? "MAX" : formatMoney(minePrice);
+    if (mineLimitText) mineLimitText.textContent = `${currentMineCount}/${MINE_LIMIT} minas · +${formatMoney(getMineIncomeForWave())} c/u próxima oleada`;
+
     if (repeatWaveBtn) {
         const targetWave = getRepeatTargetWave();
         const repeats = getRepeatCountForWave(targetWave);
@@ -6175,6 +6298,7 @@ function drawMinimap() {
     enemies.forEach(e => dot(e.x, e.y, e.isBoss ? "#ff55ff" : "#ff3333", e.isBoss ? 3.8 : 2));
     towers.forEach(t => dot(t.x, t.y, "#ffffff", 1.7));
     (traps || []).forEach(trap => dot(trap.x, trap.y, trap.type === "snare" ? "#9be7ff" : "#ff6b6b", 1.4));
+    (mines || []).forEach(mine => dot(mine.x, mine.y, "#ffd76a", 1.7));
     (titanShards || []).forEach(shard => dot(shard.x, shard.y, "#b64dff", 2.2));
     barricades.forEach(b => { if (b.active && b.hp > 0) dot(b.x, b.y, "#aaaaaa", 1.6); });
     ctx.strokeStyle = "rgba(115,255,159,0.7)";
@@ -6594,7 +6718,7 @@ function jumpToWave(targetWave) {
 
 
 function isInBuildPlacementMode() {
-    return Boolean(pendingBarricadePlacement || pendingTrapPlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null);
+    return Boolean(pendingBarricadePlacement || pendingTrapPlacement || pendingMinePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null);
 }
 
 
@@ -6877,6 +7001,7 @@ function handleStructurePanelAction(action) {
 function getCurrentBuildModeLabel() {
     if (pendingBarricadePlacement) return "Colocando barricadas · R rota";
     if (pendingTrapPlacement) return "Colocando trampas";
+    if (pendingMinePlacement) return "Colocando minas";
     if (pendingTowerPurchase) {
         const def = getTowerDefinition(pendingTowerPurchase.defKey);
         return `Colocando ${def ? def.name : "torre"} · R rota`;
@@ -6931,7 +7056,17 @@ function handleCanvasPlacementPointer(event) {
         return;
     }
 
-    if (pendingBarricadePlacement || pendingTrapPlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null) {
+    if (pendingMinePlacement) {
+        event.preventDefault();
+        if (event.button === 2) {
+            cancelMinePlacement(false);
+            return;
+        }
+        finishMinePlacement();
+        return;
+    }
+
+    if (pendingBarricadePlacement || pendingTrapPlacement || pendingMinePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null) {
         event.preventDefault();
         if (event.button === 2) {
             cancelTowerPlacement(false);
@@ -6962,10 +7097,11 @@ canvas.addEventListener("pointerdown", event => {
 });
 
 canvas.addEventListener("contextmenu", event => {
-    if (pendingBarricadePlacement || pendingTrapPlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null) {
+    if (pendingBarricadePlacement || pendingTrapPlacement || pendingMinePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null) {
         event.preventDefault();
         cancelBarricadePlacement(false);
         cancelTrapPlacement(false);
+        cancelMinePlacement(false);
         cancelTowerPlacement(false);
         cancelTowerMove(false);
     }
@@ -6994,7 +7130,7 @@ function handleShopTabHotkeys(event) {
         Digit1: "barricades",
         Digit2: "towers",
         Digit3: "traps",
-        Digit4: "traps"
+        Digit4: "mines"
     };
 
     if (event.code === "KeyX") {
@@ -7048,6 +7184,11 @@ window.addEventListener("keydown", event => {
 
         if (pendingTrapPlacement) {
             cancelTrapPlacement(false);
+            return;
+        }
+
+        if (pendingMinePlacement) {
+            cancelMinePlacement(false);
             return;
         }
 
@@ -7234,6 +7375,7 @@ function openShop(sectionId = "stats") {
     if (!shop || !hasActiveRun) return;
     cancelBarricadePlacement(false);
     cancelTrapPlacement(false);
+    cancelMinePlacement(false);
     cancelTowerPlacement(false);
     waveSummaryPanel.classList.add("hidden");
     pausePanel.classList.add("hidden");
@@ -7256,6 +7398,7 @@ function openConstruction(sectionId = "towers") {
     if (!shop || !hasActiveRun) return;
     cancelBarricadePlacement(false);
     cancelTrapPlacement(false);
+    cancelMinePlacement(false);
     cancelTowerPlacement(false);
     waveSummaryPanel.classList.add("hidden");
     pausePanel.classList.add("hidden");
@@ -7339,6 +7482,7 @@ if (skipBuildPhaseBtn) skipBuildPhaseBtn.addEventListener("click", () => {
 if (cancelBuildBtn) cancelBuildBtn.addEventListener("click", () => {
     cancelBarricadePlacement(false);
     cancelTrapPlacement(false);
+    cancelMinePlacement(false);
     cancelTowerPlacement(false);
     cancelTowerMove(false);
     showCenterMessage("Construcción cancelada", 650);
@@ -7459,6 +7603,7 @@ function beginBarricadePlacement(kind = "standard", costKey = "upgradeBarricade"
     pendingBarricadePlacement = { kind, costKey, price };
     pendingTowerPurchase = null;
     pendingTrapPlacement = null;
+    pendingMinePlacement = null;
     closeShop();
     waveSummaryPanel.classList.add("hidden");
     showCenterMessage("Colocá barricadas · R rota · seguí colocando hasta quedarte sin monedas", 1400);
@@ -7597,6 +7742,7 @@ towerDefinitions.forEach((def, index) => {
 });
 buyTrapSnareBtn?.addEventListener("click", () => beginTrapPlacement("snare"));
 buyTrapBleedBtn?.addEventListener("click", () => beginTrapPlacement("bleed"));
+buyMineGoldBtn?.addEventListener("click", () => beginMinePlacement());
 
 function handleTowerSlotActionClick(event) {
     const button = event.target.closest("button[data-tower-action]");
@@ -7668,6 +7814,7 @@ function beginTrapPlacement(typeKey) {
     pendingTrapPlacement = { typeKey, price };
     pendingTowerPurchase = null;
     pendingBarricadePlacement = null;
+    pendingMinePlacement = null;
     closeShop();
     showCenterMessage(`Colocá ${def.name} · seguí colocando o cancelá`, 1000);
     updateBuildCancelUI();
@@ -7705,6 +7852,84 @@ function finishTrapPlacement() {
     } else {
         pendingTrapPlacement = { typeKey: def.key === "trapSnare" ? "snare" : "bleed", price };
         showCenterMessage("Trampa colocada · seguí colocando o cancelá", 850);
+    }
+    updateBuildCancelUI();
+    updateHud(true);
+    autoSaveRun(true);
+}
+
+function createMine(x, y, paidCost = getMineCostForCount()) {
+    return {
+        id: Date.now() + Math.random(),
+        type: "gold",
+        name: mineDefinitions.gold.name,
+        x,
+        y,
+        radius: MINE_COLLISION_RADIUS,
+        color: mineDefinitions.gold.color,
+        cost: paidCost,
+        totalGold: 0,
+        lastIncome: 0,
+        pulseUntil: 0
+    };
+}
+
+function beginMinePlacement() {
+    if (!canStartBuildPlacement("colocar minas")) return;
+    if ((mines || []).length >= MINE_LIMIT) {
+        showCenterMessage(`Máximo de minas alcanzado (${MINE_LIMIT})`, 900);
+        return;
+    }
+    const price = costs.mineGold ?? getMineCostForCount();
+    if (coins < price) {
+        showCenterMessage(`Faltan ${formatMissingMoney(price - coins)} monedas`, 850);
+        return;
+    }
+    clearStructureSelection();
+    pendingMinePlacement = { price };
+    pendingTowerPurchase = null;
+    pendingTrapPlacement = null;
+    pendingBarricadePlacement = null;
+    closeShop();
+    showCenterMessage(`Colocá una mina · genera oro al terminar cada oleada`, 1200);
+    updateBuildCancelUI();
+    updateHud(true);
+}
+
+function cancelMinePlacement(showShopAgain = false) {
+    if (!pendingMinePlacement) return;
+    pendingMinePlacement = null;
+    updateBuildCancelUI();
+    if (showShopAgain && hasActiveRun) openConstruction("mines");
+    updateHud(true);
+}
+
+function finishMinePlacement() {
+    if (!pendingMinePlacement) return;
+    const point = getSnappedBuildPoint();
+    if (!isMinePositionValid(point.x, point.y)) {
+        showCenterMessage("No se puede poner la mina ahí", 750);
+        return;
+    }
+    const price = costs.mineGold ?? getMineCostForCount();
+    if (coins < price) {
+        showCenterMessage("Monedas insuficientes", 800);
+        cancelMinePlacement(false);
+        return;
+    }
+    coins -= price;
+    mines.push(createMine(point.x, point.y, price));
+    costs.mineGold = getMineCostForCount(mines.length);
+
+    if (mines.length >= MINE_LIMIT) {
+        pendingMinePlacement = null;
+        showCenterMessage("Mina colocada · límite alcanzado", 850);
+    } else if (coins < costs.mineGold) {
+        pendingMinePlacement = null;
+        showCenterMessage("Mina colocada · sin monedas para otra", 850);
+    } else {
+        pendingMinePlacement = { price: costs.mineGold };
+        showCenterMessage("Mina colocada · seguí colocando o cancelá", 850);
     }
     updateBuildCancelUI();
     updateHud(true);
