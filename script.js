@@ -331,6 +331,8 @@ const buyTower9Btn = document.getElementById("buyTower9Btn");
 const buyTower10Btn = document.getElementById("buyTower10Btn");
 const towerSlotsPanel = document.getElementById("towerSlotsPanel");
 const towerLimitText = document.getElementById("towerLimitText");
+const buyTowerSlotBtn = document.getElementById("buyTowerSlotBtn");
+const towerSlotCostText = document.getElementById("towerSlotCostText");
 
 const tower1BuyBox = document.getElementById("tower1BuyBox");
 const tower1UpgradeBox = document.getElementById("tower1UpgradeBox");
@@ -547,7 +549,10 @@ const barricadeTiers = [
     { name: "Obsidiana", color: "#302038", hpBonus: 120 }
 ];
 
-const MAX_TOWERS = 12;
+const INITIAL_TOWER_LIMIT = 12;
+const MAX_TOWER_LIMIT = 20;
+const FIRST_TOWER_SLOT_COST = 850;
+const TOWER_SLOT_COST_MULTIPLIER = 1.58;
 const TOWER_SELL_REFUND = 0.7;
 const REPEAT_LIMIT_PER_WAVE = 5;
 let repeatCountsByWave = {};
@@ -975,6 +980,25 @@ function scaleTowerUpgradeCost(currentCost) {
     return scaleShopCost(currentCost, 1.42, 1.12, 950);
 }
 
+function clampTowerSlotLimit(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return INITIAL_TOWER_LIMIT;
+    return Math.max(INITIAL_TOWER_LIMIT, Math.min(MAX_TOWER_LIMIT, Math.floor(parsed)));
+}
+
+function getTowerSlotCostForLimit(limit) {
+    const clampedLimit = clampTowerSlotLimit(limit);
+    if (clampedLimit >= MAX_TOWER_LIMIT) return 0;
+    const purchasedSlots = clampedLimit - INITIAL_TOWER_LIMIT;
+    return Math.ceil((FIRST_TOWER_SLOT_COST * Math.pow(TOWER_SLOT_COST_MULTIPLIER, purchasedSlots)) / 10) * 10;
+}
+
+function getNextTowerSlotCost(currentCost) {
+    const parsed = Number(currentCost);
+    const base = Number.isFinite(parsed) && parsed > 0 ? parsed : FIRST_TOWER_SLOT_COST;
+    return Math.ceil((base * TOWER_SLOT_COST_MULTIPLIER) / 10) * 10;
+}
+
 function getTowerDefinition(keyOrType) {
     return towerDefinitions.find(def => def.key === keyOrType || def.type === keyOrType);
 }
@@ -1016,8 +1040,8 @@ function createTowerFromDefinition(def, paidCost = def.cost, tile = null) {
 }
 
 function beginTowerPlacement(defKey) {
-    if (towers.length >= MAX_TOWERS) {
-        showCenterMessage("Límite de torres alcanzado", 900);
+    if (towers.length >= towerSlotLimit) {
+        showCenterMessage("Límite de slots de torre alcanzado", 900);
         return;
     }
 
@@ -1248,6 +1272,7 @@ function createDefaultState() {
     barricade = barricades[0];
 
     towers = [];
+    towerSlotLimit = INITIAL_TOWER_LIMIT;
 
     abilities = {
         bomb: {
@@ -1318,6 +1343,7 @@ function createDefaultState() {
         regenBarricade: 180,
         explosiveBarricade: 220,
         thornsBarricade: 130,
+        towerSlot: FIRST_TOWER_SLOT_COST,
 
         tower1: 70,
         tower2: 105,
@@ -1405,6 +1431,7 @@ function buildSavePayload() {
         player,
         barricades,
         towers,
+        towerSlotLimit,
         abilities,
         costs,
         enemies,
@@ -1513,10 +1540,12 @@ function restoreSavedRun() {
         barricades = Array.isArray(data.barricades) ? data.barricades : [createBarricadeSlot("Inicio", 120), createBarricadeSlot("Avanzada", ADVANCED_BARRICADE_X)];
         barricade = barricades[0];
         towers = Array.isArray(data.towers) ? data.towers : [];
+        towerSlotLimit = clampTowerSlotLimit(data.towerSlotLimit || INITIAL_TOWER_LIMIT);
         updateTowerSlotIndexes();
 
         abilities = data.abilities || abilities;
         costs = data.costs || costs;
+        if (!Number.isFinite(Number(costs.towerSlot))) costs.towerSlot = getTowerSlotCostForLimit(towerSlotLimit);
         applyControlsToAbilities();
 
         enemies = Array.isArray(data.enemies) ? data.enemies : [];
@@ -4186,6 +4215,8 @@ function updateHud(force = false) {
         if (el) el.textContent = costs[def.key] ?? def.cost;
     });
 
+    if (towerSlotCostText) towerSlotCostText.textContent = towerSlotLimit >= MAX_TOWER_LIMIT ? "MAX" : costs.towerSlot;
+
     bombCostText.textContent = abilities.bomb.cost;
     freezeCostText.textContent = abilities.freeze.cost;
     tsunamiCostText.textContent = abilities.tsunami.cost;
@@ -4206,15 +4237,28 @@ function updateHud(force = false) {
 }
 
 function updateTowerShopVisibility() {
-    const full = towers.length >= MAX_TOWERS;
-    if (towerLimitText) towerLimitText.textContent = `${towers.length}/${MAX_TOWERS}`;
+    const full = towers.length >= towerSlotLimit;
+    if (towerLimitText) towerLimitText.textContent = `${towers.length}/${towerSlotLimit} slots · máx ${MAX_TOWER_LIMIT}`;
+
+    if (buyTowerSlotBtn) {
+        const atMaxSlots = towerSlotLimit >= MAX_TOWER_LIMIT;
+        setShopButtonAffordability(
+            buyTowerSlotBtn,
+            costs.towerSlot,
+            atMaxSlots,
+            atMaxSlots ? "Ya alcanzaste el máximo de 20 slots de torres." : "Comprar un slot extra para poder colocar una torre más."
+        );
+        buyTowerSlotBtn.innerHTML = atMaxSlots
+            ? `Slots de torres al máximo<br><small>Tenés ${towerSlotLimit}/${MAX_TOWER_LIMIT} slots disponibles</small><br><span id="towerSlotCostText">MAX</span>`
+            : `Comprar slot de torre<br><small>Permite colocar 1 torre más · ${towerSlotLimit}/${MAX_TOWER_LIMIT}</small><br><span id="towerSlotCostText">${costs.towerSlot}</span> monedas`;
+    }
 
     towerDefinitions.forEach((def, index) => {
         const btn = document.getElementById(`buyTower${index + 1}Btn`);
         const price = costs[def.key] ?? def.cost;
         if (btn) {
             const extraDisabled = !!pendingTowerPurchase || full;
-            const extraTitle = full ? "Límite de torres alcanzado" : pendingTowerPurchase ? "Ya estás colocando una torre" : "";
+            const extraTitle = full ? "Límite de slots de torre alcanzado. Comprá un slot extra." : pendingTowerPurchase ? "Ya estás colocando una torre" : "";
             setShopButtonAffordability(btn, price, extraDisabled, extraTitle);
         }
     });
@@ -4244,6 +4288,8 @@ function renderTowerSlotsPanel() {
 
     const signature = JSON.stringify({
         coins,
+        towerSlotLimit,
+        towerSlotCost: costs ? costs.towerSlot : 0,
         towers: (towers || []).map(tower => ({
             id: tower.id,
             name: tower.name,
@@ -4943,6 +4989,8 @@ function upgradeBarricadeInstance(target, kind, resetKind = false) {
     showCenterMessage(`Barricada ${kindLabel}${tierLabel}${levelLabel}`, 850);
 }
 
+buyTowerSlotBtn?.addEventListener("click", buyTowerSlot);
+
 towerDefinitions.forEach((def, index) => {
     const btn = document.getElementById(`buyTower${index + 1}Btn`);
     btn?.addEventListener("click", () => buyTower(def.key));
@@ -4978,6 +5026,30 @@ document.addEventListener("pointerdown", handleTowerSlotActionPointer);
 
 // Fallback para navegadores viejos o eventos disparados por teclado.
 towerSlotsPanel?.addEventListener("click", handleTowerSlotActionClick);
+
+
+function buyTowerSlot() {
+    if (towerSlotLimit >= MAX_TOWER_LIMIT) {
+        showCenterMessage("Ya tenés el máximo de slots", 850);
+        return;
+    }
+
+    const price = Number(costs.towerSlot) || getTowerSlotCostForLimit(towerSlotLimit);
+
+    if (coins < price) {
+        showCenterMessage(`Faltan ${price - coins} monedas`, 850);
+        return;
+    }
+
+    coins -= price;
+    towerSlotLimit = clampTowerSlotLimit(towerSlotLimit + 1);
+    costs.towerSlot = towerSlotLimit >= MAX_TOWER_LIMIT ? 0 : getNextTowerSlotCost(price);
+    towerSlotsRenderSignature = "";
+
+    showCenterMessage(`Nuevo slot de torre: ${towerSlotLimit}/${MAX_TOWER_LIMIT}`, 1000);
+    updateHud(true);
+    autoSaveRun(true);
+}
 
 function buyTower(defKey) {
     beginTowerPlacement(defKey);
