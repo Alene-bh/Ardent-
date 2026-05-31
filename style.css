@@ -752,18 +752,6 @@ canvas {
 }
 
 
-.autoRepeatWaveButton {
-    background: #4b315f !important;
-}
-
-.autoRepeatWaveButton:hover {
-    background: #674080 !important;
-}
-
-.autoRepeatWaveButton.autoActive {
-    background: #2eaf5d !important;
-    border: 1px solid #73ff9f;
-}
 
 
 .leaderboardBox {
