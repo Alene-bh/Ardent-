@@ -26,6 +26,7 @@ const BOSS_SPAWN_ZONE = {
 };
 const TRAP_COLLISION_RADIUS = 18;
 const MINE_COLLISION_RADIUS = 24;
+const MINE_MAX_HP = 120;
 const TOWER_ROTATION_STEP = Math.PI / 2;
 
 // Balance infinito: las oleadas deben volverse más intensas, no más largas.
@@ -1276,6 +1277,14 @@ function getEnemyMainTarget(enemy) {
         candidates.push({ type: "barricade", x: closestX, y: closestY, radius: 12, object: b, score: d - proximityBonus });
     });
 
+    (mines || []).forEach(mine => {
+        if (!mine || mine.hp <= 0) return;
+        const d = Math.hypot(enemy.x - mine.x, enemy.y - mine.y);
+        // Las minas importan si el enemigo las tiene cerca, pero no reemplazan siempre al jugador/base.
+        const proximityBonus = d < 125 ? 78 : d < 220 ? 34 : 0;
+        candidates.push({ type: "mine", x: mine.x, y: mine.y, radius: mine.radius || MINE_COLLISION_RADIUS, object: mine, score: d - proximityBonus });
+    });
+
     if (!candidates.length) return { type: "player", x: player.x, y: player.y, radius: 23, object: player };
     candidates.sort((a, b) => a.score - b.score);
     return candidates[0];
@@ -1354,6 +1363,46 @@ function getBlockingBarricadeForEnemy(enemy, targetX, targetY) {
         }
     });
     return best;
+}
+
+function getBlockingMineForEnemy(enemy) {
+    let best = null;
+    let bestDist = Infinity;
+    (mines || []).forEach(mine => {
+        if (!mine || mine.hp <= 0) return;
+        const d = Math.hypot(enemy.x - mine.x, enemy.y - mine.y);
+        const touchDistance = (enemy.radius || 12) + (mine.radius || MINE_COLLISION_RADIUS) + 5;
+        if (d <= touchDistance && d < bestDist) {
+            best = mine;
+            bestDist = d;
+        }
+    });
+    return best;
+}
+
+function damageMine(mine, amount, sourceEnemy = null) {
+    if (!mine || mine.hp <= 0) return;
+
+    if (player && player.immortal) {
+        createImpactParticles(mine.x, mine.y, "#ffe28a");
+        return;
+    }
+
+    const finalAmount = (sourceEnemy && (sourceEnemy.isBoss || sourceEnemy.isBossProjectile)) ? amount * 1.15 : amount;
+    mine.hp -= finalAmount;
+    mine.lastHitAt = getGameTime();
+    createImpactParticles(mine.x, mine.y, sourceEnemy && sourceEnemy.color ? sourceEnemy.color : "#ff7777");
+    addDamageText(mine.x, mine.y - 24, finalAmount, false, "#ff7777");
+
+    if (mine.hp <= 0) {
+        mine.hp = 0;
+        const name = mine.name || "Mina";
+        mines = (mines || []).filter(m => m !== mine);
+        costs.mineGold = getMineCostForCount((mines || []).length);
+        showCenterMessage(`¡${name} destruida!`, 900);
+        updateHud(true);
+        autoSaveRun(true);
+    }
 }
 
 function damageBase(amount, x = baseCore ? baseCore.x : 0, y = baseCore ? baseCore.y : 0) {
@@ -2387,7 +2436,14 @@ function restoreSavedRun() {
         effects = Array.isArray(data.effects) ? data.effects : [];
         traps = Array.isArray(data.traps) ? data.traps : [];
         mines = Array.isArray(data.mines) ? data.mines : [];
-        mines.forEach((mine, index) => { if (!mine.id) mine.id = Date.now() + Math.random() + index; mine.radius = mine.radius || MINE_COLLISION_RADIUS; mine.name = mine.name || mineDefinitions.gold.name; });
+        mines.forEach((mine, index) => {
+            if (!mine.id) mine.id = Date.now() + Math.random() + index;
+            mine.radius = mine.radius || MINE_COLLISION_RADIUS;
+            mine.name = mine.name || mineDefinitions.gold.name;
+            mine.maxHp = Number(mine.maxHp) || MINE_MAX_HP;
+            mine.hp = Number.isFinite(Number(mine.hp)) ? Math.max(0, Math.min(mine.maxHp, Number(mine.hp))) : mine.maxHp;
+        });
+        mines = mines.filter(mine => mine && mine.hp > 0);
         titanShards = Array.isArray(data.titanShards) ? data.titanShards : [];
         pendingTitanReward = data.pendingTitanReward || null;
         inventory = normalizeInventory(data.inventory);
@@ -3340,6 +3396,13 @@ function getBossProjectileBarricadeHit(projectile) {
     });
 }
 
+function getBossProjectileMineHit(projectile) {
+    return (mines || []).find(mine => {
+        if (!mine || mine.hp <= 0) return false;
+        return Math.hypot(projectile.x - mine.x, projectile.y - mine.y) <= projectile.radius + (mine.radius || MINE_COLLISION_RADIUS);
+    });
+}
+
 function updateBossSpecials(now, defenseLineX) {
     enemies.forEach(enemy => {
         if (!enemy.isBoss) return;
@@ -3431,6 +3494,14 @@ function updateBossProjectiles() {
             if (p.burn) createFireZone(hitBarricade.x, p.y, 54, Math.max(1.2, p.damage * 0.28), 1800, 450);
             createImpactParticles(hitBarricade.x, p.y, p.color);
             addDamageText(hitBarricade.x + 20, p.y - 18, p.damage * BOSS_BARRICADE_DAMAGE_MULTIPLIER, false, "#ffb36b");
+            bossProjectiles.splice(i, 1);
+            continue;
+        }
+
+        const hitMine = getBossProjectileMineHit(p);
+        if (hitMine) {
+            damageMine(hitMine, p.damage, p);
+            if (p.burn) createFireZone(hitMine.x, hitMine.y, 54, Math.max(1.2, p.damage * 0.28), 1800, 450);
             bossProjectiles.splice(i, 1);
             continue;
         }
@@ -3827,6 +3898,17 @@ function updateEnemies() {
             continue;
         }
 
+        const blockingMine = enemy.special === "healer" ? null : getBlockingMineForEnemy(enemy);
+        if (blockingMine) {
+            enemy.isAttacking = true;
+            enemy.target = "mine";
+            if (now - enemy.lastAttackTime >= enemy.attackDelay) {
+                damageMine(blockingMine, enemy.damageToDefense || 1, enemy);
+                enemy.lastAttackTime = now;
+            }
+            continue;
+        }
+
         enemy.target = mainTarget.type;
         const dx = mainTarget.x - enemy.x;
         const dy = mainTarget.y - enemy.y;
@@ -3855,6 +3937,8 @@ function updateEnemies() {
                     damageTower(mainTarget.object, enemy.damageToDefense || 1, enemy);
                 } else if (mainTarget.type === "barricade" && mainTarget.object) {
                     damageBarricade(mainTarget.object, enemy.damageToDefense || 1, enemy);
+                } else if (mainTarget.type === "mine" && mainTarget.object) {
+                    damageMine(mainTarget.object, enemy.damageToDefense || 1, enemy);
                 } else {
                     ended = damagePlayer(enemy.damageToDefense, enemy, enemy.x, enemy.y, "¡Rebote bloqueado!");
                 }
@@ -3894,6 +3978,9 @@ function updateEnemies() {
                 createImpactParticles(mainTarget.object.x, mainTarget.object.y, enemy.color || "#ff7777");
             } else if (mainTarget.type === "barricade" && mainTarget.object) {
                 damageBarricade(mainTarget.object, enemy.damageToDefense || 1, enemy);
+                createImpactParticles(mainTarget.x, mainTarget.y, enemy.color || "#d6a05f");
+            } else if (mainTarget.type === "mine" && mainTarget.object) {
+                damageMine(mainTarget.object, enemy.damageToDefense || 1, enemy);
                 createImpactParticles(mainTarget.x, mainTarget.y, enemy.color || "#d6a05f");
             } else {
                 ended = damagePlayer(enemy.damageToDefense, enemy, enemy.x, enemy.y, "¡Golpe bloqueado!");
@@ -4424,14 +4511,15 @@ function checkWaveComplete() {
 }
 
 function awardMineIncome(completedWave = wave) {
-    if (!mines || !mines.length) return 0;
+    const activeMines = (mines || []).filter(mine => mine && mine.hp > 0);
+    if (!activeMines.length) return 0;
     const perMine = getMineIncomeForWave(completedWave);
-    const total = perMine * mines.length;
+    const total = perMine * activeMines.length;
     if (total <= 0) return 0;
 
     coins = Math.min(Number.MAX_SAFE_INTEGER, coins + total);
     waveStats.gold += total;
-    mines.forEach(mine => {
+    activeMines.forEach(mine => {
         mine.totalGold = (Number(mine.totalGold) || 0) + perMine;
         mine.lastIncome = perMine;
         mine.pulseUntil = getGameTime() + 1200;
@@ -5485,6 +5573,7 @@ function drawTitanShards() {
 
 function drawMines() {
     (mines || []).forEach(mine => {
+        if (!mine || mine.hp <= 0) return;
         const radius = mine.radius || MINE_COLLISION_RADIUS;
         const pulse = mine.pulseUntil && mine.pulseUntil > getGameTime();
         const glowRadius = radius + (pulse ? 13 : 7);
@@ -5530,6 +5619,16 @@ function drawMines() {
         ctx.fillStyle = "#2b2100";
         ctx.font = "bold 16px Arial";
         ctx.fillText("$", mine.x - 5, mine.y + 6);
+
+        const maxHp = Math.max(1, mine.maxHp || MINE_MAX_HP);
+        const hpPercent = Math.max(0, Math.min(1, (mine.hp ?? maxHp) / maxHp));
+        ctx.fillStyle = "rgba(0,0,0,0.72)";
+        ctx.fillRect(mine.x - 24, mine.y + radius + 10, 48, 6);
+        ctx.fillStyle = hpPercent > 0.45 ? "#73ff9f" : hpPercent > 0.22 ? "#ffe28a" : "#ff6262";
+        ctx.fillRect(mine.x - 24, mine.y + radius + 10, 48 * hpPercent, 6);
+        ctx.strokeStyle = "rgba(255,255,255,0.55)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(mine.x - 24, mine.y + radius + 10, 48, 6);
 
         if (mine.lastIncome) {
             ctx.fillStyle = "rgba(255,255,255,0.9)";
@@ -6335,7 +6434,7 @@ function drawMinimap() {
     enemies.forEach(e => dot(e.x, e.y, e.isBoss ? "#ff55ff" : "#ff3333", e.isBoss ? 3.8 : 2));
     towers.forEach(t => dot(t.x, t.y, "#ffffff", 1.7));
     (traps || []).forEach(trap => dot(trap.x, trap.y, trap.type === "snare" ? "#9be7ff" : "#ff6b6b", 1.4));
-    (mines || []).forEach(mine => dot(mine.x, mine.y, "#ffd76a", 1.7));
+    (mines || []).forEach(mine => { if (mine.hp > 0) dot(mine.x, mine.y, "#ffd76a", 1.7); });
     (titanShards || []).forEach(shard => dot(shard.x, shard.y, "#b64dff", 2.2));
     barricades.forEach(b => { if (b.active && b.hp > 0) dot(b.x, b.y, "#aaaaaa", 1.6); });
     ctx.strokeStyle = "rgba(115,255,159,0.7)";
@@ -7905,6 +8004,8 @@ function createMine(x, y, paidCost = getMineCostForCount()) {
         y,
         radius: MINE_COLLISION_RADIUS,
         color: mineDefinitions.gold.color,
+        maxHp: MINE_MAX_HP,
+        hp: MINE_MAX_HP,
         cost: paidCost,
         totalGold: 0,
         lastIncome: 0,
