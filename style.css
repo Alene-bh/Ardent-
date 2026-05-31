@@ -105,6 +105,52 @@ button:disabled {
     line-height: 1.15;
 }
 
+.hpHudBox {
+    min-width: 158px !important;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.hpHudLabel {
+    color: #ffd6e8;
+    font-weight: bold;
+    font-size: 12px;
+}
+
+.hpHudBar {
+    position: relative;
+    width: 112px;
+    height: 16px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: #2b1018;
+    border: 1px solid rgba(255, 139, 209, 0.55);
+    box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.65), 0 0 8px rgba(255, 79, 150, 0.18);
+}
+
+.hpHudFill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #ff2f68, #ff8bd1);
+    box-shadow: 0 0 10px rgba(255, 91, 165, 0.65);
+    transition: width 0.12s linear;
+}
+
+.hpHudText {
+    position: relative;
+    z-index: 1;
+    display: block;
+    width: 100%;
+    text-align: center;
+    font-size: 10px;
+    line-height: 15px;
+    color: white;
+    text-shadow: 0 1px 3px black;
+}
+
 #abilityBar {
     display: flex;
     gap: 5px;
