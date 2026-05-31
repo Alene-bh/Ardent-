@@ -6,6 +6,22 @@ const ctx = canvas.getContext("2d");
 // de imagen agrandada/borrosa en monitores grandes.
 const GAME_WIDTH = 900;
 const GAME_HEIGHT = 450;
+// Modo Fortaleza: mundo grande con cámara, construcción libre y minimapa.
+const WORLD_WIDTH = 3400;
+const WORLD_HEIGHT = 2300;
+const BUILD_GRID_SIZE = 25;
+const TOWER_COLLISION_RADIUS = 26;
+const BARRICADE_LENGTH = 110;
+const BARRICADE_THICKNESS = 24;
+const BASE_RADIUS = 34;
+const PLAYER_SURVIVAL_SPEED = 1.75;
+const ENEMY_SURVIVAL_SPEED_MULTIPLIER = 0.72;
+let camera = { x: 0, y: 0 };
+let baseCore = null;
+let basePlaced = false;
+let pendingBasePlacement = false;
+let pendingBarricadePlacement = null;
+let barricadeBuildOrientation = "horizontal";
 let canvasPixelRatio = 1;
 
 function resizeCanvasForDisplay() {
@@ -155,6 +171,7 @@ function resetControlBindings() {
     saveControlBindings();
     pressedKeys.clear();
     isSpaceDown = false;
+    isShiftDown = false;
     updateControlsUI();
     updateHud();
 }
@@ -272,6 +289,16 @@ const centerMessage = document.getElementById("centerMessage");
 
 const waveSummaryPanel = document.getElementById("waveSummaryPanel");
 const openShopBtn = document.getElementById("openShopBtn");
+const openShopHudBtn = document.getElementById("openShopHudBtn");
+const closeShopBtn = document.getElementById("closeShopBtn");
+const constructionBtn = document.getElementById("constructionBtn");
+const cancelBuildBtn = document.getElementById("cancelBuildBtn");
+const structurePanel = document.getElementById("structurePanel");
+const structurePanelTitle = document.getElementById("structurePanelTitle");
+const structurePanelInfo = document.getElementById("structurePanelInfo");
+const structurePanelActions = document.getElementById("structurePanelActions");
+const closeStructurePanelBtn = document.getElementById("closeStructurePanelBtn");
+const shopTitle = document.getElementById("shopTitle");
 
 const summaryKillsText = document.getElementById("summaryKillsText");
 const summaryGoldText = document.getElementById("summaryGoldText");
@@ -464,6 +491,7 @@ let isInMainMenu = true;
 
 let isMouseDown = false;
 let isSpaceDown = false;
+let isShiftDown = false;
 
 let gameSpeed = 1;
 let speedOptions = [1, 2, 2.5, 4];
@@ -596,40 +624,122 @@ const towerSlots = createTowerPlacementTiles();
 
 let pendingTowerPurchase = null;
 let pendingTowerMoveIndex = null;
+let selectedStructureIds = [];
+let selectedStructureType = null;
+
+const BARRICADE_BUILD_COSTS = {
+    standard: 100,
+    regen: 180,
+    explosive: 220,
+    thorns: 130
+};
+
 
 function createReservedBarricadeLaneTiles() {
-    const tiles = [];
-    const yPositions = [];
-
-    for (let y = 55; y <= canvas.height - 45; y += TOWER_TILE_SIZE) {
-        yPositions.push(y);
-    }
-
-    yPositions.forEach(y => {
-        tiles.push({
-            x: RESERVED_BARRICADE_LANE_X,
-            y,
-            size: TOWER_TILE_SIZE,
-            reservedForBarricade: true
-        });
-    });
-
-    return tiles;
+    return [];
 }
 
 function createTowerPlacementTiles() {
-    const tiles = [];
+    return [];
+}
 
-    // Ahora hay grilla en casi todo el mapa. Solo se deja libre la columna
-    // reservada para la barricada avanzada.
-    for (let y = 55; y <= canvas.height - 45; y += TOWER_TILE_SIZE) {
-        for (let x = 185; x <= canvas.width - 65; x += TOWER_TILE_SIZE) {
-            if (Math.abs(x - RESERVED_BARRICADE_LANE_X) < TOWER_TILE_SIZE * 0.55) continue;
-            tiles.push({ x, y, size: TOWER_TILE_SIZE });
-        }
+function clampWorldX(x, radius = 0) {
+    return Math.max(radius, Math.min(WORLD_WIDTH - radius, x));
+}
+
+function clampWorldY(y, radius = 0) {
+    return Math.max(radius, Math.min(WORLD_HEIGHT - radius, y));
+}
+
+function snapToBuildGrid(value) {
+    return Math.round(value / BUILD_GRID_SIZE) * BUILD_GRID_SIZE;
+}
+
+function getSnappedBuildPoint(x = mousePosition.x, y = mousePosition.y) {
+    return {
+        x: clampWorldX(snapToBuildGrid(x), 20),
+        y: clampWorldY(snapToBuildGrid(y), 20)
+    };
+}
+
+function getBarricadeDimensions(orientation = barricadeBuildOrientation) {
+    return orientation === "vertical"
+        ? { width: BARRICADE_THICKNESS, height: BARRICADE_LENGTH }
+        : { width: BARRICADE_LENGTH, height: BARRICADE_THICKNESS };
+}
+
+function getBarricadeBaseCost(kind = "standard") {
+    return BARRICADE_BUILD_COSTS[kind] || BARRICADE_BUILD_COSTS.standard;
+}
+
+function getBarricadeKindLabel(kind = "standard") {
+    if (kind === "regen") return "Regenerativa";
+    if (kind === "explosive") return "Explosiva";
+    if (kind === "thorns") return "Espinas";
+    return "Estándar";
+}
+
+function ensureBarricadeEconomy(b) {
+    if (!b) return b;
+    const baseCost = getBarricadeBaseCost(b.kind);
+    b.buildCost = Number(b.buildCost) || baseCost;
+    b.spent = Number(b.spent) || b.buildCost;
+    b.upgradeCost = Number(b.upgradeCost) || scaleBarricadeCost(baseCost, b.kind === "standard" ? 1.42 : 1.34);
+    return b;
+}
+
+function ensureTowerEconomy(t) {
+    if (!t) return t;
+    t.spent = Number(t.spent) || Number(t.cost) || 0;
+    t.upgradeCost = Number(t.upgradeCost) || Math.floor((Number(t.cost) || 100) * 1.35);
+    return t;
+}
+
+function getEntityRect(entity) {
+    if (!entity) return null;
+    if (entity.kind === "barricade" || entity.isBuildBarricade) {
+        const dims = getBarricadeDimensions(entity.orientation || "horizontal");
+        return { left: entity.x - dims.width / 2, right: entity.x + dims.width / 2, top: entity.y - dims.height / 2, bottom: entity.y + dims.height / 2 };
     }
+    const r = entity.radius || TOWER_COLLISION_RADIUS;
+    return { left: entity.x - r, right: entity.x + r, top: entity.y - r, bottom: entity.y + r };
+}
 
-    return tiles;
+function rectsOverlap(a, b, padding = 0) {
+    return a.left - padding < b.right && a.right + padding > b.left && a.top - padding < b.bottom && a.bottom + padding > b.top;
+}
+
+function isBuildRectInsideWorld(rect) {
+    return rect.left >= 0 && rect.right <= WORLD_WIDTH && rect.top >= 0 && rect.bottom <= WORLD_HEIGHT;
+}
+
+function isTowerPositionOccupied(x, y, ignoredTower = null) {
+    const towerRect = getEntityRect({ x, y, radius: TOWER_COLLISION_RADIUS });
+    if (!isBuildRectInsideWorld(towerRect)) return true;
+    if (baseCore && Math.hypot(x - baseCore.x, y - baseCore.y) < BASE_RADIUS + TOWER_COLLISION_RADIUS + 18) return true;
+    if (player && Math.hypot(x - player.x, y - player.y) < 38) return true;
+    if ((towers || []).some(t => t !== ignoredTower && rectsOverlap(towerRect, getEntityRect({ x: t.x, y: t.y, radius: TOWER_COLLISION_RADIUS }), 6))) return true;
+    if ((barricades || []).some(b => b.active && b.hp > 0 && rectsOverlap(towerRect, getEntityRect({ ...b, isBuildBarricade: true }), 6))) return true;
+    return false;
+}
+
+function isBarricadePositionValid(x, y, orientation = barricadeBuildOrientation, ignoredBarricade = null) {
+    const rect = getEntityRect({ x, y, orientation, isBuildBarricade: true });
+    if (!isBuildRectInsideWorld(rect)) return false;
+    if (baseCore && rectsOverlap(rect, getEntityRect({ x: baseCore.x, y: baseCore.y, radius: BASE_RADIUS }), 10)) return false;
+    if (player && rectsOverlap(rect, getEntityRect({ x: player.x, y: player.y, radius: 22 }), 8)) return false;
+    if ((towers || []).some(t => rectsOverlap(rect, getEntityRect({ x: t.x, y: t.y, radius: TOWER_COLLISION_RADIUS }), 6))) return false;
+    if ((barricades || []).some(b => b !== ignoredBarricade && b.active && b.hp > 0 && rectsOverlap(rect, getEntityRect({ ...b, isBuildBarricade: true }), 4))) return false;
+    return true;
+}
+
+function getTowerTileAt(x, y) {
+    const point = getSnappedBuildPoint(x, y);
+    return { x: point.x, y: point.y, size: TOWER_TILE_SIZE };
+}
+
+function isTowerTileOccupied(tile, ignoredTower = null) {
+    return !tile || isTowerPositionOccupied(tile.x, tile.y, ignoredTower);
 }
 
 const towerDefinitions = [
@@ -850,6 +960,7 @@ function getBossTypeForWave() {
 
 function createBarricadeSlot(name, x) {
     return {
+        id: Date.now() + Math.random(),
         name,
         active: false,
         x,
@@ -866,6 +977,73 @@ function createBarricadeSlot(name, x) {
     };
 }
 
+
+function createFreeBarricade(kind = "standard", x = player ? player.x + 85 : WORLD_WIDTH / 2, y = player ? player.y : WORLD_HEIGHT / 2, orientation = barricadeBuildOrientation) {
+    const b = createBarricadeSlot(kind === "standard" ? "Muro" : kind, x);
+    b.kind = kind;
+    b.y = y;
+    b.orientation = orientation;
+    b.isBuildBarricade = true;
+    b.buildCost = getBarricadeBaseCost(kind);
+    b.spent = b.buildCost;
+    b.upgradeCost = scaleBarricadeCost(b.buildCost, kind === "standard" ? 1.42 : 1.34);
+    return b;
+}
+
+function getNearestActiveBarricadeTo(x, y) {
+    let best = null;
+    let bestDist = Infinity;
+    (barricades || []).forEach(b => {
+        if (!b.active || b.hp <= 0) return;
+        const d = Math.hypot((b.x || 0) - x, (b.y || 0) - y);
+        if (d < bestDist) { best = b; bestDist = d; }
+    });
+    return best;
+}
+
+function getEnemyMainTarget(enemy) {
+    // Modo supervivencia: el objetivo real sos vos. Sin núcleo/base.
+    return { type: "player", x: player.x, y: player.y, radius: 23, object: player };
+}
+
+function getBlockingBarricadeForEnemy(enemy, targetX, targetY) {
+    let best = null;
+    let bestDist = Infinity;
+    (barricades || []).forEach(b => {
+        if (!b.active || b.hp <= 0) return;
+        const rect = getEntityRect({ ...b, isBuildBarricade: true });
+        const closestX = Math.max(rect.left, Math.min(rect.right, enemy.x));
+        const closestY = Math.max(rect.top, Math.min(rect.bottom, enemy.y));
+        const d = Math.hypot(enemy.x - closestX, enemy.y - closestY);
+        if (d <= enemy.radius + 7) {
+            const targetDist = Math.hypot(targetX - b.x, targetY - b.y);
+            if (targetDist < bestDist) { best = b; bestDist = targetDist; }
+        }
+    });
+    return best;
+}
+
+function damageBase(amount, x = baseCore ? baseCore.x : 0, y = baseCore ? baseCore.y : 0) {
+    if (!baseCore || !basePlaced) return false;
+    baseCore.hp -= amount;
+    triggerRedFlash();
+    createImpactParticles(x, y, "#ff7777");
+    addDamageText(x, y - 24, amount, false, "#ff7777");
+    if (baseCore.hp <= 0) {
+        baseCore.hp = 0;
+        showCenterMessage("¡NÚCLEO DESTRUIDO!", 1200);
+        endRun();
+        return true;
+    }
+    return false;
+}
+
+function updateCamera() {
+    if (!player) return;
+    camera.x = Math.max(0, Math.min(WORLD_WIDTH - GAME_WIDTH, player.x - GAME_WIDTH / 2));
+    camera.y = Math.max(0, Math.min(WORLD_HEIGHT - GAME_HEIGHT, player.y - GAME_HEIGHT / 2));
+}
+
 function getActiveBarricades() {
     return (barricades || []).filter(b => b.active && b.hp > 0);
 }
@@ -873,8 +1051,15 @@ function getActiveBarricades() {
 function getCurrentDefenseBarricade() {
     const active = getActiveBarricades();
     if (active.length === 0) return null;
-    return active.reduce((best, b) => b.x > best.x ? b : best, active[0]);
+    const tx = baseCore?.x ?? player?.x ?? WORLD_WIDTH / 2;
+    const ty = baseCore?.y ?? player?.y ?? WORLD_HEIGHT / 2;
+    return active.reduce((best, b) => {
+        const db = Math.hypot(b.x - tx, b.y - ty);
+        const da = Math.hypot(best.x - tx, best.y - ty);
+        return db < da ? b : best;
+    }, active[0]);
 }
+
 
 function getTotalBarricadeHp() {
     return (barricades || []).reduce((sum, b) => sum + Math.max(0, b.hp), 0);
@@ -965,7 +1150,7 @@ function explodeBarricade(b) {
     const radius = 120;
     const damage = 10 + wave * 0.6;
 
-    effects.push({ type: "circle", x: b.x, y: GAME_HEIGHT / 2, radius: 14, maxRadius: radius, life: 34, color: "#ff8d2a" });
+    effects.push({ type: "circle", x: b.x, y: b.y || (baseCore?.y || player?.y || WORLD_HEIGHT / 2), radius: 14, maxRadius: radius, life: 34, color: "#ff8d2a" });
 
     enemies.forEach(enemy => {
         if (Math.abs(enemy.x - b.x) <= radius) {
@@ -1079,14 +1264,12 @@ function isTowerTileOccupied(tile, ignoredTower = null) {
 }
 
 function getTowerTileAt(x, y) {
-    return towerSlots.find(tile => (
-        Math.abs(x - tile.x) <= TOWER_TILE_HALF &&
-        Math.abs(y - tile.y) <= TOWER_TILE_HALF
-    ));
+    const point = getSnappedBuildPoint(x, y);
+    return { x: point.x, y: point.y, size: TOWER_TILE_SIZE };
 }
 
 function isTowerTileAvailable(tile, ignoredTower = null) {
-    return !!tile && !isTowerTileOccupied(tile, ignoredTower);
+    return !!tile && !isTowerPositionOccupied(tile.x, tile.y, ignoredTower);
 }
 
 function createTowerFromDefinition(def, paidCost = def.cost, tile = null) {
@@ -1125,20 +1308,24 @@ function beginTowerPlacement(defKey) {
         return;
     }
 
+    clearStructureSelection();
     pendingTowerPurchase = { defKey, price };
-    shop.classList.add("hidden");
+    pendingBarricadePlacement = null;
+    closeShop();
     waveSummaryPanel.classList.add("hidden");
-    showCenterMessage(`Colocá: ${def.name}`, 1100);
+    showCenterMessage(`Colocá: ${def.name} · podés seguir colocando hasta quedarte sin monedas`, 1300);
+    updateBuildCancelUI();
     updateHud();
 }
 
-function cancelTowerPlacement(showShopAgain = true) {
+function cancelTowerPlacement(showShopAgain = false) {
     if (!pendingTowerPurchase) return;
     pendingTowerPurchase = null;
-    if (showShopAgain && !waveInProgress && hasActiveRun) {
-        shop.classList.remove("hidden");
+    updateBuildCancelUI();
+    if (showShopAgain && hasActiveRun) {
+        openConstruction("towers");
     }
-    updateHud();
+    updateHud(true);
 }
 
 function beginTowerMove(index) {
@@ -1147,38 +1334,39 @@ function beginTowerMove(index) {
 
     pendingTowerPurchase = null;
     pendingTowerMoveIndex = index;
-    shop.classList.add("hidden");
+    closeShop();
     waveSummaryPanel.classList.add("hidden");
     showCenterMessage(`Mové: ${tower.name}`, 1100);
     updateHud();
 }
 
-function cancelTowerMove(showShopAgain = true) {
+function cancelTowerMove(showShopAgain = false) {
     if (pendingTowerMoveIndex === null) return;
     pendingTowerMoveIndex = null;
-    if (showShopAgain && !waveInProgress && hasActiveRun) {
-        shop.classList.remove("hidden");
+    updateBuildCancelUI();
+    if (showShopAgain && hasActiveRun) {
+        openConstruction("towers");
     }
-    updateHud();
+    updateHud(true);
 }
 
 function finishTowerMove(tile) {
     const tower = towers[pendingTowerMoveIndex];
 
     if (!tower) {
-        cancelTowerMove(true);
+        cancelTowerMove(false);
         return;
     }
 
     if (!tile || !isTowerTileAvailable(tile, tower)) {
-        showCenterMessage("Tile ocupado o inválido", 700);
+        showCenterMessage("Lugar ocupado o inválido", 700);
         return;
     }
 
     tower.x = tile.x;
     tower.y = tile.y;
     pendingTowerMoveIndex = null;
-    if (!waveInProgress && hasActiveRun) shop.classList.remove("hidden");
+    updateBuildCancelUI();
     showCenterMessage(`${tower.name} movida`, 750);
     updateHud(true);
     autoSaveRun(true);
@@ -1186,20 +1374,27 @@ function finishTowerMove(tile) {
 
 function finishTowerPlacement(tile) {
     if (!pendingTowerPurchase || !isTowerTileAvailable(tile)) {
-        showCenterMessage("Tile ocupado o inválido", 700);
+        showCenterMessage("Lugar ocupado o inválido", 700);
         return;
     }
 
-    let def = getTowerDefinition(pendingTowerPurchase.defKey);
+    const originalDefKey = pendingTowerPurchase.defKey;
+    let def = getTowerDefinition(originalDefKey);
     if (!def) {
         cancelTowerPlacement(false);
         return;
     }
 
-    const price = pendingTowerPurchase.price;
+    const price = costs[originalDefKey] ?? def.cost;
     if (coins < price) {
         showCenterMessage("Monedas insuficientes", 800);
-        cancelTowerPlacement(true);
+        cancelTowerPlacement(false);
+        return;
+    }
+
+    if (towers.length >= towerSlotLimit) {
+        showCenterMessage("Límite de slots de torre alcanzado", 900);
+        cancelTowerPlacement(false);
         return;
     }
 
@@ -1210,7 +1405,7 @@ function finishTowerPlacement(tile) {
         def = options[Math.floor(Math.random() * options.length)];
         showCenterMessage(`Lucky Block: ${def.name}`, 900);
     } else {
-        showCenterMessage(`${def.name} colocada`, 750);
+        showCenterMessage(`${def.name} colocada · seguí colocando o cancelá`, 900);
     }
 
     const tower = createTowerFromDefinition(def, price, tile);
@@ -1221,8 +1416,16 @@ function finishTowerPlacement(tile) {
     }
 
     towers.push(tower);
-    pendingTowerPurchase = null;
-    if (!waveInProgress && hasActiveRun) shop.classList.remove("hidden");
+
+    const nextPrice = costs[originalDefKey] ?? getTowerDefinition(originalDefKey)?.cost ?? price;
+    if (towers.length >= towerSlotLimit || coins < nextPrice) {
+        pendingTowerPurchase = null;
+        showCenterMessage(towers.length >= towerSlotLimit ? "Límite de torres alcanzado" : "Sin monedas para otra torre", 900);
+    } else {
+        pendingTowerPurchase = { defKey: originalDefKey, price: nextPrice };
+    }
+
+    updateBuildCancelUI();
     updateHud(true);
     autoSaveRun(true);
 }
@@ -1308,8 +1511,8 @@ function createDefaultState() {
     leaderboardDisqualificationReason = "";
 
     player = {
-        x: 80,
-        y: GAME_HEIGHT / 2,
+        x: WORLD_WIDTH / 2,
+        y: WORLD_HEIGHT / 2,
         damage: 1,
         fireDelay: 550,
         lastShotTime: 0,
@@ -1317,7 +1520,9 @@ function createDefaultState() {
         hp: 20,
         critChance: 0,
         critMultiplier: 2,
-        moveSpeed: 2.75,
+        moveSpeed: PLAYER_SURVIVAL_SPEED,
+        aimX: WORLD_WIDTH / 2 + 1,
+        aimY: WORLD_HEIGHT / 2,
         shieldCharges: 0,
         doubleShotUntil: 0,
         attackSpeedUntil: 0,
@@ -1350,12 +1555,12 @@ function createDefaultState() {
     doomSpawnedThisWave = false;
     lastDoomWave = -999;
     selectedBarricadeSlotIndex = 0;
+    baseCore = null;
+    basePlaced = false;
+    pendingBasePlacement = false;
 
-    barricades = [
-        createBarricadeSlot("Inicio", 120),
-        createBarricadeSlot("Avanzada", ADVANCED_BARRICADE_X)
-    ];
-    barricade = barricades[0];
+    barricades = [];
+    barricade = null;
 
     towers = [];
     towerSlotLimit = INITIAL_TOWER_LIMIT;
@@ -1517,6 +1722,8 @@ function buildSavePayload() {
         doomSpawnedThisWave,
         lastDoomWave,
         selectedBarricadeSlotIndex,
+        baseCore,
+        basePlaced,
         player,
         barricades,
         towers,
@@ -1623,15 +1830,25 @@ function restoreSavedRun() {
         doomSpawnedThisWave = Boolean(data.doomSpawnedThisWave);
         lastDoomWave = Number.isFinite(Number(data.lastDoomWave)) ? Number(data.lastDoomWave) : -999;
         selectedBarricadeSlotIndex = Number.isInteger(data.selectedBarricadeSlotIndex) ? Math.max(0, Math.min(1, data.selectedBarricadeSlotIndex)) : 0;
+        baseCore = null;
+        basePlaced = false;
+        pendingBasePlacement = false;
 
         player = data.player;
+        player.x = clampWorldX(Number(player.x) || WORLD_WIDTH / 2, 32);
+        player.y = clampWorldY(Number(player.y) || WORLD_HEIGHT / 2, 32);
+        player.moveSpeed = Number(player.moveSpeed) || PLAYER_SURVIVAL_SPEED;
         player.name = developerName || alphaTesterName || playerName;
         player.alphaTester = Boolean(alphaTesterName);
         player.developer = Boolean(developerName);
 
         barricades = Array.isArray(data.barricades) ? data.barricades : [createBarricadeSlot("Inicio", 120), createBarricadeSlot("Avanzada", ADVANCED_BARRICADE_X)];
+        barricades.forEach((b, index) => { if (!b.id) b.id = Date.now() + Math.random() + index; ensureBarricadeEconomy(b); });
         barricade = barricades[0];
         towers = Array.isArray(data.towers) ? data.towers : [];
+        towers.forEach((t, index) => { if (!t.id) t.id = Date.now() + Math.random() + index; ensureTowerEconomy(t); });
+        selectedStructureIds = [];
+        selectedStructureType = null;
         towerSlotLimit = clampTowerSlotLimit(data.towerSlotLimit || INITIAL_TOWER_LIMIT);
         updateTowerSlotIndexes();
 
@@ -1723,7 +1940,11 @@ function startGame() {
         if (!restored) {
             createDefaultState();
             hasActiveRun = true;
+            gameRunning = true;
+            waveInProgress = false;
+            pendingBasePlacement = false;
             startWave();
+            showCenterMessage("¡SOBREVIVÍ!", 1200);
         } else {
             // Si la partida se guardó justo al pausar/cambiar de pantalla,
             // al continuar una oleada debe arrancar limpia: sin pausa y corriendo.
@@ -1757,6 +1978,7 @@ function startGame() {
 
 function startWave() {
     cancelTowerPlacement(false);
+    cancelBarricadePlacement(false);
     waveInProgress = true;
     gameRunning = true;
 
@@ -1779,7 +2001,7 @@ function startWave() {
     lastSpawnTime = getGameTime();
     doomSpawnedThisWave = false;
 
-    shop.classList.add("hidden");
+    closeShop();
     waveSummaryPanel.classList.add("hidden");
     gameOverScreen.classList.add("hidden");
     pausePanel.classList.add("hidden");
@@ -1832,15 +2054,25 @@ function getSpecialEnemyChance() {
     return Math.min(0.38, 0.13 + wave * 0.008);
 }
 
+function getRandomSpawnPoint() {
+    const side = Math.floor(Math.random() * 4);
+    const margin = 55;
+    if (side === 0) return { x: Math.random() * WORLD_WIDTH, y: -margin };
+    if (side === 1) return { x: WORLD_WIDTH + margin, y: Math.random() * WORLD_HEIGHT };
+    if (side === 2) return { x: Math.random() * WORLD_WIDTH, y: WORLD_HEIGHT + margin };
+    return { x: -margin, y: Math.random() * WORLD_HEIGHT };
+}
+
 function createEnemyFromType(type, options = {}) {
     const hpScaling = options.ignoreScaling ? 1 : 1 + wave * 0.13;
     const speedScaling = options.ignoreScaling ? 0 : wave * 0.012;
     const maxHp = Math.max(1, Math.ceil(type.hp * hpScaling));
-    const speed = type.speed + speedScaling;
+    const speed = (type.speed + speedScaling) * ENEMY_SURVIVAL_SPEED_MULTIPLIER;
+    const spawnPoint = options.spawnPoint || getRandomSpawnPoint();
 
     return {
-        x: options.x ?? GAME_WIDTH + 30,
-        y: options.y ?? 70 + Math.random() * (GAME_HEIGHT - 140),
+        x: options.x ?? spawnPoint.x,
+        y: options.y ?? spawnPoint.y,
         radius: options.radius ?? 18,
         color: type.color,
         hp: maxHp,
@@ -1921,7 +2153,7 @@ function spawnMiniEnemy(x, y) {
         name: "Bichito Invocado",
         color: "#ffffff",
         hp: 1 + Math.floor(wave / 10),
-        speed: 1.22 + wave * 0.006,
+        speed: (1.22 + wave * 0.006) * ENEMY_SURVIVAL_SPEED_MULTIPLIER,
         reward: 1,
         score: 2,
         damageToDefense: 1,
@@ -1930,7 +2162,7 @@ function spawnMiniEnemy(x, y) {
 
     enemies.push(createEnemyFromType(miniType, {
         x,
-        y: Math.max(45, Math.min(GAME_HEIGHT - 45, y)),
+        y: clampWorldY(y, 45),
         radius: 11,
         reward: 1,
         scoreValue: 3 + Math.floor(wave / 4),
@@ -1943,11 +2175,12 @@ function spawnBoss() {
     const type = getBossTypeForWave();
     const hpScaling = 1 + wave * 0.28;
     const maxHp = Math.ceil(type.hp * hpScaling);
-    const speed = type.speed + wave * 0.0045;
+    const speed = (type.speed + wave * 0.0045) * ENEMY_SURVIVAL_SPEED_MULTIPLIER;
 
+    const spawn = getRandomSpawnPoint();
     enemies.push({
-        x: GAME_WIDTH + 70,
-        y: GAME_HEIGHT / 2,
+        x: spawn.x,
+        y: spawn.y,
         radius: 42,
         color: type.color,
         hp: maxHp,
@@ -1976,7 +2209,7 @@ function spawnBoss() {
         bossSpecialCooldown: type.specialCooldown || 2200,
         bossBurstShots: type.burstShots || 5,
         bossBurstDelay: type.burstDelay || 180,
-        dvdVy: (Math.random() < 0.5 ? 1 : -1) * (type.dvdVy || 1.05),
+        dvdVy: (Math.random() < 0.5 ? 1 : -1) * (type.dvdVy || 1.05) * ENEMY_SURVIVAL_SPEED_MULTIPLIER,
         spiralAngle: 0
     });
 }
@@ -2135,19 +2368,31 @@ function autoShootPlayer() {
 }
 
 function getPlayerRightBoundaryX() {
-    const activeWall = getCurrentDefenseBarricade();
-    if (!activeWall) return GAME_WIDTH - 32;
-    return Math.max(32, activeWall.x - 32);
+    return WORLD_WIDTH - 32;
+}
+
+function resolvePlayerBarricadeCollision(oldX, oldY) {
+    if (!player) return;
+    const playerRect = getEntityRect({ x: player.x, y: player.y, radius: 22 });
+    for (const b of (barricades || [])) {
+        if (!b.active || b.hp <= 0) continue;
+        const rect = getEntityRect({ ...b, isBuildBarricade: true });
+        if (rectsOverlap(playerRect, rect, 2)) {
+            player.x = oldX;
+            player.y = oldY;
+            return;
+        }
+    }
 }
 
 function clampPlayerToPlayableArea() {
     if (!player) return;
-    player.x = Math.max(32, Math.min(getPlayerRightBoundaryX(), player.x));
-    player.y = Math.max(32, Math.min(GAME_HEIGHT - 32, player.y));
+    player.x = clampWorldX(player.x, 32);
+    player.y = clampWorldY(player.y, 32);
 }
 
 function updatePlayerMovement() {
-    if (!gameRunning || !waveInProgress || isPaused || !player) return;
+    if (!gameRunning || isPaused || !player || !waveInProgress) return;
 
     let dx = 0;
     let dy = 0;
@@ -2159,17 +2404,19 @@ function updatePlayerMovement() {
 
     if (dx === 0 && dy === 0) return;
 
-    // WASD completo. La diagonal se normaliza para no moverse más rápido en diagonal.
+    const oldX = player.x;
+    const oldY = player.y;
     const length = Math.hypot(dx, dy) || 1;
     dx /= length;
     dy /= length;
 
-    const movementSpeedMultiplier = Math.min(1.25, Math.sqrt(gameSpeed));
+    const movementSpeedMultiplier = Math.min(1.12, Math.sqrt(gameSpeed) * 0.82);
     const speed = player.moveSpeed * movementSpeedMultiplier * frameScale;
 
     player.x += dx * speed;
     player.y += dy * speed;
     clampPlayerToPlayableArea();
+    resolvePlayerBarricadeCollision(oldX, oldY);
 }
 
 function updateTowers() {
@@ -2259,7 +2506,7 @@ function updateEnemySpecials(now, defenseLineX) {
             const oldX = enemy.x;
             const oldY = enemy.y;
             enemy.x = Math.max(defenseLineX + 80, enemy.x - (78 + Math.random() * 62));
-            enemy.y = Math.max(45, Math.min(GAME_HEIGHT - 45, enemy.y + (Math.random() - 0.5) * 120));
+            enemy.y = clampWorldY(enemy.y + (Math.random() - 0.5) * 120, 45);
 
             effects.push({ type: "line", x1: oldX, y1: oldY, x2: enemy.x, y2: enemy.y, life: 18, color: "#d58cff" });
             effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 6, maxRadius: 40, life: 18, color: "#d58cff" });
@@ -2316,15 +2563,13 @@ function fireBossProjectile(x, y, targetX, targetY, options = {}) {
 }
 
 function getBossProjectileBarricadeHit(projectile) {
-    const activeBarricades = getActiveBarricades()
-        .slice()
-        .sort((a, b) => projectile.dx <= 0 ? b.x - a.x : a.x - b.x);
-
-    return activeBarricades.find(b => (
-        Math.abs(projectile.x - b.x) <= projectile.radius + 12 &&
-        projectile.y >= 45 - projectile.radius &&
-        projectile.y <= GAME_HEIGHT - 45 + projectile.radius
-    ));
+    return (barricades || []).find(b => {
+        if (!b.active || b.hp <= 0) return false;
+        const rect = getEntityRect({ ...b, isBuildBarricade: true });
+        const cx = Math.max(rect.left, Math.min(rect.right, projectile.x));
+        const cy = Math.max(rect.top, Math.min(rect.bottom, projectile.y));
+        return Math.hypot(projectile.x - cx, projectile.y - cy) <= projectile.radius + 3;
+    });
 }
 
 function updateBossSpecials(now, defenseLineX) {
@@ -2333,9 +2578,9 @@ function updateBossSpecials(now, defenseLineX) {
 
         if (enemy.bossVariant === "dvd") {
             enemy.y += enemy.dvdVy * gameSpeed * frameScale;
-            if (enemy.y < 55 || enemy.y > GAME_HEIGHT - 55) {
+            if (enemy.y < 55 || enemy.y > WORLD_HEIGHT - 55) {
                 enemy.dvdVy *= -1;
-                enemy.y = Math.max(55, Math.min(GAME_HEIGHT - 55, enemy.y));
+                enemy.y = clampWorldY(enemy.y, 55);
                 fireBossProjectile(enemy.x, enemy.y, player.x, player.y, { speed: 4.2, radius: 8, damage: 4, color: "#9be7ff" });
             }
         }
@@ -2353,11 +2598,11 @@ function updateBossSpecials(now, defenseLineX) {
             const oldX = enemy.x;
             const oldY = enemy.y;
             enemy.x = Math.max(defenseLineX + 80, enemy.x - 135);
-            enemy.y = Math.max(55, Math.min(GAME_HEIGHT - 55, player.y + (Math.random() - 0.5) * 150));
+            enemy.y = clampWorldY(player.y + (Math.random() - 0.5) * 150, 55);
             fireBossProjectile(enemy.x, enemy.y, player.x, player.y, { speed: 5.0, radius: 8, damage: 5, color: "#d58cff" });
             fireBossProjectile(enemy.x, enemy.y, player.x, player.y, { speed: 4.6, radius: 7, damage: 4, color: "#d58cff", angleOffset: 0.18 });
             fireBossProjectile(enemy.x, enemy.y, player.x, player.y, { speed: 4.6, radius: 7, damage: 4, color: "#d58cff", angleOffset: -0.18 });
-            enemy.x = Math.min(GAME_WIDTH + 60, enemy.x + 42);
+            enemy.x = clampWorldX(enemy.x + 42, 42);
             effects.push({ type: "line", x1: oldX, y1: oldY, x2: enemy.x, y2: enemy.y, life: 18, color: "#d58cff" });
             effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 8, maxRadius: 58, life: 20, color: "#d58cff" });
         }
@@ -2406,7 +2651,7 @@ function updateBossProjectiles() {
         p.y += p.dy * p.speed * gameSpeed * frameScale;
         p.life -= 16.666 * frameScale;
 
-        if (p.x < -40 || p.x > GAME_WIDTH + 40 || p.y < -40 || p.y > GAME_HEIGHT + 40 || p.life <= 0) {
+        if (p.x < -80 || p.x > WORLD_WIDTH + 80 || p.y < -80 || p.y > WORLD_HEIGHT + 80 || p.life <= 0) {
             bossProjectiles.splice(i, 1);
             continue;
         }
@@ -2422,6 +2667,12 @@ function updateBossProjectiles() {
                 createImpactParticles(hitBarricade.x, p.y, p.color);
                 addDamageText(hitBarricade.x + 20, p.y - 18, p.damage * BOSS_BARRICADE_DAMAGE_MULTIPLIER, false, "#ffb36b");
             }
+            bossProjectiles.splice(i, 1);
+            continue;
+        }
+
+        if (false && basePlaced && baseCore && Math.hypot(p.x - baseCore.x, p.y - baseCore.y) <= p.radius + BASE_RADIUS) {
+            damageBase(p.damage, p.x, p.y);
             bossProjectiles.splice(i, 1);
             continue;
         }
@@ -2465,7 +2716,8 @@ function updateEnemies() {
 
         if (enemy.hitFlash > 0) enemy.hitFlash -= 0.08 * frameScale;
         if (enemy.knockbackX > 0) {
-            enemy.x += enemy.knockbackX * gameSpeed * frameScale;
+            const awayX = enemy.x < player.x ? -1 : 1;
+            enemy.x += awayX * enemy.knockbackX * gameSpeed * frameScale;
             enemy.knockbackX *= Math.pow(0.75, frameScale);
             if (enemy.knockbackX < 0.1) enemy.knockbackX = 0;
         }
@@ -2473,18 +2725,10 @@ function updateEnemies() {
 
     for (let i = enemies.length - 1; i >= 0; i--) {
         const enemy = enemies[i];
-        const targetBarricade = getCurrentDefenseBarricade();
+        const mainTarget = getEnemyMainTarget(enemy);
+        const blockingBarricade = getBlockingBarricadeForEnemy(enemy, mainTarget.x, mainTarget.y);
 
-        if (targetBarricade) {
-            const hasReachedBarricade = enemy.x - enemy.radius <= targetBarricade.x;
-
-            if (!hasReachedBarricade) {
-                enemy.x -= enemy.speed * gameSpeed * frameScale;
-                enemy.isAttacking = false;
-                enemy.target = null;
-                continue;
-            }
-
+        if (blockingBarricade) {
             enemy.isAttacking = true;
             enemy.target = "barricade";
 
@@ -2492,15 +2736,14 @@ function updateEnemies() {
                 if (now - enemy.lastAttackTime >= enemy.attackDelay) {
                     if (player.shieldCharges > 0) {
                         player.shieldCharges--;
-                        createImpactParticles(targetBarricade.x, enemy.y, "#9be7ff");
+                        createImpactParticles(blockingBarricade.x, blockingBarricade.y, "#9be7ff");
                         showCenterMessage("¡Rebote bloqueado!", 600);
                     } else {
-                        damageBarricade(targetBarricade, enemy.damageToDefense, enemy);
-                        createImpactParticles(targetBarricade.x, enemy.y, "#9be7ff");
+                        damageBarricade(blockingBarricade, enemy.damageToDefense, enemy);
+                        createImpactParticles(blockingBarricade.x, blockingBarricade.y, "#9be7ff");
                     }
-
                     enemy.lastAttackTime = now;
-                    enemy.x = Math.min(GAME_WIDTH + 40, enemy.x + 120);
+                    enemy.x += (enemy.x < mainTarget.x ? -1 : 1) * 120;
                     enemy.dvdVy *= -1;
                     enemy.isAttacking = false;
                     effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 10, maxRadius: 62, life: 18, color: "#9be7ff" });
@@ -2516,32 +2759,30 @@ function updateEnemies() {
             if (now - enemy.lastAttackTime >= enemy.attackDelay) {
                 if (player.shieldCharges > 0) {
                     player.shieldCharges--;
-                    enemy.lastAttackTime = now;
-                    createImpactParticles(targetBarricade.x, enemy.y, "#9be7ff");
+                    createImpactParticles(blockingBarricade.x, blockingBarricade.y, "#9be7ff");
                     showCenterMessage("¡Golpe bloqueado!", 600);
                 } else {
-                    damageBarricade(targetBarricade, enemy.damageToDefense, enemy);
-                    enemy.lastAttackTime = now;
-                    createImpactParticles(targetBarricade.x, enemy.y, "#d6a05f");
+                    damageBarricade(blockingBarricade, enemy.damageToDefense, enemy);
+                    createImpactParticles(blockingBarricade.x, blockingBarricade.y, "#d6a05f");
                 }
+                enemy.lastAttackTime = now;
             }
-
             continue;
         }
 
-        // Sin barricadas, ya no existe una base fija: todos persiguen al jugador.
-        enemy.target = "player";
-        const dx = player.x - enemy.x;
-        const dy = player.y - enemy.y;
+        enemy.target = mainTarget.type;
+        const dx = mainTarget.x - enemy.x;
+        const dy = mainTarget.y - enemy.y;
         const distance = Math.hypot(dx, dy);
-        const attackDistance = enemy.radius + 23;
+        const attackDistance = enemy.radius + mainTarget.radius;
 
         if (distance > attackDistance) {
             const nx = dx / (distance || 1);
             const ny = dy / (distance || 1);
             enemy.x += nx * enemy.speed * gameSpeed * frameScale;
             enemy.y += ny * enemy.speed * gameSpeed * frameScale;
-            enemy.y = Math.max(enemy.radius + 6, Math.min(GAME_HEIGHT - enemy.radius - 6, enemy.y));
+            enemy.x = clampWorldX(enemy.x, enemy.radius + 3);
+            enemy.y = clampWorldY(enemy.y, enemy.radius + 3);
             enemy.isAttacking = false;
             continue;
         }
@@ -2550,10 +2791,12 @@ function updateEnemies() {
 
         if (enemy.bossVariant === "dvd") {
             if (now - enemy.lastAttackTime >= enemy.attackDelay) {
-                const ended = damagePlayer(enemy.damageToDefense, enemy, enemy.x, enemy.y, "¡Rebote bloqueado!");
+                const ended = mainTarget.type === "base"
+                    ? damageBase(enemy.damageToDefense, enemy.x, enemy.y)
+                    : damagePlayer(enemy.damageToDefense, enemy, enemy.x, enemy.y, "¡Rebote bloqueado!");
                 if (ended) return;
                 enemy.lastAttackTime = now;
-                enemy.x = Math.min(GAME_WIDTH + 40, enemy.x + 120);
+                enemy.x += (enemy.x < mainTarget.x ? -1 : 1) * 120;
                 enemy.dvdVy *= -1;
                 enemy.isAttacking = false;
                 effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 10, maxRadius: 62, life: 18, color: "#9be7ff" });
@@ -2568,15 +2811,15 @@ function updateEnemies() {
                 showCenterMessage("Titán anulado", 800);
                 continue;
             }
-
-            showCenterMessage("EL TITÁN TE ALCANZÓ", 1200);
-            player.hp = 0;
-            endRun();
+            showCenterMessage(mainTarget.type === "base" ? "EL TITÁN DESTRUYÓ EL NÚCLEO" : "EL TITÁN TE ALCANZÓ", 1200);
+            if (mainTarget.type === "base") damageBase(9999, enemy.x, enemy.y); else { player.hp = 0; endRun(); }
             return;
         }
 
         if (now - enemy.lastAttackTime >= enemy.attackDelay) {
-            const ended = damagePlayer(enemy.damageToDefense, enemy, enemy.x, enemy.y, "¡Golpe bloqueado!");
+            const ended = mainTarget.type === "base"
+                ? damageBase(enemy.damageToDefense, enemy.x, enemy.y)
+                : damagePlayer(enemy.damageToDefense, enemy, enemy.x, enemy.y, "¡Golpe bloqueado!");
             enemy.lastAttackTime = now;
             if (ended) return;
         }
@@ -2590,7 +2833,7 @@ function updateProjectiles() {
         p.x += p.dx * p.speed * gameSpeed * frameScale;
         p.y += p.dy * p.speed * gameSpeed * frameScale;
 
-        if (p.x < 0 || p.x > GAME_WIDTH || p.y < 0 || p.y > GAME_HEIGHT) {
+        if (p.x < -80 || p.x > WORLD_WIDTH + 80 || p.y < -80 || p.y > WORLD_HEIGHT + 80) {
             projectiles.splice(i, 1);
             continue;
         }
@@ -2705,7 +2948,7 @@ function splitEnemy(enemy) {
     for (let i = 0; i < 2; i++) {
         enemies.push(createEnemyFromType(childType, {
             x: enemy.x + 18,
-            y: Math.max(42, Math.min(GAME_HEIGHT - 42, enemy.y + (i === 0 ? -22 : 22))),
+            y: clampWorldY(enemy.y + (i === 0 ? -22 : 22), 42),
             radius: Math.max(10, enemy.radius * 0.78),
             ignoreScaling: true,
             splitLevel: nextLevel
@@ -3284,7 +3527,7 @@ function endRun() {
     bestScoreMenuText.textContent = formatCompactNumber(bestScore);
 
     gameOverScreen.classList.remove("hidden");
-    shop.classList.add("hidden");
+    closeShop();
     waveSummaryPanel.classList.add("hidden");
 
     submitLeaderboardScore();
@@ -3377,8 +3620,8 @@ function useFreeze() {
 
     effects.push({
         type: "circle",
-        x: GAME_WIDTH / 2,
-        y: GAME_HEIGHT / 2,
+        x: player.x,
+        y: player.y,
         radius: 20,
         maxRadius: 480,
         life: 35,
@@ -3549,45 +3792,73 @@ function drawPath() {
 }
 
 function drawBase() {
-    // Base eliminada: los enemigos ahora focusean al jugador.
+    if (!basePlaced || !baseCore) return;
+    ctx.save();
+    ctx.fillStyle = "#ffe28a";
+    ctx.beginPath();
+    ctx.arc(baseCore.x, baseCore.y, BASE_RADIUS, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.65)";
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    ctx.fillStyle = "black";
+    ctx.font = "bold 14px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText("BASE", baseCore.x, baseCore.y + 5);
+    const hpPercent = baseCore.maxHp > 0 ? Math.max(0, baseCore.hp / baseCore.maxHp) : 0;
+    ctx.fillStyle = "red";
+    ctx.fillRect(baseCore.x - 38, baseCore.y - 52, 76, 8);
+    ctx.fillStyle = "lime";
+    ctx.fillRect(baseCore.x - 38, baseCore.y - 52, 76 * hpPercent, 8);
+    ctx.restore();
 }
 
 function drawBarricade() {
     (barricades || []).forEach(b => {
         if (!b.active || b.hp <= 0) return;
-
+        const dims = getBarricadeDimensions(b.orientation || "horizontal");
+        const rect = getEntityRect({ ...b, isBuildBarricade: true });
         ctx.fillStyle = b.color;
-        ctx.fillRect(b.x - 10, 45, 20, GAME_HEIGHT - 90);
+        ctx.fillRect(rect.left, rect.top, dims.width, dims.height);
+        ctx.strokeStyle = isStructureSelected("barricade", b.id) ? "#ffe28a" : "rgba(0,0,0,0.7)";
+        ctx.lineWidth = isStructureSelected("barricade", b.id) ? 4 : 2;
+        ctx.strokeRect(rect.left, rect.top, dims.width, dims.height);
 
         if (b.thorns) {
             ctx.fillStyle = "#ff9f55";
-            for (let y = 60; y < GAME_HEIGHT - 60; y += 28) {
+            for (let i = 0; i < 5; i++) {
+                const tx = rect.left + 10 + i * (dims.width / 5);
+                const ty = rect.top + dims.height / 2;
                 ctx.beginPath();
-                ctx.moveTo(b.x + 10, y);
-                ctx.lineTo(b.x + 28, y + 8);
-                ctx.lineTo(b.x + 10, y + 16);
+                ctx.moveTo(tx, ty);
+                ctx.lineTo(tx + 10, ty - 9);
+                ctx.lineTo(tx + 20, ty);
                 ctx.fill();
             }
         }
 
-        ctx.fillStyle = "white";
-        ctx.font = "11px Arial";
-        ctx.fillText(b.name[0], b.x - 4, 38);
-
-        const barHeight = GAME_HEIGHT - 90;
-        const hpPercent = b.maxHp > 0 ? b.hp / b.maxHp : 0;
-
+        const hpPercent = b.maxHp > 0 ? Math.max(0, b.hp / b.maxHp) : 0;
         ctx.fillStyle = "red";
-        ctx.fillRect(b.x + 18, 45, 8, barHeight);
-
+        ctx.fillRect(rect.left, rect.top - 9, dims.width, 5);
         ctx.fillStyle = "lime";
-        ctx.fillRect(
-            b.x + 18,
-            45 + barHeight * (1 - hpPercent),
-            8,
-            barHeight * hpPercent
-        );
+        ctx.fillRect(rect.left, rect.top - 9, dims.width * hpPercent, 5);
     });
+}
+
+function drawBuildPreview() {
+    if (pendingBarricadePlacement) {
+        const point = getSnappedBuildPoint();
+        const dims = getBarricadeDimensions(barricadeBuildOrientation);
+        const valid = isBarricadePositionValid(point.x, point.y, barricadeBuildOrientation);
+        ctx.fillStyle = valid ? "rgba(115,255,159,0.35)" : "rgba(255,80,80,0.35)";
+        ctx.fillRect(point.x - dims.width / 2, point.y - dims.height / 2, dims.width, dims.height);
+        ctx.strokeStyle = valid ? "rgba(115,255,159,0.95)" : "rgba(255,80,80,0.95)";
+        ctx.lineWidth = 3;
+        ctx.strokeRect(point.x - dims.width / 2, point.y - dims.height / 2, dims.width, dims.height);
+        ctx.fillStyle = "white";
+        ctx.font = "bold 14px Arial";
+        ctx.fillText("Click coloca · R rota · Click derecho/Esc cancela", point.x - 150, point.y - dims.height / 2 - 12);
+    }
 }
 
 function drawPlayer() {
@@ -3719,63 +3990,50 @@ function activateAlphaTesterBadge(name) {
 
 function drawTowerPlacementTiles() {
     const movingTower = pendingTowerMoveIndex !== null ? towers[pendingTowerMoveIndex] : null;
-    if (!pendingTowerPurchase && !movingTower) return;
+    if (!pendingTowerPurchase && !movingTower) {
+        drawBuildPreview();
+        return;
+    }
 
-    const hoveredTile = getTowerTileAt(mousePosition.x, mousePosition.y);
-
-    RESERVED_BARRICADE_TILES.forEach(tile => {
-        ctx.fillStyle = "rgba(255, 180, 75, 0.12)";
-        ctx.fillRect(tile.x - TOWER_TILE_HALF, tile.y - TOWER_TILE_HALF, TOWER_TILE_SIZE, TOWER_TILE_SIZE);
-
-        ctx.strokeStyle = "rgba(255, 180, 75, 0.5)";
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(tile.x - TOWER_TILE_HALF, tile.y - TOWER_TILE_HALF, TOWER_TILE_SIZE, TOWER_TILE_SIZE);
-    });
-
-    towerSlots.forEach(tile => {
-        const occupied = isTowerTileOccupied(tile, movingTower);
-        const hovered = hoveredTile === tile;
-
-        ctx.fillStyle = occupied
-            ? "rgba(255, 80, 80, 0.16)"
-            : hovered
-                ? "rgba(115, 255, 159, 0.32)"
-                : "rgba(115, 255, 159, 0.13)";
-        ctx.fillRect(tile.x - TOWER_TILE_HALF, tile.y - TOWER_TILE_HALF, TOWER_TILE_SIZE, TOWER_TILE_SIZE);
-
-        ctx.strokeStyle = occupied
-            ? "rgba(255, 80, 80, 0.55)"
-            : hovered
-                ? "rgba(115, 255, 159, 0.9)"
-                : "rgba(115, 255, 159, 0.45)";
-        ctx.lineWidth = hovered ? 3 : 1.5;
-        ctx.strokeRect(tile.x - TOWER_TILE_HALF, tile.y - TOWER_TILE_HALF, TOWER_TILE_SIZE, TOWER_TILE_SIZE);
-    });
-
-    ctx.fillStyle = "rgba(255, 180, 75, 0.82)";
-    ctx.font = "bold 12px Arial";
-    ctx.fillText("Línea de barricada", RESERVED_BARRICADE_LANE_X - 48, 26);
-
+    const point = getSnappedBuildPoint();
     const def = pendingTowerPurchase ? getTowerDefinition(pendingTowerPurchase.defKey) : movingTower;
-    if (def && hoveredTile && isTowerTileAvailable(hoveredTile, movingTower)) {
-        ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    const valid = !isTowerPositionOccupied(point.x, point.y, movingTower);
+
+    ctx.fillStyle = valid ? "rgba(115,255,159,0.35)" : "rgba(255,80,80,0.35)";
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, TOWER_COLLISION_RADIUS, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = valid ? "rgba(115,255,159,0.95)" : "rgba(255,80,80,0.95)";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, TOWER_COLLISION_RADIUS, 0, Math.PI * 2);
+    ctx.stroke();
+
+    if (def) {
+        ctx.strokeStyle = "rgba(255,255,255,0.28)";
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(hoveredTile.x, hoveredTile.y, def.range || 0, 0, Math.PI * 2);
+        ctx.arc(point.x, point.y, def.range || 0, 0, Math.PI * 2);
         ctx.stroke();
     }
 
     ctx.fillStyle = "rgba(0,0,0,0.72)";
-    ctx.fillRect(145, 12, 650, 34);
+    ctx.fillRect(camera.x + 110, camera.y + 12, 680, 34);
     ctx.fillStyle = "white";
     ctx.font = "bold 15px Arial";
-    const actionText = movingTower ? "Elegí un tile verde para mover la torreta" : "Elegí un tile verde para colocar la torreta";
-    ctx.fillText(`${actionText} · Click derecho/Esc cancela`, 160, 34);
+    const actionText = movingTower ? "Elegí dónde mover la torreta" : "Elegí dónde colocar la torreta";
+    ctx.fillText(`${actionText} · Click derecho/Esc cancela`, camera.x + 125, camera.y + 34);
 }
 
 function drawTowers() {
     towers.forEach(tower => {
         if (!tower.owned) return;
+
+        if (isStructureSelected("tower", tower.id)) {
+            ctx.strokeStyle = "#ffe28a";
+            ctx.lineWidth = 4;
+            ctx.strokeRect(tower.x - 24, tower.y - 24, 48, 48);
+        }
 
         ctx.fillStyle = tower.color;
         ctx.fillRect(tower.x - 18, tower.y - 18, 36, 36);
@@ -4299,30 +4557,17 @@ function updateBarricadeSlotChoiceUI() {
 }
 
 function getBarricadeActionState(kind = "standard") {
-    const activeBarricades = (barricades || []).filter(b => b.active && b.hp > 0);
-    const hasSameKind = activeBarricades.some(b => b.kind === kind);
-    const hasBrokenSlot = (barricades || []).some(b => !b.active || b.hp <= 0);
-
-    return {
-        canBuyOrUpgrade: hasSameKind || hasBrokenSlot,
-        hasSameKind,
-        hasBrokenSlot
-    };
+    return { canBuyOrUpgrade: true, hasSameKind: (barricades || []).some(b => b.active && b.hp > 0 && b.kind === kind), hasBrokenSlot: true };
 }
 
 function updateBarricadeButtonState(button, kind, costKey) {
     if (!button) return;
-
-    const state = getBarricadeActionState(kind);
-    const cost = costs[costKey] || 0;
-    const actionText = state.hasSameKind ? "Mejorar" : state.hasBrokenSlot ? "Comprar" : "Bloqueada";
+    const cost = getBarricadeBaseCost(kind);
     setShopButtonAffordability(
         button,
         cost,
-        !state.canBuyOrUpgrade,
-        state.canBuyOrUpgrade
-            ? `${actionText} barricada`
-            : "Ya tenés 2 barricadas activas. Para cambiar a este tipo, primero se tiene que romper una."
+        Boolean(pendingBarricadePlacement),
+        pendingBarricadePlacement ? "Ya estás colocando una barricada." : "Construir una barricada libre. Para mejorar/reparar/vender: clickeala en el mapa."
     );
 }
 
@@ -4333,7 +4578,7 @@ function updateHud(force = false) {
 
     waveText.textContent = wave;
     hpText.textContent = `${Math.round(player.hp)}/${player.maxHp}${player.shieldCharges > 0 ? ` 🛡${player.shieldCharges}` : ""}`;
-    barricadeText.textContent = `${Math.round(getTotalBarricadeHp())}/${Math.round(getTotalBarricadeMaxHp())}`;
+    barricadeText.textContent = `Muros ${Math.round(getTotalBarricadeHp())}/${Math.round(getTotalBarricadeMaxHp())}`;
     coinsText.textContent = formatMoney(coins);
     scoreText.textContent = formatCompactNumber(score);
 
@@ -4371,18 +4616,17 @@ function updateHud(force = false) {
     setShopButtonAffordability(buyDoubleShotPotionBtn, costs.doubleShotPotion, !hasInventorySpaceFor("doubleShotPotion"), hasInventorySpaceFor("doubleShotPotion") ? "" : inventoryFullTitle);
     setShopButtonAffordability(buyLifeStealPotionBtn, costs.lifeStealPotion, !hasInventorySpaceFor("lifeStealPotion"), hasInventorySpaceFor("lifeStealPotion") ? "" : inventoryFullTitle);
 
-    repairBarricadeCostText.textContent = formatMoney(costs.repairBarricade);
-    upgradeBarricadeCostText.textContent = formatMoney(costs.upgradeBarricade);
-    if (regenBarricadeCostText) regenBarricadeCostText.textContent = formatMoney(costs.regenBarricade);
-    if (explosiveBarricadeCostText) explosiveBarricadeCostText.textContent = formatMoney(costs.explosiveBarricade);
-    if (thornsBarricadeCostText) thornsBarricadeCostText.textContent = formatMoney(costs.thornsBarricade);
+    repairBarricadeCostText.textContent = "Seleccionar";
+    upgradeBarricadeCostText.textContent = formatMoney(getBarricadeBaseCost("standard"));
+    if (regenBarricadeCostText) regenBarricadeCostText.textContent = formatMoney(getBarricadeBaseCost("regen"));
+    if (explosiveBarricadeCostText) explosiveBarricadeCostText.textContent = formatMoney(getBarricadeBaseCost("explosive"));
+    if (thornsBarricadeCostText) thornsBarricadeCostText.textContent = formatMoney(getBarricadeBaseCost("thorns"));
 
-    const hasDamagedBarricade = (barricades || []).some(b => b.active && b.hp > 0 && b.hp < b.maxHp);
     setShopButtonAffordability(
         repairBarricadeBtn,
-        costs.repairBarricade,
-        !hasDamagedBarricade,
-        hasDamagedBarricade ? "" : "No hay barricadas dañadas para reparar."
+        0,
+        true,
+        "Ahora la reparación se hace clickeando una barricada en el mapa."
     );
     updateBarricadeButtonState(upgradeBarricadeBtn, "standard", "upgradeBarricade");
     updateBarricadeButtonState(buyRegenBarricadeBtn, "regen", "regenBarricade");
@@ -4411,6 +4655,8 @@ function updateHud(force = false) {
     updateAbilityShopVisibility();
     updateAbilityBar();
     updateBossBar();
+    updateBuildCancelUI();
+    updateStructurePanel();
 
     // Los controles casi nunca cambian durante una oleada. Evitamos recorrer
     // botones del DOM en cada frame para ganar fluidez en PCs chicas.
@@ -4448,10 +4694,16 @@ function updateTowerShopVisibility() {
 
     if (repeatWaveBtn) {
         const repeats = getRepeatCountForCurrentWave();
-        repeatWaveBtn.disabled = repeats >= REPEAT_LIMIT_PER_WAVE;
+        repeatWaveBtn.classList.toggle("hidden", waveInProgress);
+        repeatWaveBtn.disabled = waveInProgress || repeats >= REPEAT_LIMIT_PER_WAVE;
         repeatWaveBtn.textContent = repeats >= REPEAT_LIMIT_PER_WAVE
             ? "Repetir oleada: límite alcanzado"
             : `Repetir oleada (${repeats}/${REPEAT_LIMIT_PER_WAVE}) · 50% oro`;
+    }
+
+    if (nextWaveBtn) {
+        nextWaveBtn.classList.toggle("hidden", waveInProgress);
+        nextWaveBtn.disabled = waveInProgress;
     }
 
     renderTowerSlotsPanel();
@@ -4543,11 +4795,57 @@ function updateAbilityBar() {
     });
 }
 
+function drawWorldGrid() {
+    ctx.fillStyle = "#263426";
+    ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+    ctx.strokeStyle = "rgba(255,255,255,0.035)";
+    ctx.lineWidth = 1;
+    for (let x = 0; x <= WORLD_WIDTH; x += 100) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, WORLD_HEIGHT); ctx.stroke();
+    }
+    for (let y = 0; y <= WORLD_HEIGHT; y += 100) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(WORLD_WIDTH, y); ctx.stroke();
+    }
+}
+
+function drawMinimap() {
+    const w = 170;
+    const h = 112;
+    const x = GAME_WIDTH - w - 14;
+    const y = GAME_HEIGHT - h - 14;
+    ctx.save();
+    ctx.setTransform(canvas.width / GAME_WIDTH, 0, 0, canvas.height / GAME_HEIGHT, 0, 0);
+    ctx.fillStyle = "rgba(0,0,0,0.72)";
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = "rgba(255,255,255,0.45)";
+    ctx.strokeRect(x, y, w, h);
+    const sx = w / WORLD_WIDTH;
+    const sy = h / WORLD_HEIGHT;
+    const dot = (wx, wy, color, r = 2) => {
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(x + wx * sx, y + wy * sy, r, 0, Math.PI * 2);
+        ctx.fill();
+    };
+    if (player) dot(player.x, player.y, "#66d9ff", 4);
+    enemies.forEach(e => dot(e.x, e.y, e.isBoss ? "#ff55ff" : "#ff3333", e.isBoss ? 3.8 : 2));
+    towers.forEach(t => dot(t.x, t.y, "#ffffff", 1.7));
+    barricades.forEach(b => { if (b.active && b.hp > 0) dot(b.x, b.y, "#aaaaaa", 1.6); });
+    ctx.strokeStyle = "rgba(115,255,159,0.7)";
+    ctx.strokeRect(x + camera.x * sx, y + camera.y * sy, GAME_WIDTH * sx, GAME_HEIGHT * sy);
+    ctx.restore();
+}
+
 function draw() {
     resizeCanvasForDisplay();
+    updateCamera();
     ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
 
+    ctx.save();
+    ctx.translate(-camera.x, -camera.y);
+    drawWorldGrid();
     drawPath();
+    drawBase();
     drawBarricade();
     drawPlayer();
     drawTowerPlacementTiles();
@@ -4558,6 +4856,9 @@ function draw() {
     drawProjectiles();
     drawBossProjectiles();
     drawVisualEffects();
+    ctx.restore();
+
+    drawMinimap();
 }
 
 function gameLoop() {
@@ -4890,28 +5191,280 @@ function jumpToWave(targetWave) {
     updateHud();
 }
 
+
+function isInBuildPlacementMode() {
+    return Boolean(pendingBarricadePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null);
+}
+
+
+function getStructureById(id, type = null) {
+    if (type === "tower") return (towers || []).find(t => String(t.id) === String(id)) || null;
+    if (type === "barricade") return (barricades || []).find(b => String(b.id) === String(id)) || null;
+    return (towers || []).find(t => String(t.id) === String(id)) || (barricades || []).find(b => String(b.id) === String(id)) || null;
+}
+
+function getSelectedStructures() {
+    const pool = selectedStructureType === "tower" ? (towers || []) : selectedStructureType === "barricade" ? (barricades || []) : [];
+    return pool.filter(item => item && selectedStructureIds.includes(String(item.id)) && (selectedStructureType === "tower" || (item.active && item.hp > 0)));
+}
+
+function isStructureSelected(type, id) {
+    return selectedStructureType === type && selectedStructureIds.includes(String(id));
+}
+
+function clearStructureSelection() {
+    selectedStructureIds = [];
+    selectedStructureType = null;
+    updateStructurePanel();
+}
+
+function selectStructure(type, entity, multiSame = false) {
+    if (!entity) { clearStructureSelection(); return; }
+    if (type === "tower") {
+        const sourceType = entity.type;
+        selectedStructureType = "tower";
+        selectedStructureIds = (multiSame ? (towers || []).filter(t => t.owned && t.type === sourceType) : [entity]).map(t => String(t.id));
+    } else {
+        const sourceKind = entity.kind || "standard";
+        selectedStructureType = "barricade";
+        selectedStructureIds = (multiSame ? (barricades || []).filter(b => b.active && b.hp > 0 && (b.kind || "standard") === sourceKind) : [entity]).map(b => String(b.id));
+    }
+    updateStructurePanel();
+}
+
+function findTowerAtWorldPoint(x, y) {
+    for (let i = (towers || []).length - 1; i >= 0; i--) {
+        const t = towers[i];
+        if (!t || !t.owned) continue;
+        if (Math.hypot(x - t.x, y - t.y) <= TOWER_COLLISION_RADIUS + 6) return t;
+    }
+    return null;
+}
+
+function findBarricadeAtWorldPoint(x, y) {
+    for (let i = (barricades || []).length - 1; i >= 0; i--) {
+        const b = barricades[i];
+        if (!b || !b.active || b.hp <= 0) continue;
+        const rect = getEntityRect({ ...b, isBuildBarricade: true });
+        if (x >= rect.left - 6 && x <= rect.right + 6 && y >= rect.top - 6 && y <= rect.bottom + 6) return b;
+    }
+    return null;
+}
+
+function handleStructureClickSelection(event) {
+    const tower = findTowerAtWorldPoint(mousePosition.x, mousePosition.y);
+    if (tower) {
+        selectStructure("tower", tower, event.ctrlKey || event.metaKey);
+        showCenterMessage(event.ctrlKey || event.metaKey ? `Seleccionadas torres ${tower.name}` : `${tower.name} seleccionada`, 650);
+        return true;
+    }
+    const b = findBarricadeAtWorldPoint(mousePosition.x, mousePosition.y);
+    if (b) {
+        ensureBarricadeEconomy(b);
+        selectStructure("barricade", b, event.ctrlKey || event.metaKey);
+        showCenterMessage(event.ctrlKey || event.metaKey ? `Seleccionadas barricadas ${getBarricadeKindLabel(b.kind)}` : `Barricada ${getBarricadeKindLabel(b.kind)} seleccionada`, 650);
+        return true;
+    }
+    return false;
+}
+
+function getTowerUpgradePreview(tower) {
+    if (!tower) return "";
+    if (tower.type === "buffer") return `Nivel ${tower.level || 1} · buff ${Math.round((tower.buffDamage || 0) * 100)}% daño / ${Math.round((tower.buffSpeed || 0) * 100)}% vel.`;
+    return `Nivel ${tower.level || 1} · daño ${formatCompactNumber(tower.damage || 0, 2)} · rango ${Math.round(tower.range || 0)} · delay ${Math.round(tower.fireDelay || 0)}ms`;
+}
+
+function getBarricadeInfoText(b) {
+    ensureBarricadeEconomy(b);
+    const hp = `${Math.ceil(b.hp || 0)}/${Math.ceil(b.maxHp || 0)}`;
+    const level = b.kind === "standard" ? `Tier ${Math.max(0, (b.tier || 0) + 1)} · +${b.level || 0}` : `Nivel ${Math.max(1, (b.level || 0) + 1)}`;
+    return `${getBarricadeKindLabel(b.kind)} · ${level} · HP ${hp}`;
+}
+
+function updateStructurePanel() {
+    if (!structurePanel || !structurePanelTitle || !structurePanelInfo || !structurePanelActions) return;
+    const selected = getSelectedStructures();
+    selectedStructureIds = selected.map(item => String(item.id));
+    if (!selected.length) {
+        selectedStructureType = null;
+        structurePanel.classList.add("hidden");
+        return;
+    }
+
+    structurePanel.classList.remove("hidden");
+    const multiple = selected.length > 1;
+
+    if (selectedStructureType === "tower") {
+        selected.forEach(ensureTowerEconomy);
+        const first = selected[0];
+        const upgradeTotal = selected.reduce((sum, t) => sum + (Number(t.upgradeCost) || 0), 0);
+        const sellTotal = selected.reduce((sum, t) => sum + Math.floor((Number(t.spent) || 0) * TOWER_SELL_REFUND), 0);
+        structurePanelTitle.textContent = multiple ? `${selected.length} torretas ${first.name}` : first.name;
+        structurePanelInfo.innerHTML = `${multiple ? "Selección múltiple" : getTowerUpgradePreview(first)}<br><small>Ctrl+click selecciona todas las torres iguales.</small>`;
+        structurePanelActions.innerHTML = `
+            <button type="button" data-structure-action="upgrade" ${coins < upgradeTotal ? "disabled" : ""}>Mejorar ${multiple ? "todas" : ""} (${formatMoney(upgradeTotal)})</button>
+            ${!multiple ? `<button type="button" data-structure-action="move">Mover</button>` : ""}
+            <button type="button" data-structure-action="sell" class="dangerMiniButton">Vender ${multiple ? "todas" : ""} (${formatMoney(sellTotal)})</button>
+        `;
+        return;
+    }
+
+    selected.forEach(ensureBarricadeEconomy);
+    const first = selected[0];
+    const upgradeTotal = selected.reduce((sum, b) => sum + (Number(b.upgradeCost) || 0), 0);
+    const damaged = selected.filter(b => b.hp < b.maxHp);
+    const repairTotal = damaged.reduce((sum, b) => sum + getBarricadeRepairCost(b), 0);
+    const sellTotal = selected.reduce((sum, b) => sum + getBarricadeSellRefund(b), 0);
+    structurePanelTitle.textContent = multiple ? `${selected.length} barricadas ${getBarricadeKindLabel(first.kind)}` : `Barricada ${getBarricadeKindLabel(first.kind)}`;
+    structurePanelInfo.innerHTML = `${multiple ? "Selección múltiple" : getBarricadeInfoText(first)}<br><small>Ctrl+click selecciona todas las barricadas iguales.</small>`;
+    structurePanelActions.innerHTML = `
+        <button type="button" data-structure-action="upgrade" ${coins < upgradeTotal ? "disabled" : ""}>Mejorar ${multiple ? "todas" : ""} (${formatMoney(upgradeTotal)})</button>
+        <button type="button" data-structure-action="repair" ${damaged.length === 0 || coins < repairTotal ? "disabled" : ""}>Reparar ${multiple ? "dañadas" : ""} (${formatMoney(repairTotal)})</button>
+        <button type="button" data-structure-action="sell" class="dangerMiniButton">Vender ${multiple ? "todas" : ""} (${formatMoney(sellTotal)})</button>
+    `;
+}
+
+function getBarricadeRepairCost(b) {
+    if (!b || b.hp >= b.maxHp) return 0;
+    const missingRatio = Math.max(0, Math.min(1, (b.maxHp - b.hp) / Math.max(1, b.maxHp)));
+    return Math.max(1, Math.ceil((Number(b.buildCost) || getBarricadeBaseCost(b.kind)) * 0.45 * missingRatio));
+}
+
+function getBarricadeSellRefund(b) {
+    ensureBarricadeEconomy(b);
+    return Math.floor((Number(b.spent) || 0) * TOWER_SELL_REFUND);
+}
+
+function upgradeBarricadeSelected() {
+    const selected = getSelectedStructures();
+    if (!selected.length || selectedStructureType !== "barricade") return;
+    selected.forEach(ensureBarricadeEconomy);
+    const total = selected.reduce((sum, b) => sum + Number(b.upgradeCost || 0), 0);
+    if (coins < total) { showCenterMessage(`Faltan ${formatMissingMoney(total - coins)} monedas`, 850); updateStructurePanel(); return; }
+    coins -= total;
+    selected.forEach(b => {
+        const paid = Number(b.upgradeCost) || 0;
+        b.spent = (Number(b.spent) || 0) + paid;
+        upgradeBarricadeInstance(b, b.kind || "standard", false);
+        b.upgradeCost = scaleBarricadeCost(paid || getBarricadeBaseCost(b.kind), b.kind === "standard" ? 1.55 : 1.42);
+    });
+    showCenterMessage(selected.length > 1 ? `${selected.length} barricadas mejoradas` : "Barricada mejorada", 850);
+    updateHud(true); updateStructurePanel(); autoSaveRun(true);
+}
+
+function repairBarricadeSelected() {
+    const selected = getSelectedStructures().filter(b => selectedStructureType === "barricade" && b.hp < b.maxHp);
+    if (!selected.length) return;
+    const total = selected.reduce((sum, b) => sum + getBarricadeRepairCost(b), 0);
+    if (coins < total) { showCenterMessage(`Faltan ${formatMissingMoney(total - coins)} monedas`, 850); updateStructurePanel(); return; }
+    coins -= total;
+    selected.forEach(b => { b.hp = b.maxHp; });
+    showCenterMessage(selected.length > 1 ? `${selected.length} barricadas reparadas` : "Barricada reparada", 800);
+    updateHud(true); updateStructurePanel(); autoSaveRun(true);
+}
+
+function sellBarricadeSelected() {
+    const selected = getSelectedStructures();
+    if (!selected.length || selectedStructureType !== "barricade") return;
+    const ids = new Set(selected.map(b => String(b.id)));
+    coins += selected.reduce((sum, b) => sum + getBarricadeSellRefund(b), 0);
+    barricades = barricades.filter(b => !ids.has(String(b.id)));
+    clearStructureSelection();
+    showCenterMessage(selected.length > 1 ? `${selected.length} barricadas vendidas` : "Barricada vendida", 800);
+    updateHud(true); autoSaveRun(true);
+}
+
+function upgradeTowerSelected() {
+    const selected = getSelectedStructures();
+    if (!selected.length || selectedStructureType !== "tower") return;
+    selected.forEach(ensureTowerEconomy);
+    const total = selected.reduce((sum, t) => sum + Number(t.upgradeCost || 0), 0);
+    if (coins < total) { showCenterMessage(`Faltan ${formatMissingMoney(total - coins)} monedas`, 850); updateStructurePanel(); return; }
+    selected.forEach(t => {
+        const idx = towers.indexOf(t);
+        if (idx >= 0) upgradeTower(idx, true);
+    });
+    showCenterMessage(selected.length > 1 ? `${selected.length} torretas mejoradas` : "Torre mejorada", 800);
+    updateHud(true); updateStructurePanel(); autoSaveRun(true);
+}
+
+function sellTowerSelected() {
+    const selected = getSelectedStructures();
+    if (!selected.length || selectedStructureType !== "tower") return;
+    const ids = new Set(selected.map(t => String(t.id)));
+    coins += selected.reduce((sum, t) => sum + Math.floor((Number(t.spent) || 0) * TOWER_SELL_REFUND), 0);
+    towers = towers.filter(t => !ids.has(String(t.id)));
+    updateTowerSlotIndexes();
+    clearStructureSelection();
+    showCenterMessage(selected.length > 1 ? `${selected.length} torretas vendidas` : "Torre vendida", 800);
+    updateHud(true); autoSaveRun(true);
+}
+
+function handleStructurePanelAction(action) {
+    if (action === "upgrade") {
+        if (selectedStructureType === "tower") upgradeTowerSelected();
+        else upgradeBarricadeSelected();
+    }
+    if (action === "repair") repairBarricadeSelected();
+    if (action === "sell") {
+        if (selectedStructureType === "tower") sellTowerSelected();
+        else sellBarricadeSelected();
+    }
+    if (action === "move") {
+        const selected = getSelectedStructures();
+        if (selectedStructureType === "tower" && selected.length === 1) beginTowerMove(towers.indexOf(selected[0]));
+    }
+}
+
+function getCurrentBuildModeLabel() {
+    if (pendingBarricadePlacement) return "Colocando barricadas · R rota";
+    if (pendingTowerPurchase) {
+        const def = getTowerDefinition(pendingTowerPurchase.defKey);
+        return `Colocando ${def ? def.name : "torre"}`;
+    }
+    if (pendingTowerMoveIndex !== null) return "Moviendo torre";
+    return "";
+}
+
+function updateBuildCancelUI() {
+    if (!cancelBuildBtn) return;
+    const active = isInBuildPlacementMode();
+    cancelBuildBtn.classList.toggle("hidden", !active);
+    if (active) cancelBuildBtn.textContent = `Cancelar · ${getCurrentBuildModeLabel()}`;
+}
+
 function updateMousePosition(event) {
     const rect = canvas.getBoundingClientRect();
 
     const scaleX = GAME_WIDTH / rect.width;
     const scaleY = GAME_HEIGHT / rect.height;
 
-    mousePosition.x = (event.clientX - rect.left) * scaleX;
-    mousePosition.y = (event.clientY - rect.top) * scaleY;
+    mousePosition.x = camera.x + (event.clientX - rect.left) * scaleX;
+    mousePosition.y = camera.y + (event.clientY - rect.top) * scaleY;
 }
 
 canvas.addEventListener("mousemove", event => {
     updateMousePosition(event);
 });
 
-canvas.addEventListener("mousedown", event => {
+function handleCanvasPlacementPointer(event) {
     updateMousePosition(event);
 
-    if (pendingTowerPurchase || pendingTowerMoveIndex !== null) {
+    if (pendingBarricadePlacement) {
         event.preventDefault();
         if (event.button === 2) {
-            cancelTowerPlacement(true);
-            cancelTowerMove(true);
+            cancelBarricadePlacement(false);
+            return;
+        }
+        finishBarricadePlacement();
+        return;
+    }
+
+    if (pendingBarricadePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null) {
+        event.preventDefault();
+        if (event.button === 2) {
+            cancelTowerPlacement(false);
+            cancelTowerMove(false);
             return;
         }
 
@@ -4921,14 +5474,28 @@ canvas.addEventListener("mousedown", event => {
         return;
     }
 
+    if (event.button === 0 && handleStructureClickSelection(event)) {
+        event.preventDefault();
+        isMouseDown = false;
+        return;
+    }
+
     isMouseDown = true;
+}
+
+canvas.addEventListener("mousedown", handleCanvasPlacementPointer);
+canvas.addEventListener("pointerdown", event => {
+    if (event.pointerType !== "mouse") {
+        handleCanvasPlacementPointer(event);
+    }
 });
 
 canvas.addEventListener("contextmenu", event => {
-    if (pendingTowerPurchase || pendingTowerMoveIndex !== null) {
+    if (pendingBarricadePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null) {
         event.preventDefault();
-        cancelTowerPlacement(true);
-        cancelTowerMove(true);
+        cancelBarricadePlacement(false);
+        cancelTowerPlacement(false);
+        cancelTowerMove(false);
     }
 });
 
@@ -4956,12 +5523,19 @@ window.addEventListener("keydown", event => {
         return;
     }
 
+    if (event.code === "ShiftLeft" || event.code === "ShiftRight") isShiftDown = true;
+
     if (event.code === "Escape") {
         event.preventDefault();
 
+        if (pendingBarricadePlacement) {
+            cancelBarricadePlacement(false);
+            return;
+        }
+
         if (pendingTowerPurchase || pendingTowerMoveIndex !== null) {
-            cancelTowerPlacement(true);
-            cancelTowerMove(true);
+            cancelTowerPlacement(false);
+            cancelTowerMove(false);
             return;
         }
 
@@ -4977,6 +5551,13 @@ window.addEventListener("keydown", event => {
         } else {
             pauseGame();
         }
+        return;
+    }
+
+    if (event.code === "KeyR" && pendingBarricadePlacement) {
+        event.preventDefault();
+        barricadeBuildOrientation = barricadeBuildOrientation === "horizontal" ? "vertical" : "horizontal";
+        showCenterMessage(`Barricada ${barricadeBuildOrientation === "horizontal" ? "horizontal" : "vertical"}`, 550);
         return;
     }
 
@@ -4996,6 +5577,7 @@ window.addEventListener("keydown", event => {
 
 window.addEventListener("keyup", event => {
     pressedKeys.delete(event.code);
+    if (event.code === "ShiftLeft" || event.code === "ShiftRight") isShiftDown = false;
 
     if (event.code === "Space") {
         event.preventDefault();
@@ -5008,15 +5590,19 @@ window.addEventListener("blur", () => {
     pressedKeys.clear();
     isMouseDown = false;
     isSpaceDown = false;
+    isShiftDown = false;
 });
 
 document.addEventListener("visibilitychange", () => {
     pressedKeys.clear();
     isMouseDown = false;
     isSpaceDown = false;
+    isShiftDown = false;
     lastFrameTime = performance.now();
 
-    if (!document.hidden) {
+    if (document.hidden) {
+        saveRunNow();
+    } else {
         recoverFrozenWaveState("visibility");
     }
 
@@ -5042,7 +5628,11 @@ resetControlsButtons.forEach(button => {
 updateControlsUI();
 
 window.addEventListener("beforeunload", () => {
-    autoSaveRun(true);
+    saveRunNow();
+});
+
+window.addEventListener("pagehide", () => {
+    saveRunNow();
 });
 
 updateStartButtonSavedState();
@@ -5071,6 +5661,75 @@ if (consoleInput) consoleInput.addEventListener("keydown", event => {
 });
 
 
+
+function openShop(sectionId = "stats") {
+    if (!shop || !hasActiveRun) return;
+    cancelBarricadePlacement(false);
+    cancelTowerPlacement(false);
+    waveSummaryPanel.classList.add("hidden");
+    pausePanel.classList.add("hidden");
+    shop.classList.remove("constructionMode");
+    shop.classList.remove("hidden");
+    if (shopTitle) shopTitle.textContent = "Tienda";
+    setShopSection(sectionId);
+    if (openShopHudBtn) {
+        openShopHudBtn.textContent = "Cerrar tienda";
+        openShopHudBtn.classList.add("shopOpen");
+    }
+    if (constructionBtn) {
+        constructionBtn.textContent = "Construcción";
+        constructionBtn.classList.remove("constructionOpen");
+    }
+    updateHud(true);
+}
+
+function openConstruction(sectionId = "towers") {
+    if (!shop || !hasActiveRun) return;
+    cancelBarricadePlacement(false);
+    cancelTowerPlacement(false);
+    waveSummaryPanel.classList.add("hidden");
+    pausePanel.classList.add("hidden");
+    shop.classList.add("constructionMode");
+    shop.classList.remove("hidden");
+    if (shopTitle) shopTitle.textContent = "Construcción";
+    setShopSection(sectionId);
+    if (constructionBtn) {
+        constructionBtn.textContent = "Cerrar construcción";
+        constructionBtn.classList.add("constructionOpen");
+    }
+    if (openShopHudBtn) {
+        openShopHudBtn.textContent = "Tienda";
+        openShopHudBtn.classList.remove("shopOpen");
+    }
+    updateHud(true);
+}
+
+function closeShop() {
+    if (!shop) return;
+    shop.classList.add("hidden");
+    shop.classList.remove("constructionMode");
+    if (shopTitle) shopTitle.textContent = "Tienda";
+    if (openShopHudBtn) {
+        openShopHudBtn.textContent = "Tienda";
+        openShopHudBtn.classList.remove("shopOpen");
+    }
+    if (constructionBtn) {
+        constructionBtn.textContent = "Construcción";
+        constructionBtn.classList.remove("constructionOpen");
+    }
+    updateHud(true);
+}
+
+function toggleShop(sectionId = "stats") {
+    if (!shop || shop.classList.contains("hidden") || shop.classList.contains("constructionMode")) openShop(sectionId);
+    else closeShop();
+}
+
+function toggleConstruction(sectionId = "towers") {
+    if (!shop || shop.classList.contains("hidden") || !shop.classList.contains("constructionMode")) openConstruction(sectionId);
+    else closeShop();
+}
+
 function setShopSection(sectionId) {
     shopTabButtons.forEach(button => {
         button.classList.toggle("active", button.dataset.shopTab === sectionId);
@@ -5085,12 +5744,44 @@ shopTabButtons.forEach(button => {
     button.addEventListener("click", () => setShopSection(button.dataset.shopTab));
 });
 
-openShopBtn.addEventListener("click", () => {
-    waveSummaryPanel.classList.add("hidden");
-    shop.classList.remove("hidden");
-    setShopSection("stats");
+if (openShopBtn) openShopBtn.addEventListener("click", () => {
+    openShop("stats");
     syncMusicState();
     autoSaveRun(true);
+});
+
+if (openShopHudBtn) openShopHudBtn.addEventListener("click", () => {
+    toggleShop("stats");
+    syncMusicState();
+    autoSaveRun(true);
+});
+
+if (constructionBtn) constructionBtn.addEventListener("click", () => {
+    toggleConstruction("towers");
+    syncMusicState();
+    autoSaveRun(true);
+});
+
+if (cancelBuildBtn) cancelBuildBtn.addEventListener("click", () => {
+    cancelBarricadePlacement(false);
+    cancelTowerPlacement(false);
+    cancelTowerMove(false);
+    showCenterMessage("Construcción cancelada", 650);
+    autoSaveRun(true);
+});
+
+if (closeShopBtn) closeShopBtn.addEventListener("click", () => {
+    closeShop();
+    syncMusicState();
+    autoSaveRun(true);
+});
+
+if (closeStructurePanelBtn) closeStructurePanelBtn.addEventListener("click", () => clearStructureSelection());
+if (structurePanelActions) structurePanelActions.addEventListener("click", event => {
+    const button = event.target.closest("button[data-structure-action]");
+    if (!button) return;
+    event.preventDefault();
+    handleStructurePanelAction(button.dataset.structureAction);
 });
 
 newRunBtn.addEventListener("click", () => {
@@ -5155,13 +5846,7 @@ buyDoubleShotPotionBtn?.addEventListener("click", () => buyConsumableToInventory
 buyLifeStealPotionBtn?.addEventListener("click", () => buyConsumableToInventory("lifeStealPotion", "lifeStealPotion", 1.18));
 
 repairBarricadeBtn.addEventListener("click", () => {
-    const damaged = (barricades || []).filter(b => b.active && b.maxHp > 0 && b.hp < b.maxHp).sort((a, b) => (a.hp / a.maxHp) - (b.hp / b.maxHp))[0];
-    if (!damaged || coins < costs.repairBarricade) return;
-
-    coins -= costs.repairBarricade;
-    damaged.hp = Math.min(damaged.maxHp, damaged.hp + Math.ceil(damaged.maxHp * 0.45));
-    costs.repairBarricade = scaleBarricadeCost(costs.repairBarricade, 1.25);
-    updateHud();
+    showCenterMessage("Clickeá una barricada para repararla desde su panel", 900);
 });
 
 upgradeBarricadeBtn.addEventListener("click", () => buyOrUpgradeBarricade("standard"));
@@ -5170,42 +5855,82 @@ buyExplosiveBarricadeBtn?.addEventListener("click", () => buyOrUpgradeBarricade(
 buyThornsBarricadeBtn?.addEventListener("click", () => buyOrUpgradeBarricade("thorns"));
 
 function getBarricadeUpgradeTarget(kind) {
-    const activeBarricades = (barricades || []).filter(b => b.active && b.hp > 0);
-    const sameKind = activeBarricades
-        .filter(b => b.kind === kind)
-        .sort((a, b) => (a.level || 0) - (b.level || 0) || a.maxHp - b.maxHp)[0];
+    const activeBarricades = (barricades || []).filter(b => b.active && b.hp > 0 && b.kind === kind);
+    const weakest = activeBarricades.sort((a, b) => (a.level || 0) - (b.level || 0) || a.maxHp - b.maxHp)[0];
+    return weakest ? { target: weakest, isNew: false } : null;
+}
 
-    if (sameKind) return { target: sameKind, isNew: false };
+function beginBarricadePlacement(kind = "standard", costKey = "upgradeBarricade") {
+    if (pendingBarricadePlacement) return;
+    const price = getBarricadeBaseCost(kind);
+    if (coins < price) {
+        showCenterMessage(`Faltan ${formatMissingMoney(price - coins)} monedas`, 800);
+        return;
+    }
+    clearStructureSelection();
+    pendingBarricadePlacement = { kind, costKey, price };
+    pendingTowerPurchase = null;
+    closeShop();
+    waveSummaryPanel.classList.add("hidden");
+    showCenterMessage("Colocá barricadas · R rota · seguí colocando hasta quedarte sin monedas", 1400);
+    updateBuildCancelUI();
+    updateHud(true);
+}
 
-    const preferred = barricades && barricades[selectedBarricadeSlotIndex];
-    if (preferred && (!preferred.active || preferred.hp <= 0)) {
-        return { target: preferred, isNew: true };
+function cancelBarricadePlacement(showShopAgain = false) {
+    if (!pendingBarricadePlacement) return;
+    pendingBarricadePlacement = null;
+    updateBuildCancelUI();
+    if (showShopAgain && hasActiveRun) {
+        openConstruction("barricades");
+    }
+    updateHud(true);
+}
+
+function finishBarricadePlacement() {
+    if (!pendingBarricadePlacement) return;
+    const point = getSnappedBuildPoint();
+    if (!isBarricadePositionValid(point.x, point.y, barricadeBuildOrientation)) {
+        showCenterMessage("No se puede colocar ahí", 750);
+        return;
+    }
+    const { kind, costKey } = pendingBarricadePlacement;
+    const price = getBarricadeBaseCost(kind);
+    if (coins < price) {
+        showCenterMessage("Monedas insuficientes", 800);
+        cancelBarricadePlacement(false);
+        return;
+    }
+    coins -= price;
+    const b = createFreeBarricade(kind, point.x, point.y, barricadeBuildOrientation);
+    upgradeBarricadeInstance(b, kind, true);
+    b.x = point.x;
+    b.y = point.y;
+    b.orientation = barricadeBuildOrientation;
+    b.isBuildBarricade = true;
+    barricades.push(b);
+    // Comprar barricadas nuevas mantiene precio fijo.
+    // El precio que escala ahora es el de mejora de cada barricada individual.
+    const nextPrice = getBarricadeBaseCost(kind);
+    if (coins < nextPrice) {
+        pendingBarricadePlacement = null;
+        showCenterMessage("Barricada colocada · sin monedas para otra", 900);
+    } else {
+        pendingBarricadePlacement = { kind, costKey, price: nextPrice };
+        showCenterMessage("Barricada colocada · seguí construyendo o cancelá", 900);
     }
 
-    const inactive = (barricades || []).find(b => !b.active || b.hp <= 0);
-    if (inactive) return { target: inactive, isNew: true };
-
-    return null;
+    updateBuildCancelUI();
+    updateHud(true);
+    autoSaveRun(true);
 }
 
 function buyOrUpgradeBarricade(kind = "standard") {
     const costKey = kind === "regen" ? "regenBarricade" : kind === "explosive" ? "explosiveBarricade" : kind === "thorns" ? "thornsBarricade" : "upgradeBarricade";
-    if (coins < costs[costKey]) return;
-
-    const result = getBarricadeUpgradeTarget(kind);
-    const target = result?.target;
-    if (!target) {
-        showCenterMessage("Primero debe romperse una barricada", 900);
-        return;
-    }
-
-    coins -= costs[costKey];
-    upgradeBarricadeInstance(target, kind, Boolean(result.isNew));
-    clampPlayerToPlayableArea();
-
-    costs[costKey] = scaleBarricadeCost(costs[costKey], kind === "standard" ? 1.55 : 1.42);
-    updateHud();
+    beginBarricadePlacement(kind, costKey);
 }
+
+
 
 function upgradeBarricadeInstance(target, kind, resetKind = false) {
     const wasInactive = !target.active || target.hp <= 0;
@@ -5234,7 +5959,6 @@ function upgradeBarricadeInstance(target, kind, resetKind = false) {
 
     const tier = barricadeTiers[Math.max(0, target.tier)];
     const level = Math.max(0, target.level || 0);
-
     const baseHp = kind === "regen" ? 38 : kind === "explosive" ? 45 : kind === "thorns" ? 34 : 55;
     const tierHp = kind === "standard" ? Math.max(0, target.tier) * 32 : 0;
     const levelHp = level * (kind === "standard" ? 38 : kind === "regen" ? 24 : kind === "explosive" ? 28 : 22);
@@ -5341,14 +6065,14 @@ function buyTower(defKey) {
     beginTowerPlacement(defKey);
 }
 
-function upgradeTower(index) {
+function upgradeTower(index, silent = false) {
     const tower = towers[index];
     if (!tower) return;
 
     tower.upgradeCost = Number(tower.upgradeCost) || Math.floor((tower.cost || 100) * 1.35);
 
     if (coins < tower.upgradeCost) {
-        showCenterMessage(`Faltan ${formatMissingMoney(tower.upgradeCost - coins)} monedas`, 800);
+        if (!silent) showCenterMessage(`Faltan ${formatMissingMoney(tower.upgradeCost - coins)} monedas`, 800);
         return;
     }
 
@@ -5418,8 +6142,11 @@ function upgradeTower(index) {
     }
 
     tower.upgradeCost = scaleTowerUpgradeCost(tower.upgradeCost);
-    updateHud(true);
-    autoSaveRun(true);
+    if (!silent) {
+        updateHud(true);
+        updateStructurePanel();
+        autoSaveRun(true);
+    }
 }
 
 function sellTower(index) {
@@ -5427,7 +6154,9 @@ function sellTower(index) {
     if (!tower) return;
     const refund = Math.floor((tower.spent || 0) * TOWER_SELL_REFUND);
     coins += refund;
+    const soldId = String(tower.id);
     towers.splice(index, 1);
+    selectedStructureIds = selectedStructureIds.filter(id => id !== soldId);
     updateTowerSlotIndexes();
     updateHud(true);
     autoSaveRun(true);
@@ -5601,6 +6330,7 @@ pauseSfxVolume.addEventListener("input", () => {
 });
 
 repeatWaveBtn.addEventListener("click", () => {
+    if (waveInProgress) return;
     const repeats = getRepeatCountForCurrentWave();
     if (repeats >= REPEAT_LIMIT_PER_WAVE) {
         showCenterMessage("Límite de repeticiones", 900);
@@ -5616,6 +6346,7 @@ repeatWaveBtn.addEventListener("click", () => {
 
 
 nextWaveBtn.addEventListener("click", () => {
+    if (waveInProgress) return;
     wave++;
     autoRepeatWaveMode = false;
     isRepeatingWave = false;
