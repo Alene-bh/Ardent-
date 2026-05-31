@@ -953,18 +953,47 @@ function regenerateBarricades() {
 }
 
 
-function scaleShopCost(currentCost, earlyMultiplier, lateMultiplier = 1.14, softCap = 900, hardCap = 100000000) {
-    const current = Math.max(1, Number(currentCost) || 1);
+function scaleShopCost(currentCost, earlyMultiplier, lateMultiplier = 1.14, softCap = 900, hardCap = Number.MAX_SAFE_INTEGER) {
+    const current = Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Number(currentCost) || 1));
 
     if (current < softCap) {
-        return Math.min(hardCap, Math.ceil(current * earlyMultiplier));
+        return Math.min(hardCap, Number.MAX_SAFE_INTEGER, Math.ceil(current * earlyMultiplier));
     }
 
     const blend = Math.min(1, Math.pow(softCap / current, 0.65));
     const multiplier = lateMultiplier + (earlyMultiplier - lateMultiplier) * blend;
     const next = Math.ceil(current * multiplier);
 
-    return Math.min(hardCap, Math.max(next, current + 1));
+    return Math.min(hardCap, Number.MAX_SAFE_INTEGER, Math.max(next, current + 1));
+}
+
+function formatCompactNumber(value, decimals = 1) {
+    const number = Number(value) || 0;
+    const sign = number < 0 ? "-" : "";
+    const abs = Math.abs(number);
+
+    if (abs < 1000) return sign + Math.floor(abs).toString();
+
+    const units = [
+        { value: 1e15, suffix: "q" },
+        { value: 1e12, suffix: "t" },
+        { value: 1e9, suffix: "b" },
+        { value: 1e6, suffix: "m" },
+        { value: 1e3, suffix: "k" }
+    ];
+
+    const unit = units.find(item => abs >= item.value) || units[units.length - 1];
+    const scaled = abs / unit.value;
+    const fixed = scaled >= 100 ? scaled.toFixed(0) : scaled.toFixed(decimals);
+    return sign + fixed.replace(/\.0$/, "") + unit.suffix;
+}
+
+function formatMoney(value) {
+    return formatCompactNumber(value);
+}
+
+function formatMissingMoney(value) {
+    return formatMoney(Math.max(0, value));
 }
 
 function scaleStatCost(currentCost, earlyMultiplier) {
@@ -3012,11 +3041,11 @@ function completeWave() {
 function showWaveSummary() {
     syncMusicState();
     summaryKillsText.textContent = waveStats.kills;
-    summaryGoldText.textContent = waveStats.gold;
-    summaryScoreText.textContent = waveStats.score;
+    summaryGoldText.textContent = formatMoney(waveStats.gold);
+    summaryScoreText.textContent = formatCompactNumber(waveStats.score);
     summaryHpText.textContent = `${Math.round(player.hp)}/${player.maxHp}`;
     summaryBarricadeText.textContent = `${Math.round(getTotalBarricadeHp())}/${Math.round(getTotalBarricadeMaxHp())}`;
-    summaryBonusText.textContent = waveStats.bonus;
+    summaryBonusText.textContent = formatCompactNumber(waveStats.bonus);
 
     waveSummaryPanel.classList.remove("hidden");
     autoSaveRun(true);
@@ -3027,7 +3056,7 @@ function getLeaderboardPlayerName() {
 }
 
 function formatLeaderboardNumber(value) {
-    return Number(value || 0).toLocaleString("es-AR");
+    return formatCompactNumber(value);
 }
 
 function setLeaderboardStatus(message) {
@@ -3172,9 +3201,9 @@ function endRun() {
         deathMessageText.textContent = "Tu base cayó. La run terminó y el progreso se reinició.";
     }
 
-    finalScoreText.textContent = score;
-    bestScoreText.textContent = bestScore;
-    bestScoreMenuText.textContent = bestScore;
+    finalScoreText.textContent = formatCompactNumber(score);
+    bestScoreText.textContent = formatCompactNumber(bestScore);
+    bestScoreMenuText.textContent = formatCompactNumber(bestScore);
 
     gameOverScreen.classList.remove("hidden");
     shop.classList.add("hidden");
@@ -3942,7 +3971,7 @@ function setShopButtonAffordability(button, cost, extraDisabled = false, extraTi
     button.classList.toggle("cantAfford", cantAfford);
 
     if (cantAfford) {
-        button.title = `Faltan ${numericCost - coins} monedas`;
+        button.title = `Faltan ${formatMissingMoney(numericCost - coins)} monedas`;
     } else {
         button.title = extraTitle || "";
     }
@@ -3953,7 +3982,7 @@ function markShopButtonAffordability(button, cost) {
     const numericCost = Number(cost) || 0;
     const cantAfford = numericCost > coins;
     button.classList.toggle("cantAfford", cantAfford);
-    if (cantAfford) button.title = `Faltan ${numericCost - coins} monedas`;
+    if (cantAfford) button.title = `Faltan ${formatMissingMoney(numericCost - coins)} monedas`;
 }
 
 
@@ -4214,31 +4243,31 @@ function updateHud(force = false) {
     waveText.textContent = wave;
     hpText.textContent = `${Math.round(player.hp)}/${player.maxHp}${player.shieldCharges > 0 ? ` 🛡${player.shieldCharges}` : ""}`;
     barricadeText.textContent = `${Math.round(getTotalBarricadeHp())}/${Math.round(getTotalBarricadeMaxHp())}`;
-    coinsText.textContent = coins;
-    scoreText.textContent = score;
+    coinsText.textContent = formatMoney(coins);
+    scoreText.textContent = formatCompactNumber(score);
 
     playerDamageText.textContent = player.damage;
     playerFireDelayText.textContent = player.fireDelay;
     playerMaxHpText.textContent = player.maxHp;
     critChanceText.textContent = Math.round(player.critChance * 100);
 
-    damageCostText.textContent = costs.damage;
-    fireRateCostText.textContent = costs.fireRate;
-    maxHpCostText.textContent = costs.maxHp;
-    critCostText.textContent = costs.crit;
+    damageCostText.textContent = formatMoney(costs.damage);
+    fireRateCostText.textContent = formatMoney(costs.fireRate);
+    maxHpCostText.textContent = formatMoney(costs.maxHp);
+    critCostText.textContent = formatMoney(costs.crit);
 
     setShopButtonAffordability(upgradeDamageBtn, costs.damage);
     setShopButtonAffordability(upgradeFireRateBtn, costs.fireRate);
     setShopButtonAffordability(upgradeMaxHpBtn, costs.maxHp);
     setShopButtonAffordability(upgradeCritBtn, costs.crit);
 
-    smallPotionCostText.textContent = costs.smallPotion;
-    mediumPotionCostText.textContent = costs.mediumPotion;
-    largePotionCostText.textContent = costs.largePotion;
-    if (shieldPotionCostText) shieldPotionCostText.textContent = costs.shieldPotion;
-    if (attackSpeedPotionCostText) attackSpeedPotionCostText.textContent = costs.attackSpeedPotion;
-    if (doubleShotPotionCostText) doubleShotPotionCostText.textContent = costs.doubleShotPotion;
-    if (lifeStealPotionCostText) lifeStealPotionCostText.textContent = costs.lifeStealPotion;
+    smallPotionCostText.textContent = formatMoney(costs.smallPotion);
+    mediumPotionCostText.textContent = formatMoney(costs.mediumPotion);
+    largePotionCostText.textContent = formatMoney(costs.largePotion);
+    if (shieldPotionCostText) shieldPotionCostText.textContent = formatMoney(costs.shieldPotion);
+    if (attackSpeedPotionCostText) attackSpeedPotionCostText.textContent = formatMoney(costs.attackSpeedPotion);
+    if (doubleShotPotionCostText) doubleShotPotionCostText.textContent = formatMoney(costs.doubleShotPotion);
+    if (lifeStealPotionCostText) lifeStealPotionCostText.textContent = formatMoney(costs.lifeStealPotion);
 
     renderInventory();
 
@@ -4251,11 +4280,11 @@ function updateHud(force = false) {
     setShopButtonAffordability(buyDoubleShotPotionBtn, costs.doubleShotPotion, !hasInventorySpaceFor("doubleShotPotion"), hasInventorySpaceFor("doubleShotPotion") ? "" : inventoryFullTitle);
     setShopButtonAffordability(buyLifeStealPotionBtn, costs.lifeStealPotion, !hasInventorySpaceFor("lifeStealPotion"), hasInventorySpaceFor("lifeStealPotion") ? "" : inventoryFullTitle);
 
-    repairBarricadeCostText.textContent = costs.repairBarricade;
-    upgradeBarricadeCostText.textContent = costs.upgradeBarricade;
-    if (regenBarricadeCostText) regenBarricadeCostText.textContent = costs.regenBarricade;
-    if (explosiveBarricadeCostText) explosiveBarricadeCostText.textContent = costs.explosiveBarricade;
-    if (thornsBarricadeCostText) thornsBarricadeCostText.textContent = costs.thornsBarricade;
+    repairBarricadeCostText.textContent = formatMoney(costs.repairBarricade);
+    upgradeBarricadeCostText.textContent = formatMoney(costs.upgradeBarricade);
+    if (regenBarricadeCostText) regenBarricadeCostText.textContent = formatMoney(costs.regenBarricade);
+    if (explosiveBarricadeCostText) explosiveBarricadeCostText.textContent = formatMoney(costs.explosiveBarricade);
+    if (thornsBarricadeCostText) thornsBarricadeCostText.textContent = formatMoney(costs.thornsBarricade);
 
     const hasDamagedBarricade = (barricades || []).some(b => b.active && b.hp > 0 && b.hp < b.maxHp);
     setShopButtonAffordability(
@@ -4273,17 +4302,17 @@ function updateHud(force = false) {
 
     towerDefinitions.forEach((def, index) => {
         const el = document.getElementById(`tower${index + 1}CostText`);
-        if (el) el.textContent = costs[def.key] ?? def.cost;
+        if (el) el.textContent = formatMoney(costs[def.key] ?? def.cost);
     });
 
-    if (towerSlotCostText) towerSlotCostText.textContent = towerSlotLimit >= MAX_TOWER_LIMIT ? "MAX" : costs.towerSlot;
+    if (towerSlotCostText) towerSlotCostText.textContent = towerSlotLimit >= MAX_TOWER_LIMIT ? "MAX" : formatMoney(costs.towerSlot);
 
-    bombCostText.textContent = abilities.bomb.cost;
-    freezeCostText.textContent = abilities.freeze.cost;
-    tsunamiCostText.textContent = abilities.tsunami.cost;
-    lightningCostText.textContent = abilities.lightning.cost;
-    meteorCostText.textContent = abilities.meteor.cost;
-    if (eclipseCostText) eclipseCostText.textContent = abilities.eclipse.cost;
+    bombCostText.textContent = formatMoney(abilities.bomb.cost);
+    freezeCostText.textContent = formatMoney(abilities.freeze.cost);
+    tsunamiCostText.textContent = formatMoney(abilities.tsunami.cost);
+    lightningCostText.textContent = formatMoney(abilities.lightning.cost);
+    meteorCostText.textContent = formatMoney(abilities.meteor.cost);
+    if (eclipseCostText) eclipseCostText.textContent = formatMoney(abilities.eclipse.cost);
 
     updateTowerShopVisibility();
     updateAbilityShopVisibility();
@@ -4311,7 +4340,7 @@ function updateTowerShopVisibility() {
         );
         buyTowerSlotBtn.innerHTML = atMaxSlots
             ? `Slots de torres al máximo<br><small>Tenés ${towerSlotLimit}/${MAX_TOWER_LIMIT} slots disponibles</small><br><span id="towerSlotCostText">MAX</span>`
-            : `Comprar slot de torre<br><small>Compra 1 slot extra · ${towerSlotLimit}/${MAX_TOWER_LIMIT}</small><br><span id="towerSlotCostText">${costs.towerSlot}</span> monedas`;
+            : `Comprar slot de torre<br><small>Compra 1 slot extra · ${towerSlotLimit}/${MAX_TOWER_LIMIT}</small><br><span id="towerSlotCostText">${formatMoney(costs.towerSlot)}</span> monedas`;
     }
 
     towerDefinitions.forEach((def, index) => {
@@ -4369,10 +4398,10 @@ function renderTowerSlotsPanel() {
         return `
             <div class="towerSlotCard">
                 <strong>Slot ${index + 1}: ${tower.name}</strong><br>
-                <small>Nivel ${tower.level} · Pos: ${Math.round(tower.x)},${Math.round(tower.y)} · Gastado: ${Math.round(tower.spent || 0)} · Venta: ${refund}</small>${buffText}<br>
-                <button type="button" data-tower-action="upgrade" data-index="${index}" class="${coins < tower.upgradeCost ? "cantAfford" : ""}" title="${coins < tower.upgradeCost ? `Faltan ${tower.upgradeCost - coins} monedas` : ""}" ${coins < tower.upgradeCost ? "disabled" : ""}>Mejorar (${tower.upgradeCost})</button>
+                <small>Nivel ${tower.level} · Pos: ${Math.round(tower.x)},${Math.round(tower.y)} · Gastado: ${formatMoney(tower.spent || 0)} · Venta: ${formatMoney(refund)}</small>${buffText}<br>
+                <button type="button" data-tower-action="upgrade" data-index="${index}" class="${coins < tower.upgradeCost ? "cantAfford" : ""}" title="${coins < tower.upgradeCost ? `Faltan ${formatMissingMoney(tower.upgradeCost - coins)} monedas` : ""}" ${coins < tower.upgradeCost ? "disabled" : ""}>Mejorar (${formatMoney(tower.upgradeCost)})</button>
                 <button type="button" data-tower-action="move" data-index="${index}">Mover</button>
-                <button type="button" data-tower-action="sell" data-index="${index}" class="dangerMiniButton">Vender (${refund})</button>
+                <button type="button" data-tower-action="sell" data-index="${index}" class="dangerMiniButton">Vender (${formatMoney(refund)})</button>
             </div>`;
     }).join("");
 }
@@ -4590,8 +4619,8 @@ function runConsoleCommand(rawCommand) {
 
     if (command === "greedisgood") {
         disqualifyRunFromLeaderboard("greedisgood");
-        coins = 999999;
-        appendConsoleLog("Easter egg activado: 999.999 monedas agregadas.");
+        coins = Math.min(Number.MAX_SAFE_INTEGER, coins + 999999999);
+        appendConsoleLog(`Easter egg activado: +${formatMoney(999999999)} monedas agregadas.`);
         updateHud();
         return;
     }
@@ -4615,7 +4644,7 @@ function runConsoleCommand(rawCommand) {
 
     if (command === "beginner") {
         coins += 500;
-        appendConsoleLog("Comando activado: +500 monedas.");
+        appendConsoleLog(`Comando activado: +${formatMoney(500)} monedas.`);
         updateHud();
         return;
     }
@@ -4624,7 +4653,7 @@ function runConsoleCommand(rawCommand) {
         const parts = command.split(/\s+/);
 
         if (!parts[1]) {
-            appendConsoleLog("Uso correcto: add 5000. Máximo: 100.000.000 monedas.");
+            appendConsoleLog("Uso correcto: add 5000. Sin límite práctico de monedas.");
             return;
         }
 
@@ -4636,15 +4665,10 @@ function runConsoleCommand(rawCommand) {
             return;
         }
 
-        const cappedAmount = Math.min(amount, 100000000);
+        const safeAmount = Math.min(amount, Number.MAX_SAFE_INTEGER - coins);
         disqualifyRunFromLeaderboard("add");
-        coins = Math.min(100000000, coins + cappedAmount);
-
-        if (amount > 100000000) {
-            appendConsoleLog("Comando activado: se aplicó el máximo permitido de 100.000.000 monedas.");
-        } else {
-            appendConsoleLog(`Comando activado: +${cappedAmount.toLocaleString("es-AR")} monedas.`);
-        }
+        coins = Math.min(Number.MAX_SAFE_INTEGER, coins + safeAmount);
+        appendConsoleLog(`Comando activado: +${formatMoney(safeAmount)} monedas.`);
 
         updateHud();
         return;
@@ -5195,7 +5219,7 @@ function buyTowerSlot() {
     const price = Number(costs.towerSlot) || getTowerSlotCostForLimit(towerSlotLimit);
 
     if (coins < price) {
-        showCenterMessage(`Faltan ${price - coins} monedas`, 850);
+        showCenterMessage(`Faltan ${formatMissingMoney(price - coins)} monedas`, 850);
         updateHud(true);
         return;
     }
@@ -5221,7 +5245,7 @@ function upgradeTower(index) {
     tower.upgradeCost = Number(tower.upgradeCost) || Math.floor((tower.cost || 100) * 1.35);
 
     if (coins < tower.upgradeCost) {
-        showCenterMessage(`Faltan ${tower.upgradeCost - coins} monedas`, 800);
+        showCenterMessage(`Faltan ${formatMissingMoney(tower.upgradeCost - coins)} monedas`, 800);
         return;
     }
 
@@ -5519,7 +5543,7 @@ autoModeBtn.addEventListener("click", () => {
     }
 });
 
-bestScoreMenuText.textContent = bestScore;
+bestScoreMenuText.textContent = formatCompactNumber(bestScore);
 createDefaultState();
 applyAudioSettingsToUI();
 draw();
