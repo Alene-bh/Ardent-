@@ -1730,6 +1730,89 @@ function getBlockingBarricadeForEnemy(enemy, targetX, targetY) {
     return best;
 }
 
+
+function getBarricadeContactInfo(enemy, barricade) {
+    if (!enemy || !barricade) return null;
+    const rect = getEntityRect({ ...barricade, isBuildBarricade: true });
+    const closestX = Math.max(rect.left, Math.min(rect.right, enemy.x));
+    const closestY = Math.max(rect.top, Math.min(rect.bottom, enemy.y));
+    const dx = enemy.x - closestX;
+    const dy = enemy.y - closestY;
+    const distance = Math.hypot(dx, dy);
+    const onVerticalEdge = closestX === rect.left || closestX === rect.right;
+    const onHorizontalEdge = closestY === rect.top || closestY === rect.bottom;
+    return { rect, closestX, closestY, dx, dy, distance, isCorner: onVerticalEdge && onHorizontalEdge };
+}
+
+function isEnemyPositionBlockedBySolid(enemy, x, y, ignoredBarricade = null) {
+    if (!enemy) return true;
+    const radius = (enemy.radius || 18) + 3;
+
+    if ((barricades || []).some(b => {
+        if (!b || b === ignoredBarricade || !b.active || b.hp <= 0 || b.isOpen) return false;
+        return circleIntersectsRect(x, y, radius, getEntityRect({ ...b, isBuildBarricade: true }), 0);
+    })) return true;
+
+    if ((towers || []).some(t => t && t.owned && t.hp > 0 && Math.hypot(t.x - x, t.y - y) < TOWER_COLLISION_RADIUS + radius)) return true;
+    if ((mines || []).some(m => m && m.hp > 0 && Math.hypot(m.x - x, m.y - y) < (m.radius || MINE_COLLISION_RADIUS) + radius)) return true;
+    if (baseCore && basePlaced && baseCore.hp > 0 && Math.hypot(baseCore.x - x, baseCore.y - y) < BASE_RADIUS + radius) return true;
+
+    return false;
+}
+
+function trySlideEnemyAlongBarricade(enemy, barricade, targetX, targetY) {
+    if (!enemy || !barricade) return false;
+    const info = getBarricadeContactInfo(enemy, barricade);
+    if (!info || !info.isCorner) return false;
+
+    const normalLength = Math.hypot(info.dx, info.dy) || 1;
+    const nx = info.dx / normalLength;
+    const ny = info.dy / normalLength;
+    const moveAmount = Math.max(0.4, enemy.speed * gameSpeed * frameScale * 1.05);
+
+    const candidates = [
+        { x: -ny, y: nx },
+        { x: ny, y: -nx },
+        { x: Math.sign(targetX - enemy.x) || 0, y: 0 },
+        { x: 0, y: Math.sign(targetY - enemy.y) || 0 }
+    ].filter(v => v.x || v.y);
+
+    candidates.sort((a, b) => {
+        const ax = enemy.x + a.x * moveAmount;
+        const ay = enemy.y + a.y * moveAmount;
+        const bx = enemy.x + b.x * moveAmount;
+        const by = enemy.y + b.y * moveAmount;
+        return Math.hypot(targetX - ax, targetY - ay) - Math.hypot(targetX - bx, targetY - by);
+    });
+
+    for (const candidate of candidates) {
+        const len = Math.hypot(candidate.x, candidate.y) || 1;
+        let nextX = clampWorldX(enemy.x + (candidate.x / len) * moveAmount, enemy.radius + 3);
+        let nextY = clampWorldY(enemy.y + (candidate.y / len) * moveAmount, enemy.radius + 3);
+
+        // Mantiene al enemigo afuera de la muralla mientras resbala por la esquina.
+        const nextInfo = getBarricadeContactInfo({ ...enemy, x: nextX, y: nextY }, barricade);
+        const minDistance = (enemy.radius || 18) + 6;
+        if (nextInfo && nextInfo.distance < minDistance) {
+            const pushLength = Math.hypot(nextInfo.dx, nextInfo.dy) || 1;
+            nextX += (nextInfo.dx / pushLength) * (minDistance - nextInfo.distance);
+            nextY += (nextInfo.dy / pushLength) * (minDistance - nextInfo.distance);
+            nextX = clampWorldX(nextX, enemy.radius + 3);
+            nextY = clampWorldY(nextY, enemy.radius + 3);
+        }
+
+        if (!isEnemyPositionBlockedBySolid(enemy, nextX, nextY, barricade)) {
+            enemy.x = nextX;
+            enemy.y = nextY;
+            enemy.isAttacking = false;
+            enemy.target = "sliding";
+            return true;
+        }
+    }
+
+    return false;
+}
+
 function getBlockingMineForEnemy(enemy) {
     let best = null;
     let bestDist = Infinity;
@@ -4369,6 +4452,10 @@ function updateEnemies() {
         const blockingBarricade = enemy.special === "healer" ? null : getBlockingBarricadeForEnemy(enemy, mainTarget.x, mainTarget.y);
 
         if (blockingBarricade) {
+            if (trySlideEnemyAlongBarricade(enemy, blockingBarricade, mainTarget.x, mainTarget.y)) {
+                continue;
+            }
+
             enemy.isAttacking = true;
             enemy.target = "barricade";
 
@@ -4430,10 +4517,23 @@ function updateEnemies() {
         if (distance > attackDistance) {
             const nx = dx / (distance || 1);
             const ny = dy / (distance || 1);
-            enemy.x += nx * enemy.speed * gameSpeed * frameScale;
-            enemy.y += ny * enemy.speed * gameSpeed * frameScale;
-            enemy.x = clampWorldX(enemy.x, enemy.radius + 3);
-            enemy.y = clampWorldY(enemy.y, enemy.radius + 3);
+            const moveAmount = enemy.speed * gameSpeed * frameScale;
+            const nextX = clampWorldX(enemy.x + nx * moveAmount, enemy.radius + 3);
+            const nextY = clampWorldY(enemy.y + ny * moveAmount, enemy.radius + 3);
+
+            if (!isEnemyPositionBlockedBySolid(enemy, nextX, nextY)) {
+                enemy.x = nextX;
+                enemy.y = nextY;
+            } else {
+                const slideX = clampWorldX(enemy.x + nx * moveAmount, enemy.radius + 3);
+                const slideY = clampWorldY(enemy.y + ny * moveAmount, enemy.radius + 3);
+                if (!isEnemyPositionBlockedBySolid(enemy, slideX, enemy.y)) {
+                    enemy.x = slideX;
+                } else if (!isEnemyPositionBlockedBySolid(enemy, enemy.x, slideY)) {
+                    enemy.y = slideY;
+                }
+            }
+
             enemy.isAttacking = false;
             continue;
         }
@@ -6313,13 +6413,6 @@ function drawEnemies() {
             ctx.stroke();
         }
 
-        if (enemy.isAttacking) {
-            ctx.strokeStyle = "white";
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.arc(enemy.x, enemy.y, enemy.radius + 4, 0, Math.PI * 2);
-            ctx.stroke();
-        }
 
         const hpBarWidth = enemy.isBoss ? 80 : 40;
         const hpPercent = enemy.hp / enemy.maxHp;
