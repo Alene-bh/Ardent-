@@ -85,6 +85,84 @@ const sounds = {
 
 sounds.music.loop = true;
 
+// Sprites del jugador: poné tus PNG en assets/sprites.
+// Soporta sprite sheets horizontales: cada frame se calcula como alto x alto.
+const playerSpritePaths = {
+    idle: "assets/sprites/idle.png",
+    walk: "assets/sprites/walk.png",
+    hurt: "assets/sprites/hurt.png",
+    death: "assets/sprites/death.png"
+};
+
+const PLAYER_SPRITE_DRAW_SIZE = 58;
+const playerSprites = {};
+
+function loadPlayerSprites() {
+    Object.entries(playerSpritePaths).forEach(([key, src]) => {
+        const img = new Image();
+        img.src = src;
+        playerSprites[key] = img;
+    });
+}
+
+function getSpriteFrameData(img) {
+    if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) return null;
+    const frameHeight = img.naturalHeight;
+    const frameWidth = frameHeight;
+    const frameCount = Math.max(1, Math.floor(img.naturalWidth / frameWidth));
+    return { frameWidth, frameHeight, frameCount };
+}
+
+function getPlayerSpriteAnimation() {
+    if (!player) return "idle";
+    if (player.hp <= 0) return "death";
+    if ((player.hurtUntil || 0) > getGameTime()) return "hurt";
+    if (player.isMoving) return "walk";
+    return "idle";
+}
+
+function drawPlayerSprite() {
+    if (!player) return false;
+
+    const animation = getPlayerSpriteAnimation();
+    let img = playerSprites[animation];
+    let frameData = getSpriteFrameData(img);
+
+    // Fallback elegante: si falta hurt/death/walk, usa idle. Si no hay sprites, vuelve al dibujo viejo.
+    if (!frameData && animation !== "idle") {
+        img = playerSprites.idle;
+        frameData = getSpriteFrameData(img);
+    }
+    if (!frameData) return false;
+
+    const { frameWidth, frameHeight, frameCount } = frameData;
+    const fpsByAnimation = { idle: 5, walk: 10, hurt: 8, death: 7 };
+    const fps = fpsByAnimation[animation] || 8;
+    let frameIndex = 0;
+
+    if (animation === "death") {
+        if (!player.deathStartedAt) player.deathStartedAt = getGameTime();
+        frameIndex = Math.min(frameCount - 1, Math.floor((getGameTime() - player.deathStartedAt) / (1000 / fps)));
+    } else {
+        frameIndex = Math.floor(getGameTime() / (1000 / fps)) % frameCount;
+    }
+
+    const sx = frameIndex * frameWidth;
+    const drawSize = PLAYER_SPRITE_DRAW_SIZE;
+    const aimX = Number.isFinite(player.aimX) ? player.aimX : player.x + (player.lastMoveX || 1);
+    const shouldFlip = aimX < player.x;
+
+    ctx.save();
+    ctx.translate(player.x, player.y);
+    if (shouldFlip) ctx.scale(-1, 1);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(img, sx, 0, frameWidth, frameHeight, -drawSize / 2, -drawSize / 2, drawSize, drawSize);
+    ctx.restore();
+    return true;
+}
+
+loadPlayerSprites();
+
 let soundEnabled = false;
 
 let audioSettings = {
@@ -1546,11 +1624,13 @@ function damagePlayer(amount, sourceEnemy = null, impactX = player ? player.x : 
     }
 
     player.hp -= amount;
+    player.hurtUntil = getGameTime() + 280;
     triggerRedFlash();
     createImpactParticles(impactX, impactY, sourceEnemy && sourceEnemy.color ? sourceEnemy.color : "#ff4444");
 
     if (player.hp <= 0) {
         player.hp = 0;
+        player.deathStartedAt = getGameTime();
         setLastDeathCause(sourceEnemy, "daño enemigo");
         endRun();
         return true;
@@ -2092,6 +2172,11 @@ function createDefaultState() {
         bleedPowerMultiplier: 1,
         passiveDoubleShotChance: 0,
         immortal: false,
+        isMoving: false,
+        lastMoveX: 1,
+        lastMoveY: 0,
+        hurtUntil: 0,
+        deathStartedAt: 0,
         alphaTester: Boolean(alphaTesterName),
         developer: Boolean(developerName),
         name: developerName || alphaTesterName || playerName
@@ -3139,7 +3224,10 @@ function clampPlayerToPlayableArea() {
 }
 
 function updatePlayerMovement() {
-    if (isPaused || !player || (!waveInProgress && !buildPhaseActive)) return;
+    if (isPaused || !player || (!waveInProgress && !buildPhaseActive)) {
+        if (player) player.isMoving = false;
+        return;
+    }
 
     let dx = 0;
     let dy = 0;
@@ -3149,6 +3237,7 @@ function updatePlayerMovement() {
     if (pressedKeys.has(controlBindings.moveUp)) dy -= 1;
     if (pressedKeys.has(controlBindings.moveDown)) dy += 1;
 
+    player.isMoving = dx !== 0 || dy !== 0;
     if (dx === 0 && dy === 0) return;
 
     const oldX = player.x;
@@ -3156,6 +3245,8 @@ function updatePlayerMovement() {
     const length = Math.hypot(dx, dy) || 1;
     dx /= length;
     dy /= length;
+    player.lastMoveX = dx;
+    player.lastMoveY = dy;
 
     const movementSpeedMultiplier = Math.min(1.12, Math.sqrt(gameSpeed) * 0.82);
     const speed = player.moveSpeed * movementSpeedMultiplier * frameScale;
@@ -5389,14 +5480,19 @@ function drawPlayer() {
         ctx.stroke();
     }
 
-    ctx.fillStyle = "white";
-    ctx.beginPath();
-    ctx.arc(player.x, player.y, 22, 0, Math.PI * 2);
-    ctx.fill();
+    const spriteDrawn = drawPlayerSprite();
 
-    ctx.fillStyle = "black";
-    ctx.font = "14px Arial";
-    ctx.fillText("P", player.x - 5, player.y + 5);
+    // Si los PNG todavía no cargaron o faltan, usa el dibujo viejo como fallback.
+    if (!spriteDrawn) {
+        ctx.fillStyle = "white";
+        ctx.beginPath();
+        ctx.arc(player.x, player.y, 22, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "black";
+        ctx.font = "14px Arial";
+        ctx.fillText("P", player.x - 5, player.y + 5);
+    }
 
     if (player.name) {
         if (player.developer) {
