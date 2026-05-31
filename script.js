@@ -973,7 +973,7 @@ const towerDefinitions = [
     { key: "tower9", name: "Buffer", type: "buffer", cost: 620, upgradeCost: 600, damage: 0, range: 180, fireDelay: 999999, color: "#b78cff", label: "+", buffDamage: 0.10, buffSpeed: 0.10 },
     { key: "tower10", name: "Lucky Block", type: "lucky", cost: 240, upgradeCost: 0, damage: 0, range: 0, fireDelay: 999999, color: "#ffe28a", label: "?" },
     { key: "tower11", name: "Cuchilla", type: "blade", cost: 90, upgradeCost: 120, damage: 0.55, range: 62, fireDelay: 620, color: "#d9d9d9", label: "C", maxHp: 60 },
-    { key: "tower12", name: "Lancera", type: "spear", cost: 135, upgradeCost: 165, damage: 1.05, range: 155, fireDelay: 980, color: "#d7b06a", label: "L", maxHp: 44, laneWidth: 38 }
+    { key: "tower12", name: "Lancera", type: "spear", cost: 135, upgradeCost: 165, damage: 1.05, range: 310, fireDelay: 1650, color: "#d7b06a", label: "L", maxHp: 44, laneWidth: 38 }
 ];
 
 const enemyTypes = [
@@ -7766,9 +7766,11 @@ function upgradeTower(index, silent = false) {
 
     if (tower.type === "spear") {
         tower.damage += 0.58;
-        tower.range += 9;
+        // La lancera ahora cumple rol de control de línea a larga distancia:
+        // pega bastante más lento, pero conserva el alcance duplicado también al escalar.
+        tower.range += 18;
         tower.laneWidth = (tower.laneWidth || 38) + 1.5;
-        tower.fireDelay = Math.max(560, tower.fireDelay - 45);
+        tower.fireDelay = Math.max(1050, tower.fireDelay - 30);
     }
 
     if (tower.type === "buffer") {
