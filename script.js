@@ -1170,8 +1170,24 @@ function getGoldAmount(amount) {
     return Math.ceil(amount * currentGoldMultiplier * getLateGameGoldMultiplier());
 }
 
+function clampRepeatCount(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return 0;
+    return Math.max(0, Math.min(REPEAT_LIMIT_PER_WAVE, Math.floor(parsed)));
+}
+
+function normalizeRepeatCountsByWave(counts) {
+    const normalized = {};
+    Object.keys(counts || {}).forEach(key => {
+        normalized[key] = clampRepeatCount(counts[key]);
+    });
+    return normalized;
+}
+
 function getRepeatCountForCurrentWave() {
-    return repeatCountsByWave[wave] || 0;
+    const clamped = clampRepeatCount(repeatCountsByWave[wave]);
+    repeatCountsByWave[wave] = clamped;
+    return clamped;
 }
 
 function applyTowerBuffs() {
@@ -1523,7 +1539,7 @@ function restoreSavedRun() {
         enemiesSpawned = Number(data.enemiesSpawned) || 0;
         spawnInterval = Number(data.spawnInterval) || 900;
         lastSpawnTime = Number(data.lastSpawnTime) || getGameTime();
-        repeatCountsByWave = data.repeatCountsByWave || {};
+        repeatCountsByWave = normalizeRepeatCountsByWave(data.repeatCountsByWave || {});
         isRepeatingWave = Boolean(data.isRepeatingWave);
         currentGoldMultiplier = Number(data.currentGoldMultiplier) || 1;
         doomSpawnedThisWave = Boolean(data.doomSpawnedThisWave);
@@ -4412,6 +4428,8 @@ function gameLoop() {
     // El límite evita saltos gigantes si el navegador se traba.
     frameScale = Math.max(1, Math.min(delta / 16.666, 2.5));
 
+    recoverFrozenWaveState("loop");
+
     if (gameStarted && gameRunning && waveInProgress && !isPaused && !document.hidden) {
         gameTime += delta * gameSpeed;
     }
@@ -4472,6 +4490,52 @@ function closeConsole() {
     if (!consolePanel) return;
     consolePanel.classList.add("hidden");
     if (consoleInput) consoleInput.value = "";
+}
+
+function isElementVisible(element) {
+    return !!element && !element.classList.contains("hidden");
+}
+
+function isWaveBlockingPanelOpen() {
+    return (
+        isElementVisible(shop) ||
+        isElementVisible(waveSummaryPanel) ||
+        isElementVisible(gameOverScreen)
+    );
+}
+
+function recoverFrozenWaveState(reason = "auto") {
+    if (!gameStarted || !hasActiveRun || !waveInProgress) return false;
+    if (document.hidden || isWaveBlockingPanelOpen()) return false;
+
+    const pausePanelVisible = isElementVisible(pausePanel);
+
+    // Si el panel de pausa está oculto, la oleada no debería quedar ni pausada ni sin correr.
+    // Esto evita el bug donde el juego queda congelado hasta tocar Escape varias veces.
+    if (!pausePanelVisible && (isPaused || !gameRunning)) {
+        isPaused = false;
+        gameRunning = true;
+        confirmRestartBox.classList.add("hidden");
+        lastFrameTime = performance.now();
+        syncMusicState();
+        updateHud(true);
+        return true;
+    }
+
+    return false;
+}
+
+function forceResumeWave() {
+    if (!gameStarted || !hasActiveRun || !waveInProgress) return;
+    if (isWaveBlockingPanelOpen()) return;
+
+    isPaused = false;
+    gameRunning = true;
+    pausePanel.classList.add("hidden");
+    confirmRestartBox.classList.add("hidden");
+    lastFrameTime = performance.now();
+    syncMusicState();
+    updateHud(true);
 }
 
 function runConsoleCommand(rawCommand) {
@@ -4752,13 +4816,22 @@ window.addEventListener("keydown", event => {
     }
 
     if (event.code === "Escape") {
+        event.preventDefault();
+
         if (pendingTowerPurchase || pendingTowerMoveIndex !== null) {
             cancelTowerPlacement(true);
             cancelTowerMove(true);
             return;
         }
 
-        if (isPaused) {
+        // Si la oleada quedó en un estado raro (sin correr, pero sin panel de pausa),
+        // Escape primero la destraba en vez de meter otra pausa encima.
+        if (waveInProgress && !isWaveBlockingPanelOpen() && !isElementVisible(pausePanel) && (isPaused || !gameRunning)) {
+            forceResumeWave();
+            return;
+        }
+
+        if (isPaused || isElementVisible(pausePanel)) {
             resumeGame();
         } else {
             pauseGame();
@@ -4787,6 +4860,31 @@ window.addEventListener("keyup", event => {
         event.preventDefault();
         isSpaceDown = false;
     }
+});
+
+window.addEventListener("blur", () => {
+    // Evita que queden teclas/mouse virtualmente apretados si la ventana pierde foco.
+    pressedKeys.clear();
+    isMouseDown = false;
+    isSpaceDown = false;
+});
+
+document.addEventListener("visibilitychange", () => {
+    pressedKeys.clear();
+    isMouseDown = false;
+    isSpaceDown = false;
+    lastFrameTime = performance.now();
+
+    if (!document.hidden) {
+        recoverFrozenWaveState("visibility");
+    }
+
+    syncMusicState();
+});
+
+window.addEventListener("focus", () => {
+    lastFrameTime = performance.now();
+    recoverFrozenWaveState("focus");
 });
 
 controlKeyButtons.forEach(button => {
@@ -5193,9 +5291,11 @@ if (buyEclipseBtn) buyEclipseBtn.addEventListener("click", () => buyAbility("ecl
 function pauseGame() {
     if (!gameStarted || !hasActiveRun) return;
     if (!waveInProgress) return;
+    if (isPaused && isElementVisible(pausePanel)) return;
 
     isPaused = true;
     gameRunning = false;
+    lastFrameTime = performance.now();
 
     pausePanel.classList.remove("hidden");
     confirmRestartBox.classList.add("hidden");
@@ -5208,6 +5308,7 @@ function resumeGame() {
     if (!gameStarted || !hasActiveRun) return;
 
     isPaused = false;
+    lastFrameTime = performance.now();
 
     if (waveInProgress) {
         gameRunning = true;
@@ -5355,7 +5456,7 @@ repeatWaveBtn.addEventListener("click", () => {
         return;
     }
 
-    repeatCountsByWave[wave] = repeats + 1;
+    repeatCountsByWave[wave] = Math.min(REPEAT_LIMIT_PER_WAVE, repeats + 1);
     isRepeatingWave = true;
     currentGoldMultiplier = 0.5;
     startWave();
