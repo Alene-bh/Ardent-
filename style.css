@@ -1600,3 +1600,26 @@ canvas {
     .structurePanelInfo { font-size: 11px; }
     .structurePanelActions button { min-height: 30px; padding: 5px 7px; }
 }
+
+.buildPhaseButton {
+    position: absolute;
+    top: 54px;
+    right: 118px;
+    z-index: 12;
+    background: rgba(46, 175, 93, 0.94);
+    border-color: #73ff9f;
+    box-shadow: 0 0 12px rgba(46, 175, 93, 0.45);
+}
+
+.buildPhaseButton:hover {
+    background: rgba(57, 201, 111, 0.98);
+}
+
+@media (max-height: 720px) {
+    .buildPhaseButton {
+        top: 46px;
+        right: 104px;
+        padding: 5px 9px;
+        font-size: 12px;
+    }
+}
