@@ -1046,3 +1046,14 @@ h1 {
 .inventorySlotButton.cooldown {
     cursor: wait;
 }
+
+.towerSlotUpgradeButton {
+    grid-column: 1 / -1;
+    background: linear-gradient(135deg, #4b348f, #2f6d55) !important;
+    border: 1px solid #9be7ff;
+    box-shadow: 0 0 14px rgba(155, 231, 255, 0.16);
+}
+
+.towerSlotUpgradeButton:hover {
+    background: linear-gradient(135deg, #6042b5, #3a8a6b) !important;
+}
