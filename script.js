@@ -959,7 +959,12 @@ function isBarricadePositionValid(x, y, orientation = barricadeBuildOrientation,
     if (baseCore && rectsOverlap(rect, getEntityRect({ x: baseCore.x, y: baseCore.y, radius: BASE_RADIUS }), 10)) return false;
     if (player && rectsOverlap(rect, getEntityRect({ x: player.x, y: player.y, radius: 22 }), 8)) return false;
     if (buildRectOverlapsEnemy(rect, 10)) return false;
-    if ((towers || []).some(t => rectsOverlap(rect, getEntityRect({ x: t.x, y: t.y, radius: TOWER_COLLISION_RADIUS }), 6))) return false;
+    // Las barricadas NO consumen slots de torre.
+    // Antes usábamos la caja cuadrada de cada torre + padding, y con 12 torres
+    // esa validación bloqueaba demasiado espacio aunque la muralla no tocara la torre.
+    // Usamos colisión circular real para permitir poner barricadas cerca/delante
+    // de torres sin permitir superposición visual.
+    if ((towers || []).some(t => circleIntersectsRect(t.x, t.y, TOWER_COLLISION_RADIUS + 2, rect, 0))) return false;
     if ((barricades || []).some(b => b !== ignoredBarricade && b.active && b.hp > 0 && !b.isOpen && rectsOverlap(rect, getEntityRect({ ...b, isBuildBarricade: true }), 4))) return false;
     if ((traps || []).some(trap => circleIntersectsRect(trap.x, trap.y, TRAP_COLLISION_RADIUS + 6, rect, 0))) return false;
     if ((mines || []).some(mine => circleIntersectsRect(mine.x, mine.y, MINE_COLLISION_RADIUS + 8, rect, 0))) return false;
@@ -7791,6 +7796,14 @@ function beginBarricadePlacement(kind = "standard", costKey = "upgradeBarricade"
         showCenterMessage(`Barricadas disponibles desde wave ${BARRICADE_UNLOCK_WAVE}`, 1000);
         return;
     }
+
+    // Importante: las barricadas son una construcción independiente de las torres.
+    // Aunque tengas los 12/12 slots de torre ocupados, podés entrar a modo barricada.
+    pendingTowerPurchase = null;
+    pendingTowerMoveIndex = null;
+    pendingTrapPlacement = null;
+    pendingMinePlacement = null;
+
     if (pendingBarricadePlacement) return;
     const price = getBarricadeBaseCost(kind);
     if (coins < price) {
