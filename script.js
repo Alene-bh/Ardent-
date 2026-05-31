@@ -491,6 +491,8 @@ let lastHudUpdateAt = 0;
 let towerSlotsRenderSignature = "";
 let inventoryRenderSignature = "";
 let savedRunAvailable = false;
+let runDisqualifiedFromLeaderboard = false;
+let leaderboardDisqualificationReason = "";
 
 const alphaTesterCommands = {
     aza: "Aza",
@@ -1234,6 +1236,8 @@ function createDefaultState() {
     wave = 1;
     coins = 0;
     score = 0;
+    runDisqualifiedFromLeaderboard = false;
+    leaderboardDisqualificationReason = "";
 
     player = {
         x: 80,
@@ -1425,6 +1429,8 @@ function buildSavePayload() {
         wave,
         coins,
         score,
+        runDisqualifiedFromLeaderboard,
+        leaderboardDisqualificationReason,
         gameTime,
         gameSpeed,
         speedIndex,
@@ -1528,6 +1534,8 @@ function restoreSavedRun() {
         wave = Number(data.wave) || 1;
         coins = Number(data.coins) || 0;
         score = Number(data.score) || 0;
+        runDisqualifiedFromLeaderboard = Boolean(data.runDisqualifiedFromLeaderboard);
+        leaderboardDisqualificationReason = String(data.leaderboardDisqualificationReason || "").slice(0, 80);
         gameTime = Number(data.gameTime) || 0;
         gameSpeed = Number(data.gameSpeed) || 1;
         speedIndex = Number(data.speedIndex) || 0;
@@ -3085,9 +3093,23 @@ async function loadLeaderboard() {
     }
 }
 
+function disqualifyRunFromLeaderboard(commandName) {
+    runDisqualifiedFromLeaderboard = true;
+    leaderboardDisqualificationReason = commandName || "comando ilegal";
+    appendConsoleLog(`Leaderboard desactivado para esta run por usar: ${leaderboardDisqualificationReason}.`);
+    saveRunNow();
+}
+
 async function submitLeaderboardScore() {
     if (!score || score <= 0) {
         await loadLeaderboard();
+        return;
+    }
+
+    if (runDisqualifiedFromLeaderboard) {
+        await loadLeaderboard();
+        const reason = leaderboardDisqualificationReason ? ` (${leaderboardDisqualificationReason})` : "";
+        setLeaderboardStatus(`Run no enviada al leaderboard por uso de comando ilegal${reason}.`);
         return;
     }
 
@@ -4567,6 +4589,7 @@ function runConsoleCommand(rawCommand) {
     }
 
     if (command === "greedisgood") {
+        disqualifyRunFromLeaderboard("greedisgood");
         coins = 999999;
         appendConsoleLog("Easter egg activado: 999.999 monedas agregadas.");
         updateHud();
@@ -4574,6 +4597,7 @@ function runConsoleCommand(rawCommand) {
     }
 
     if (command === "canttouchme") {
+        disqualifyRunFromLeaderboard("canttouchme");
         player.immortal = !player.immortal;
 
         if (player.immortal) {
@@ -4613,6 +4637,7 @@ function runConsoleCommand(rawCommand) {
         }
 
         const cappedAmount = Math.min(amount, 100000000);
+        disqualifyRunFromLeaderboard("add");
         coins = Math.min(100000000, coins + cappedAmount);
 
         if (amount > 100000000) {
