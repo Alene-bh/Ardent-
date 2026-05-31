@@ -55,6 +55,8 @@ let audioSettings = {
 const defaultControlBindings = {
     moveUp: "KeyW",
     moveDown: "KeyS",
+    moveLeft: "KeyA",
+    moveRight: "KeyD",
     bomb: "Digit1",
     freeze: "Digit2",
     tsunami: "Digit3",
@@ -312,6 +314,8 @@ const upgradeBarricadeBtn = document.getElementById("upgradeBarricadeBtn");
 const buyRegenBarricadeBtn = document.getElementById("buyRegenBarricadeBtn");
 const buyExplosiveBarricadeBtn = document.getElementById("buyExplosiveBarricadeBtn");
 const buyThornsBarricadeBtn = document.getElementById("buyThornsBarricadeBtn");
+const barricadeSlot1Btn = document.getElementById("barricadeSlot1Btn");
+const barricadeSlot2Btn = document.getElementById("barricadeSlot2Btn");
 
 const buyTower1Btn = document.getElementById("buyTower1Btn");
 const upgradeTower1Btn = document.getElementById("upgradeTower1Btn");
@@ -490,6 +494,7 @@ let lastAutoSaveAt = 0;
 let lastHudUpdateAt = 0;
 let towerSlotsRenderSignature = "";
 let inventoryRenderSignature = "";
+let selectedBarricadeSlotIndex = 0;
 let savedRunAvailable = false;
 let runDisqualifiedFromLeaderboard = false;
 let leaderboardDisqualificationReason = "";
@@ -926,6 +931,36 @@ function damageBarricade(b, amount, sourceEnemy = null) {
     }
 }
 
+function damagePlayer(amount, sourceEnemy = null, impactX = player ? player.x : 35, impactY = player ? player.y : GAME_HEIGHT / 2, blockedMessage = "¡Golpe bloqueado!") {
+    if (!player || player.hp <= 0) return false;
+
+    if (player.shieldCharges > 0) {
+        player.shieldCharges--;
+        createImpactParticles(impactX, impactY, "#9be7ff");
+        showCenterMessage(blockedMessage, 600);
+        updateHud();
+        return false;
+    }
+
+    if (player.immortal) {
+        createImpactParticles(impactX, impactY, "#ffe28a");
+        showCenterMessage("¡Inmortal!", 450);
+        return false;
+    }
+
+    player.hp -= amount;
+    triggerRedFlash();
+    createImpactParticles(impactX, impactY, sourceEnemy && sourceEnemy.color ? sourceEnemy.color : "#ff4444");
+
+    if (player.hp <= 0) {
+        player.hp = 0;
+        endRun();
+        return true;
+    }
+
+    return false;
+}
+
 function explodeBarricade(b) {
     const radius = 120;
     const damage = 10 + wave * 0.6;
@@ -1314,6 +1349,7 @@ function createDefaultState() {
     currentGoldMultiplier = 1;
     doomSpawnedThisWave = false;
     lastDoomWave = -999;
+    selectedBarricadeSlotIndex = 0;
 
     barricades = [
         createBarricadeSlot("Inicio", 120),
@@ -1480,6 +1516,7 @@ function buildSavePayload() {
         currentGoldMultiplier,
         doomSpawnedThisWave,
         lastDoomWave,
+        selectedBarricadeSlotIndex,
         player,
         barricades,
         towers,
@@ -1585,6 +1622,7 @@ function restoreSavedRun() {
         currentGoldMultiplier = Number(data.currentGoldMultiplier) || 1;
         doomSpawnedThisWave = Boolean(data.doomSpawnedThisWave);
         lastDoomWave = Number.isFinite(Number(data.lastDoomWave)) ? Number(data.lastDoomWave) : -999;
+        selectedBarricadeSlotIndex = Number.isInteger(data.selectedBarricadeSlotIndex) ? Math.max(0, Math.min(1, data.selectedBarricadeSlotIndex)) : 0;
 
         player = data.player;
         player.name = developerName || alphaTesterName || playerName;
@@ -2096,20 +2134,42 @@ function autoShootPlayer() {
     shoot(mousePosition.x, mousePosition.y, "player");
 }
 
+function getPlayerRightBoundaryX() {
+    const activeWall = getCurrentDefenseBarricade();
+    if (!activeWall) return GAME_WIDTH - 32;
+    return Math.max(32, activeWall.x - 32);
+}
+
+function clampPlayerToPlayableArea() {
+    if (!player) return;
+    player.x = Math.max(32, Math.min(getPlayerRightBoundaryX(), player.x));
+    player.y = Math.max(32, Math.min(GAME_HEIGHT - 32, player.y));
+}
+
 function updatePlayerMovement() {
     if (!gameRunning || !waveInProgress || isPaused || !player) return;
 
-    let direction = 0;
-    if (pressedKeys.has(controlBindings.moveUp)) direction -= 1;
-    if (pressedKeys.has(controlBindings.moveDown)) direction += 1;
+    let dx = 0;
+    let dy = 0;
 
-    if (direction === 0) return;
+    if (pressedKeys.has(controlBindings.moveLeft)) dx -= 1;
+    if (pressedKeys.has(controlBindings.moveRight)) dx += 1;
+    if (pressedKeys.has(controlBindings.moveUp)) dy -= 1;
+    if (pressedKeys.has(controlBindings.moveDown)) dy += 1;
 
-    // Movimiento vertical nerfeado: el jugador ya no escala 1:1 con la velocidad del juego.
-    // Esto hace que esquivar proyectiles de bosses requiera más anticipación.
+    if (dx === 0 && dy === 0) return;
+
+    // WASD completo. La diagonal se normaliza para no moverse más rápido en diagonal.
+    const length = Math.hypot(dx, dy) || 1;
+    dx /= length;
+    dy /= length;
+
     const movementSpeedMultiplier = Math.min(1.25, Math.sqrt(gameSpeed));
-    player.y += direction * player.moveSpeed * movementSpeedMultiplier * frameScale;
-    player.y = Math.max(32, Math.min(GAME_HEIGHT - 32, player.y));
+    const speed = player.moveSpeed * movementSpeedMultiplier * frameScale;
+
+    player.x += dx * speed;
+    player.y += dy * speed;
+    clampPlayerToPlayableArea();
 }
 
 function updateTowers() {
@@ -2143,7 +2203,7 @@ function updateTowers() {
 function getDefenseLineX() {
     const targetBarricade = getCurrentDefenseBarricade();
     if (targetBarricade) return targetBarricade.x;
-    return 35;
+    return player ? player.x : 35;
 }
 
 function updateEnemySpecials(now, defenseLineX) {
@@ -2413,24 +2473,23 @@ function updateEnemies() {
 
     for (let i = enemies.length - 1; i >= 0; i--) {
         const enemy = enemies[i];
-        const hasReachedDefense = enemy.x - enemy.radius <= defenseLineX;
-
-        if (!hasReachedDefense) {
-            enemy.x -= enemy.speed * gameSpeed * frameScale;
-            enemy.isAttacking = false;
-            enemy.target = null;
-            continue;
-        }
-
-        enemy.isAttacking = true;
-
         const targetBarricade = getCurrentDefenseBarricade();
 
-        if (enemy.bossVariant === "dvd") {
-            enemy.target = targetBarricade ? "barricade" : "base";
+        if (targetBarricade) {
+            const hasReachedBarricade = enemy.x - enemy.radius <= targetBarricade.x;
 
-            if (now - enemy.lastAttackTime >= enemy.attackDelay) {
-                if (targetBarricade) {
+            if (!hasReachedBarricade) {
+                enemy.x -= enemy.speed * gameSpeed * frameScale;
+                enemy.isAttacking = false;
+                enemy.target = null;
+                continue;
+            }
+
+            enemy.isAttacking = true;
+            enemy.target = "barricade";
+
+            if (enemy.bossVariant === "dvd") {
+                if (now - enemy.lastAttackTime >= enemy.attackDelay) {
                     if (player.shieldCharges > 0) {
                         player.shieldCharges--;
                         createImpactParticles(targetBarricade.x, enemy.y, "#9be7ff");
@@ -2439,56 +2498,20 @@ function updateEnemies() {
                         damageBarricade(targetBarricade, enemy.damageToDefense, enemy);
                         createImpactParticles(targetBarricade.x, enemy.y, "#9be7ff");
                     }
-                } else if (player.immortal) {
-                    createImpactParticles(35, enemy.y, "#ffe28a");
-                    showCenterMessage("¡Rebote anulado!", 500);
-                } else if (player.shieldCharges > 0) {
-                    player.shieldCharges--;
-                    createImpactParticles(35, enemy.y, "#9be7ff");
-                    showCenterMessage("¡Rebote bloqueado!", 600);
-                } else {
-                    player.hp -= enemy.damageToDefense;
-                    triggerRedFlash();
-                    createImpactParticles(35, enemy.y, "#9be7ff");
 
-                    if (player.hp <= 0) {
-                        player.hp = 0;
-                        endRun();
-                        return;
-                    }
+                    enemy.lastAttackTime = now;
+                    enemy.x = Math.min(GAME_WIDTH + 40, enemy.x + 120);
+                    enemy.dvdVy *= -1;
+                    enemy.isAttacking = false;
+                    effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 10, maxRadius: 62, life: 18, color: "#9be7ff" });
                 }
-
-                enemy.lastAttackTime = now;
-                enemy.x = Math.min(GAME_WIDTH + 40, enemy.x + 120);
-                enemy.dvdVy *= -1;
-                enemy.isAttacking = false;
-                effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 10, maxRadius: 62, life: 18, color: "#9be7ff" });
-            }
-
-            continue;
-        }
-
-        if (enemy.special === "doombringer" && !targetBarricade) {
-            if (player && player.immortal) {
-                createImpactParticles(enemy.x, enemy.y, "#ffe28a");
-                enemies.splice(i, 1);
-                showCenterMessage("Titán anulado", 800);
                 continue;
             }
-            showCenterMessage("EL TITÁN TOCÓ LA BASE", 1200);
-            player.hp = 0;
-            endRun();
-            return;
-        }
 
-        if (enemy.special === "doombringer" && targetBarricade) {
-            enemy.damageToDefense = Math.min(enemy.damageToDefense || 0, 8);
-            enemy.attackDelay = Math.min(enemy.attackDelay || 1600, 1600);
-        }
-
-
-        if (targetBarricade) {
-            enemy.target = "barricade";
+            if (enemy.special === "doombringer") {
+                enemy.damageToDefense = Math.min(enemy.damageToDefense || 0, 8);
+                enemy.attackDelay = Math.min(enemy.attackDelay || 1600, 1600);
+            }
 
             if (now - enemy.lastAttackTime >= enemy.attackDelay) {
                 if (player.shieldCharges > 0) {
@@ -2502,37 +2525,60 @@ function updateEnemies() {
                     createImpactParticles(targetBarricade.x, enemy.y, "#d6a05f");
                 }
             }
-        } else {
-            enemy.target = "base";
 
+            continue;
+        }
+
+        // Sin barricadas, ya no existe una base fija: todos persiguen al jugador.
+        enemy.target = "player";
+        const dx = player.x - enemy.x;
+        const dy = player.y - enemy.y;
+        const distance = Math.hypot(dx, dy);
+        const attackDistance = enemy.radius + 23;
+
+        if (distance > attackDistance) {
+            const nx = dx / (distance || 1);
+            const ny = dy / (distance || 1);
+            enemy.x += nx * enemy.speed * gameSpeed * frameScale;
+            enemy.y += ny * enemy.speed * gameSpeed * frameScale;
+            enemy.y = Math.max(enemy.radius + 6, Math.min(GAME_HEIGHT - enemy.radius - 6, enemy.y));
+            enemy.isAttacking = false;
+            continue;
+        }
+
+        enemy.isAttacking = true;
+
+        if (enemy.bossVariant === "dvd") {
             if (now - enemy.lastAttackTime >= enemy.attackDelay) {
-                if (player.shieldCharges > 0) {
-                    player.shieldCharges--;
-                    enemy.lastAttackTime = now;
-                    createImpactParticles(35, enemy.y, "#9be7ff");
-                    showCenterMessage("¡Golpe bloqueado!", 600);
-                    updateHud();
-                    continue;
-                }
-
-                if (player.immortal) {
-                    enemy.lastAttackTime = now;
-                    createImpactParticles(35, enemy.y, "#ffe28a");
-                    showCenterMessage("¡Inmortal!", 450);
-                    continue;
-                }
-
-                player.hp -= enemy.damageToDefense;
+                const ended = damagePlayer(enemy.damageToDefense, enemy, enemy.x, enemy.y, "¡Rebote bloqueado!");
+                if (ended) return;
                 enemy.lastAttackTime = now;
-                triggerRedFlash();
-                createImpactParticles(35, enemy.y, "#ff4444");
-
-                if (player.hp <= 0) {
-                    player.hp = 0;
-                    endRun();
-                    return;
-                }
+                enemy.x = Math.min(GAME_WIDTH + 40, enemy.x + 120);
+                enemy.dvdVy *= -1;
+                enemy.isAttacking = false;
+                effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 10, maxRadius: 62, life: 18, color: "#9be7ff" });
             }
+            continue;
+        }
+
+        if (enemy.special === "doombringer") {
+            if (player && player.immortal) {
+                createImpactParticles(enemy.x, enemy.y, "#ffe28a");
+                enemies.splice(i, 1);
+                showCenterMessage("Titán anulado", 800);
+                continue;
+            }
+
+            showCenterMessage("EL TITÁN TE ALCANZÓ", 1200);
+            player.hp = 0;
+            endRun();
+            return;
+        }
+
+        if (now - enemy.lastAttackTime >= enemy.attackDelay) {
+            const ended = damagePlayer(enemy.damageToDefense, enemy, enemy.x, enemy.y, "¡Golpe bloqueado!");
+            enemy.lastAttackTime = now;
+            if (ended) return;
         }
     }
 }
@@ -3228,9 +3274,9 @@ function endRun() {
     if (isNewRecord) {
         bestScore = score;
         localStorage.setItem("towerDefenseBestScore", bestScore);
-        deathMessageText.textContent = "¡Nuevo récord! La base cayó, pero esta run fue la mejor hasta ahora.";
+        deathMessageText.textContent = "¡Nuevo récord! El jugador cayó, pero esta run fue la mejor hasta ahora.";
     } else {
-        deathMessageText.textContent = "Tu base cayó. La run terminó y el progreso se reinició.";
+        deathMessageText.textContent = "El jugador cayó. La run terminó y el progreso se reinició.";
     }
 
     finalScoreText.textContent = formatCompactNumber(score);
@@ -3503,12 +3549,7 @@ function drawPath() {
 }
 
 function drawBase() {
-    ctx.fillStyle = "#444";
-    ctx.fillRect(0, 0, 35, GAME_HEIGHT);
-
-    ctx.fillStyle = "white";
-    ctx.font = "16px Arial";
-    ctx.fillText("BASE", 3, 25);
+    // Base eliminada: los enemigos ahora focusean al jugador.
 }
 
 function drawBarricade() {
@@ -4239,6 +4280,24 @@ function hasDamagedPlayerHp() {
     return player && player.hp < player.maxHp;
 }
 
+function selectBarricadeSlot(index) {
+    selectedBarricadeSlotIndex = Math.max(0, Math.min(1, Number(index) || 0));
+    updateBarricadeSlotChoiceUI();
+    updateHud(true);
+}
+
+function updateBarricadeSlotChoiceUI() {
+    const buttons = [barricadeSlot1Btn, barricadeSlot2Btn];
+    buttons.forEach((button, index) => {
+        if (!button) return;
+        const slot = barricades && barricades[index];
+        const active = slot && slot.active && slot.hp > 0;
+        button.classList.toggle("active", selectedBarricadeSlotIndex === index);
+        button.disabled = Boolean(active);
+        button.title = active ? "Este slot ya tiene una barricada activa." : `La próxima barricada nueva se colocará en ${slot ? slot.name : `Slot ${index + 1}`}.`;
+    });
+}
+
 function getBarricadeActionState(kind = "standard") {
     const activeBarricades = (barricades || []).filter(b => b.active && b.hp > 0);
     const hasSameKind = activeBarricades.some(b => b.kind === kind);
@@ -4331,6 +4390,8 @@ function updateHud(force = false) {
     updateBarricadeButtonState(buyThornsBarricadeBtn, "thorns", "thornsBarricade");
 
     barricadeTierText.textContent = getBarricadeStatusText();
+    updateBarricadeSlotChoiceUI();
+    clampPlayerToPlayableArea();
 
     towerDefinitions.forEach((def, index) => {
         const el = document.getElementById(`tower${index + 1}CostText`);
@@ -4487,7 +4548,6 @@ function draw() {
     ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
 
     drawPath();
-    drawBase();
     drawBarricade();
     drawPlayer();
     drawTowerPlacementTiles();
@@ -5077,6 +5137,9 @@ upgradeCritBtn.addEventListener("click", () => {
     }
 });
 
+if (barricadeSlot1Btn) barricadeSlot1Btn.addEventListener("click", () => selectBarricadeSlot(0));
+if (barricadeSlot2Btn) barricadeSlot2Btn.addEventListener("click", () => selectBarricadeSlot(1));
+
 buySmallPotionBtn.addEventListener("click", () => buyConsumableToInventory("smallPotion", "smallPotion", 1.15));
 
 buyMediumPotionBtn.addEventListener("click", () => buyConsumableToInventory("mediumPotion", "mediumPotion", 1.18));
@@ -5107,12 +5170,19 @@ buyExplosiveBarricadeBtn?.addEventListener("click", () => buyOrUpgradeBarricade(
 buyThornsBarricadeBtn?.addEventListener("click", () => buyOrUpgradeBarricade("thorns"));
 
 function getBarricadeUpgradeTarget(kind) {
-    const inactive = (barricades || []).find(b => !b.active || b.hp <= 0);
-    const sameKind = (barricades || [])
-        .filter(b => b.active && b.hp > 0 && b.kind === kind)
+    const activeBarricades = (barricades || []).filter(b => b.active && b.hp > 0);
+    const sameKind = activeBarricades
+        .filter(b => b.kind === kind)
         .sort((a, b) => (a.level || 0) - (b.level || 0) || a.maxHp - b.maxHp)[0];
 
     if (sameKind) return { target: sameKind, isNew: false };
+
+    const preferred = barricades && barricades[selectedBarricadeSlotIndex];
+    if (preferred && (!preferred.active || preferred.hp <= 0)) {
+        return { target: preferred, isNew: true };
+    }
+
+    const inactive = (barricades || []).find(b => !b.active || b.hp <= 0);
     if (inactive) return { target: inactive, isNew: true };
 
     return null;
@@ -5131,6 +5201,7 @@ function buyOrUpgradeBarricade(kind = "standard") {
 
     coins -= costs[costKey];
     upgradeBarricadeInstance(target, kind, Boolean(result.isNew));
+    clampPlayerToPlayableArea();
 
     costs[costKey] = scaleBarricadeCost(costs[costKey], kind === "standard" ? 1.55 : 1.42);
     updateHud();
