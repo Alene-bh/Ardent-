@@ -719,3 +719,187 @@ button.cantAfford {
 button.cantAfford small {
     color: #7f7f7f !important;
 }
+
+/* =========================================================
+   Menú inicial compacto v5
+   Objetivo: que Jugar/Continuar, nombre y leaderboard entren
+   en pantalla sin que los beta testers tengan que scrollear.
+   ========================================================= */
+body {
+    padding-top: 8px;
+}
+
+h1 {
+    margin: 0 0 6px;
+    font-size: clamp(24px, 3vh, 36px);
+    line-height: 1.05;
+}
+
+#menu {
+    width: min(96vw, 1120px);
+    min-height: 0;
+    max-height: calc(100vh - 58px);
+    margin: 0 auto;
+    padding: clamp(14px, 2vh, 22px);
+    display: grid;
+    grid-template-columns: minmax(280px, 410px) minmax(360px, 1fr);
+    grid-template-areas:
+        "menuTitle leaderboard"
+        "menuDesc leaderboard"
+        "menuRecord leaderboard"
+        "menuName leaderboard"
+        "menuPlay leaderboard";
+    gap: 8px 18px;
+    align-items: start;
+    overflow: hidden;
+}
+
+#menu h2 {
+    grid-area: menuTitle;
+    margin: 0;
+    font-size: clamp(20px, 2.5vh, 28px);
+    line-height: 1.1;
+}
+
+#menu > p:not(.recordText) {
+    grid-area: menuDesc;
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.35;
+}
+
+#menu .recordText {
+    grid-area: menuRecord;
+    margin: 4px 0;
+    font-size: 16px;
+}
+
+#menu .playerNameBox {
+    grid-area: menuName;
+    width: 100%;
+    max-width: none;
+    margin: 4px 0 0;
+    padding: 12px;
+}
+
+#menu .playerNameBox label {
+    margin-bottom: 6px;
+    font-size: 14px;
+}
+
+#menu .playerNameBox input {
+    padding: 10px;
+    font-size: 15px;
+}
+
+#startGameBtn {
+    grid-area: menuPlay;
+    width: 100%;
+    min-height: 52px;
+    margin-top: 2px;
+    font-size: 20px !important;
+    font-weight: bold;
+    letter-spacing: 0.2px;
+}
+
+#menu .menuLeaderboardBox {
+    grid-area: leaderboard;
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    min-height: 0;
+    max-height: calc(100vh - 98px);
+    margin: 0;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+#menu .leaderboardHeader {
+    margin-bottom: 6px;
+}
+
+#menu .leaderboardHeader h3 {
+    font-size: 17px;
+}
+
+#menu .leaderboardStatus {
+    margin: 4px 0 8px;
+    font-size: 12px;
+}
+
+#menu .leaderboardList {
+    min-height: 0;
+    overflow-y: auto;
+    padding-left: 22px;
+    gap: 5px;
+    scrollbar-width: thin;
+}
+
+#menu .leaderboardList li {
+    padding: 7px 9px;
+}
+
+#menu .leaderboardEntry {
+    gap: 8px;
+}
+
+#menu button.smallHudButton {
+    padding: 7px 10px;
+    min-width: 86px;
+    font-size: 13px;
+}
+
+@media (max-width: 860px) {
+    #menu {
+        max-height: none;
+        overflow: visible;
+        grid-template-columns: 1fr;
+        grid-template-areas:
+            "menuTitle"
+            "menuDesc"
+            "menuRecord"
+            "menuName"
+            "menuPlay"
+            "leaderboard";
+    }
+
+    #menu .menuLeaderboardBox {
+        max-height: 34vh;
+    }
+}
+
+@media (max-height: 660px) and (min-width: 861px) {
+    h1 {
+        font-size: 24px;
+        margin-bottom: 4px;
+    }
+
+    #menu {
+        max-height: calc(100vh - 42px);
+        padding: 12px;
+        gap: 6px 14px;
+    }
+
+    #menu h2 {
+        font-size: 21px;
+    }
+
+    #menu > p:not(.recordText) {
+        font-size: 13px;
+        line-height: 1.25;
+    }
+
+    #menu .playerNameBox {
+        padding: 10px;
+    }
+
+    #startGameBtn {
+        min-height: 46px;
+    }
+
+    #menu .menuLeaderboardBox {
+        max-height: calc(100vh - 70px);
+    }
+}
