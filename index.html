@@ -58,6 +58,12 @@
                     <span>Mover abajo</span>
                     <button class="controlKeyButton" data-control="moveDown">S</button>
 
+                    <span>Mover izquierda</span>
+                    <button class="controlKeyButton" data-control="moveLeft">A</button>
+
+                    <span>Mover derecha</span>
+                    <button class="controlKeyButton" data-control="moveRight">D</button>
+
                     <span>Habilidad 1 · Bomba</span>
                     <button class="controlKeyButton" data-control="bomb">1</button>
 
@@ -256,6 +262,12 @@
                         <section class="shopSection barricadeShop" data-shop-section="barricades">
                             <h3>Barricadas</h3>
 
+                            <div class="barricadeSlotChoice">
+                                <span>Próxima barricada nueva:</span>
+                                <button id="barricadeSlot1Btn" type="button" class="barricadeSlotChoiceButton active">Slot 1 · Izquierda</button>
+                                <button id="barricadeSlot2Btn" type="button" class="barricadeSlotChoiceButton">Slot 2 · Derecha</button>
+                            </div>
+
                             <button id="repairBarricadeBtn">
                                 Reparar barricadas<br>
                                 <small>Repara la más dañada</small><br>
@@ -291,8 +303,8 @@
                             <h3>Torres <small id="towerLimitText">0/12 slots · máx 20</small></h3>
 
                             <button id="buyTowerSlotBtn" class="towerSlotUpgradeButton">
-                                Comprar slot(s) de torre
-                                <small>Compra todos los slots posibles · 12/20</small><br>
+                                Comprar slot de torre
+                                <small>Compra 1 slot por toque · 12/20</small><br>
                                 <span id="towerSlotCostText">850</span> monedas
                             </button>
 
@@ -406,7 +418,7 @@
 
                 <div id="gameOverScreen" class="overlayPanel hidden">
                     <h2>Run terminada</h2>
-                    <p id="deathMessageText">Tu base cayó.</p>
+                    <p id="deathMessageText">El jugador cayó.</p>
                     <p>Puntos de esta run: <strong id="finalScoreText">0</strong></p>
                     <p>Récord: <strong id="bestScoreText">0</strong></p>
 
@@ -458,6 +470,12 @@
 
                             <span>Mover abajo</span>
                                     <button class="controlKeyButton" data-control="moveDown">S</button>
+
+                            <span>Mover izquierda</span>
+                                    <button class="controlKeyButton" data-control="moveLeft">A</button>
+
+                            <span>Mover derecha</span>
+                                    <button class="controlKeyButton" data-control="moveRight">D</button>
 
                             <span>Habilidad 1 · Bomba</span>
                                     <button class="controlKeyButton" data-control="bomb">1</button>
