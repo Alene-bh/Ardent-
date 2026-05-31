@@ -5421,14 +5421,11 @@ function drawPlayerMiniHealthBar() {
     const y = player.y - 25;
     const pct = Math.max(0, Math.min(1, player.hp / Math.max(1, player.maxHp)));
 
-    ctx.fillStyle = "rgba(0,0,0,0.75)";
+    ctx.fillStyle = "rgba(0, 0, 0, 0.82)";
     ctx.fillRect(x, y, width, height);
-    const grad = ctx.createLinearGradient(x, y, x + width, y);
-    grad.addColorStop(0, "#ff2f68");
-    grad.addColorStop(1, "#ff8bd1");
-    ctx.fillStyle = grad;
-    ctx.fillRect(x, y, width * pct, height);
-    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.fillStyle = "#f48d96";
+    ctx.fillRect(x + 1, y + 1, Math.max(0, (width - 2) * pct), Math.max(0, height - 2));
+    ctx.strokeStyle = "rgba(255,255,255,0.22)";
     ctx.lineWidth = 1;
     ctx.strokeRect(x, y, width, height);
 }
@@ -5764,49 +5761,30 @@ function drawMines() {
         if (!mine || mine.hp <= 0) return;
         const radius = mine.radius || MINE_COLLISION_RADIUS;
         const pulse = mine.pulseUntil && mine.pulseUntil > getGameTime();
-        const glowRadius = radius + (pulse ? 13 : 7);
 
         ctx.save();
-        ctx.shadowColor = pulse ? "#ffe28a" : "rgba(255,215,106,0.75)";
-        ctx.shadowBlur = pulse ? 18 : 10;
+        ctx.shadowColor = pulse ? "rgba(255, 208, 120, 0.95)" : "rgba(255, 149, 0, 0.55)";
+        ctx.shadowBlur = pulse ? 18 : 8;
 
-        // Base oscura bien visible sobre el suelo verde.
-        ctx.fillStyle = "rgba(42, 30, 8, 0.96)";
-        ctx.beginPath();
-        ctx.arc(mine.x, mine.y, radius + 4, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Cuerpo dorado de la mina.
-        ctx.fillStyle = pulse ? "rgba(255,226,138,0.95)" : "rgba(255,215,106,0.86)";
+        ctx.fillStyle = pulse ? "#ffb347" : "#ff9b21";
         ctx.beginPath();
         ctx.arc(mine.x, mine.y, radius, 0, Math.PI * 2);
         ctx.fill();
 
-        // Borde externo/pulso.
-        ctx.strokeStyle = pulse ? "#fff0a8" : (mine.color || "#ffd76a");
-        ctx.lineWidth = pulse ? 4 : 3;
+        ctx.strokeStyle = pulse ? "#ffd78a" : "#ffcf80";
+        ctx.lineWidth = pulse ? 3 : 2;
         ctx.beginPath();
-        ctx.arc(mine.x, mine.y, glowRadius, 0, Math.PI * 2);
+        ctx.arc(mine.x, mine.y, radius, 0, Math.PI * 2);
         ctx.stroke();
-
         ctx.restore();
 
-        // Pico/mina estilo mineral para que no parezca una trampa circular más.
-        ctx.fillStyle = "#7a4b18";
-        ctx.beginPath();
-        ctx.moveTo(mine.x, mine.y - radius - 2);
-        ctx.lineTo(mine.x + radius * 0.75, mine.y + radius * 0.42);
-        ctx.lineTo(mine.x - radius * 0.75, mine.y + radius * 0.42);
-        ctx.closePath();
-        ctx.fill();
-
-        ctx.strokeStyle = "rgba(255,255,255,0.8)";
-        ctx.lineWidth = 2;
-        ctx.stroke();
-
-        ctx.fillStyle = "#2b2100";
-        ctx.font = "bold 16px Arial";
-        ctx.fillText("$", mine.x - 5, mine.y + 6);
+        ctx.fillStyle = "#fff4cc";
+        ctx.font = "bold 15px Arial";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("$", mine.x, mine.y + 1);
+        ctx.textAlign = "left";
+        ctx.textBaseline = "alphabetic";
 
         const maxHp = Math.max(1, mine.maxHp || MINE_MAX_HP);
         const hpPercent = Math.max(0, Math.min(1, (mine.hp ?? maxHp) / maxHp));
