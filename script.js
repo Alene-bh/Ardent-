@@ -382,10 +382,12 @@ function drawEnemySprite(enemy, drawRadius) {
     const sw = bounds.width;
     const sh = bounds.height;
 
-    // El sprite base tiene mucho padding transparente. Dibujamos solo la silueta real
-    // y la escalamos por radio para que el tamaño visual coincida con la hitbox.
+    // El sprite base tiene padding transparente, por eso dibujamos solo la silueta real.
+    // Visualmente lo mantenemos cerca del tamaño del jugador, sin tocar la hitbox.
+    // Los minions invocados por summoner quedan más chicos para que se distingan.
     const hitboxRadius = drawRadius || enemy.radius || 18;
-    const drawHeight = Math.max(38, Math.min(96, hitboxRadius * (enemy.isMini ? 2.25 : 2.65)));
+    const normalScale = Math.max(0.86, Math.min(1.18, hitboxRadius / 18));
+    const drawHeight = enemy.isMini ? 28 : 42 * normalScale;
     const drawWidth = drawHeight * (sw / Math.max(1, sh));
 
     const targetX = enemy.targetX ?? player?.x ?? enemy.x + 1;
