@@ -9,16 +9,37 @@ body {
     font-family: Arial, sans-serif;
     display: flex;
     justify-content: center;
-    padding-top: 20px;
+    align-items: flex-start;
+    padding: 6px;
+    overflow: hidden;
 }
 
 #gameWrapper {
-    width: min(98vw, 1700px);
+    width: min(100vw, 1700px);
+    height: calc(100vh - 12px);
     text-align: center;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
 }
 
 h1 {
-    margin-bottom: 10px;
+    margin: 0 0 5px;
+    font-size: clamp(18px, 2.3vh, 28px);
+    line-height: 1.05;
+    flex: 0 0 auto;
+}
+
+#gameArea {
+    height: 100%;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+#gameArea.hidden {
+    display: none !important;
 }
 
 #menu {
@@ -61,40 +82,50 @@ button:disabled {
 #menu button,
 #gameOverScreen button,
 #waveSummaryPanel button {
-    padding: 13px 22px;
-    font-size: 17px;
+    padding: 11px 18px;
+    font-size: 15px;
 }
 
 #hud {
     display: flex;
-    justify-content: space-around;
+    justify-content: center;
+    align-items: center;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 5px;
     background: #242424;
-    padding: 12px;
+    padding: 6px 8px;
     border-radius: 10px;
-    margin-bottom: 8px;
+    margin-bottom: 0;
+    font-size: clamp(11px, 1.45vh, 14px);
+    flex: 0 0 auto;
 }
 
 #hud span {
-    min-width: 130px;
+    min-width: 96px;
+    line-height: 1.15;
 }
 
 #abilityBar {
     display: flex;
-    gap: 8px;
+    gap: 5px;
     justify-content: center;
-    margin-bottom: 8px;
-    flex-wrap: wrap;
+    margin-bottom: 0;
+    flex-wrap: nowrap;
+    flex: 0 0 auto;
 }
 
 .abilitySlot {
     background: #242424;
     border: 1px solid #555;
     border-radius: 8px;
-    padding: 8px 10px;
-    min-width: 145px;
-    font-size: 13px;
+    padding: 5px 6px;
+    min-width: 0;
+    flex: 1 1 0;
+    font-size: clamp(10px, 1.25vh, 12px);
+    line-height: 1.1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .abilitySlot.ready {
@@ -115,21 +146,22 @@ button:disabled {
 #inventoryBar {
     background: linear-gradient(180deg, #202020, #171717);
     border: 1px solid #454545;
-    border-radius: 12px;
-    padding: 8px 10px;
-    margin-bottom: 8px;
+    border-radius: 10px;
+    padding: 4px 6px;
+    margin-bottom: 0;
     box-shadow: inset 0 0 18px rgba(0, 0, 0, 0.28);
+    flex: 0 0 auto;
 }
 
 .inventoryHeader {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 12px;
+    gap: 8px;
     flex-wrap: wrap;
-    margin-bottom: 7px;
+    margin-bottom: 3px;
     color: #ffe28a;
-    font-size: 13px;
+    font-size: clamp(10px, 1.25vh, 12px);
 }
 
 #inventoryCooldownText {
@@ -140,22 +172,22 @@ button:disabled {
 .inventorySlots {
     display: flex;
     justify-content: center;
-    gap: 9px;
-    flex-wrap: wrap;
+    gap: 5px;
+    flex-wrap: nowrap;
 }
 
 .inventorySlotButton {
     --potion-color: #9be7ff;
     position: relative;
     overflow: hidden;
-    width: 88px;
-    min-height: 66px;
-    padding: 7px 6px 6px;
+    width: 68px;
+    min-height: 42px;
+    padding: 4px 4px 3px;
     background: radial-gradient(circle at top, rgba(255, 255, 255, 0.08), rgba(25, 25, 25, 0.95));
     border: 1px solid #5e5e5e;
     border-radius: 12px;
     display: grid;
-    grid-template-rows: 24px 1fr 15px;
+    grid-template-rows: 14px 1fr 12px;
     justify-items: center;
     align-items: center;
     text-align: center;
@@ -194,8 +226,8 @@ button:disabled {
 
 .inventoryPotionDot,
 .inventoryEmptyDot {
-    width: 22px;
-    height: 22px;
+    width: 13px;
+    height: 13px;
     border-radius: 50%;
     z-index: 1;
 }
@@ -218,19 +250,19 @@ button:disabled {
 }
 
 .inventoryName {
-    max-width: 76px;
-    font-size: 11px;
+    max-width: 62px;
+    font-size: 9px;
     font-weight: bold;
     white-space: normal;
 }
 
 .inventoryQty {
-    min-width: 22px;
-    padding: 1px 7px;
+    min-width: 18px;
+    padding: 0 5px;
     border-radius: 999px;
     background: #101010;
     border: 1px solid #444;
-    font-size: 12px;
+    font-size: 10px;
     color: #9be7ff;
 }
 
@@ -242,13 +274,16 @@ button:disabled {
     display: block;
     margin-top: 6px;
     color: #aaa;
-    font-size: 12px;
+    font-size: 10px;
 }
 
 
 #playStage {
     position: relative;
-    width: min(98vw, 1600px, calc((100vh - 190px) * 2));
+    flex: 1 1 auto;
+    min-height: 0;
+    width: min(100%, calc((100vh - 155px) * 2));
+    max-height: calc(100vh - 155px);
     aspect-ratio: 2 / 1;
     margin: 0 auto;
 }
@@ -316,11 +351,11 @@ canvas {
 
 .overlayPanel {
     position: absolute;
-    inset: 18px;
+    inset: 10px;
     background: rgba(20, 20, 20, 0.96);
     border: 2px solid #777;
     border-radius: 14px;
-    padding: 18px;
+    padding: 12px;
     overflow-y: auto;
 }
 
@@ -456,8 +491,8 @@ canvas {
 }
 
 .smallHudButton {
-    padding: 7px 12px;
-    min-width: 90px;
+    padding: 5px 9px;
+    min-width: 76px;
     background: #333;
     border: 1px solid #777;
 }
@@ -633,7 +668,7 @@ canvas {
     border-radius: 10px;
     padding: 8px;
     text-align: left;
-    font-size: 12px;
+    font-size: 10px;
 }
 
 .towerSlotCard button {
@@ -641,12 +676,12 @@ canvas {
     min-height: auto;
     margin: 6px 1% 0 0;
     padding: 6px;
-    font-size: 12px;
+    font-size: 10px;
 }
 
 .towerSlotEmpty {
     color: #aaa;
-    font-size: 12px;
+    font-size: 10px;
     margin: 6px 0 0;
 }
 
@@ -811,7 +846,7 @@ canvas {
 
 .leaderboardMeta {
     color: #bfc1d9;
-    font-size: 12px;
+    font-size: 10px;
 }
 
 .leaderboardScore {
@@ -948,7 +983,7 @@ h1 {
 
 #menu .leaderboardStatus {
     margin: 4px 0 8px;
-    font-size: 12px;
+    font-size: 10px;
 }
 
 #menu .leaderboardList {
@@ -1077,4 +1112,491 @@ h1 {
     background: #2eaf5d;
     border-color: #73ff9f;
     box-shadow: 0 0 10px rgba(115, 255, 159, 0.35);
+}
+
+
+.shopHudButton {
+    background: #6d4aff;
+    border-color: #a998ff;
+}
+
+.shopHudButton.shopOpen {
+    background: #2eaf5d;
+    border-color: #73ff9f;
+}
+
+.shopCloseButton {
+    position: sticky;
+    top: 8px;
+    float: right;
+    z-index: 5;
+    padding: 8px 12px;
+    background: #333;
+    border: 1px solid #777;
+}
+
+.shopCloseButton:hover {
+    background: #555;
+}
+
+
+@media (max-height: 760px) {
+    body { padding: 4px; }
+    #gameWrapper { height: calc(100vh - 8px); }
+    h1 { font-size: 18px; margin-bottom: 3px; }
+    #hud { padding: 4px 6px; gap: 4px; }
+    #hud span { min-width: 86px; }
+    .smallHudButton { padding: 4px 7px; min-width: 68px; }
+    #abilityBar { gap: 4px; }
+    .abilitySlot { padding: 4px 5px; }
+    #inventoryBar { padding: 3px 5px; }
+    .inventoryHeader strong { display: none; }
+    .inventorySlotButton { width: 58px; min-height: 34px; grid-template-rows: 10px 1fr 10px; }
+    .inventoryPotionDot, .inventoryEmptyDot { width: 10px; height: 10px; }
+    .inventoryName { font-size: 8px; max-width: 54px; }
+    .inventoryQty { font-size: 9px; }
+    #playStage { width: min(100%, calc((100vh - 125px) * 2)); max-height: calc(100vh - 125px); }
+}
+
+@media (max-height: 620px) {
+    #inventoryBar { display: none; }
+    #playStage { width: min(100%, calc((100vh - 95px) * 2)); max-height: calc(100vh - 95px); }
+}
+
+@media (max-width: 900px) {
+    #abilityBar { flex-wrap: wrap; }
+    .abilitySlot { flex-basis: calc(33.33% - 6px); }
+    #playStage { width: 100%; max-height: calc(100vw / 2); }
+}
+
+
+/* === UI dentro de la ventana del juego === */
+#gameWrapper > h1 {
+    display: none;
+}
+
+#gameArea {
+    height: 100%;
+    min-height: 0;
+    display: block;
+}
+
+#playStage {
+    width: min(100vw - 12px, calc((100vh - 12px) * 2));
+    max-height: calc(100vh - 12px);
+    height: min(calc(100vh - 12px), calc((100vw - 12px) / 2));
+    aspect-ratio: 2 / 1;
+    margin: 0 auto;
+    overflow: hidden;
+}
+
+canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
+
+#hud.inGameHud {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    z-index: 20;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+    padding: 6px 8px;
+    border-radius: 12px;
+    background: rgba(14, 14, 18, 0.78);
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    backdrop-filter: blur(5px);
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+    font-size: clamp(10px, 1.2vw, 13px);
+}
+
+#hud.inGameHud span {
+    min-width: auto;
+    padding: 3px 6px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.24);
+    white-space: nowrap;
+}
+
+#hud.inGameHud .smallHudButton {
+    min-width: auto;
+    padding: 5px 8px;
+    font-size: clamp(10px, 1.15vw, 12px);
+}
+
+.constructionHudButton {
+    position: absolute;
+    top: 58px;
+    right: 12px;
+    z-index: 22;
+    padding: 8px 12px;
+    background: #8a5a2f;
+    border: 1px solid #d19a5f;
+    box-shadow: 0 4px 14px rgba(0,0,0,.35);
+}
+
+.constructionHudButton:hover,
+.constructionHudButton.constructionOpen {
+    background: #a96f3b;
+}
+
+#bottomGameUi {
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    z-index: 20;
+    display: grid;
+    grid-template-columns: minmax(360px, 1.25fr) minmax(250px, 0.75fr);
+    gap: 8px;
+    align-items: end;
+    pointer-events: none;
+}
+
+#bottomGameUi #abilityBar,
+#bottomGameUi #inventoryBar {
+    pointer-events: auto;
+    margin: 0;
+    background: rgba(14, 14, 18, 0.78);
+    border: 1px solid rgba(255,255,255,0.13);
+    backdrop-filter: blur(5px);
+    box-shadow: 0 4px 18px rgba(0,0,0,.35);
+}
+
+#bottomGameUi #abilityBar {
+    padding: 6px;
+    border-radius: 12px;
+}
+
+#bottomGameUi #inventoryBar {
+    border-radius: 12px;
+}
+
+#inventoryBar small {
+    display: none;
+}
+
+#shop:not(.constructionMode) .shopTabButton[data-shop-tab="barricades"],
+#shop:not(.constructionMode) .shopTabButton[data-shop-tab="towers"] {
+    display: none;
+}
+
+#shop.constructionMode .shopTabButton[data-shop-tab="stats"],
+#shop.constructionMode .shopTabButton[data-shop-tab="consumables"],
+#shop.constructionMode .shopTabButton[data-shop-tab="abilities"] {
+    display: none;
+}
+
+#shop.constructionMode {
+    border-color: #d19a5f;
+}
+
+#shop.constructionMode #shopTitle {
+    color: #ffe28a;
+}
+
+#shopTitle {
+    margin-top: 0;
+}
+
+#bossBarBox {
+    z-index: 18;
+    top: 54px;
+}
+
+#centerMessage,
+#redFlash,
+.overlayPanel,
+#bossBarBox {
+    z-index: 25;
+}
+
+#redFlash { z-index: 12; }
+#centerMessage { z-index: 19; }
+#bossBarBox { z-index: 18; }
+.overlayPanel { z-index: 30; }
+
+@media (max-width: 980px), (max-height: 620px) {
+    #hud.inGameHud {
+        justify-content: flex-start;
+        gap: 3px;
+        padding: 4px 5px;
+    }
+
+    #hud.inGameHud span {
+        padding: 2px 4px;
+        font-size: 10px;
+    }
+
+    #hud.inGameHud .smallHudButton {
+        padding: 4px 5px;
+        font-size: 10px;
+    }
+
+    .constructionHudButton {
+        top: 50px;
+        right: 8px;
+        padding: 6px 8px;
+        font-size: 11px;
+    }
+
+    #bottomGameUi {
+        grid-template-columns: 1fr;
+        gap: 4px;
+        bottom: 5px;
+    }
+
+    #bottomGameUi #inventoryBar {
+        display: none;
+    }
+
+    .abilitySlot {
+        font-size: 10px;
+        padding: 4px 5px;
+    }
+}
+
+/* === Ajuste final: todo dentro de una sola pantalla sin estirar === */
+html,
+body {
+    width: 100%;
+    height: 100%;
+    min-height: 100%;
+    overflow: hidden;
+}
+
+body {
+    padding: 6px;
+    align-items: center;
+}
+
+#gameWrapper {
+    width: 100%;
+    height: calc(100dvh - 12px);
+    max-width: none;
+    max-height: calc(100dvh - 12px);
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+#gameArea {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+}
+
+#playStage {
+    width: min(calc(100vw - 12px), calc((100dvh - 12px) * 2));
+    height: min(calc(100dvh - 12px), calc((100vw - 12px) / 2));
+    max-width: calc(100vw - 12px);
+    max-height: calc(100dvh - 12px);
+    aspect-ratio: 2 / 1;
+    margin: 0 auto;
+    flex: none;
+    transform: none;
+}
+
+canvas {
+    width: 100% !important;
+    height: 100% !important;
+}
+
+#hud.inGameHud {
+    max-height: 76px;
+    overflow: hidden;
+    gap: clamp(2px, 0.45vw, 5px);
+    padding: clamp(4px, 0.55vw, 7px);
+    font-size: clamp(9px, 0.9vw, 13px);
+}
+
+#hud.inGameHud span {
+    padding: 2px 5px;
+}
+
+#hud.inGameHud .smallHudButton {
+    padding: 4px 7px;
+    font-size: clamp(9px, 0.85vw, 12px);
+}
+
+#bottomGameUi {
+    grid-template-columns: minmax(320px, 1.2fr) minmax(220px, 0.8fr);
+    gap: clamp(4px, 0.6vw, 8px);
+}
+
+#bottomGameUi #abilityBar,
+#bottomGameUi #inventoryBar {
+    max-height: 82px;
+    overflow: hidden;
+}
+
+#bottomGameUi #abilityBar {
+    gap: 4px;
+}
+
+#bottomGameUi .abilitySlot {
+    padding: 4px 5px;
+    font-size: clamp(9px, 0.82vw, 12px);
+}
+
+#bottomGameUi .inventorySlotButton {
+    width: clamp(48px, 4.7vw, 64px);
+    min-height: clamp(32px, 4.4vh, 42px);
+}
+
+#bottomGameUi .inventoryHeader {
+    margin-bottom: 2px;
+    font-size: clamp(9px, 0.8vw, 11px);
+}
+
+.constructionHudButton {
+    top: clamp(46px, 5.6vh, 58px);
+    right: clamp(8px, 0.8vw, 12px);
+    padding: 6px 10px;
+    font-size: clamp(10px, 0.9vw, 13px);
+}
+
+@media (max-height: 760px) {
+    body { padding: 4px; }
+    #gameWrapper {
+        height: calc(100dvh - 8px);
+        max-height: calc(100dvh - 8px);
+    }
+
+    #playStage {
+        width: min(calc(100vw - 8px), calc((100dvh - 8px) * 2));
+        height: min(calc(100dvh - 8px), calc((100vw - 8px) / 2));
+        max-width: calc(100vw - 8px);
+        max-height: calc(100dvh - 8px);
+    }
+
+    #hud.inGameHud {
+        max-height: 58px;
+        justify-content: flex-start;
+    }
+
+    #hud.inGameHud span:nth-of-type(3) {
+        display: none;
+    }
+
+    #bottomGameUi #inventoryBar {
+        display: none;
+    }
+
+    #bottomGameUi {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-height: 560px), (max-width: 820px) {
+    #hud.inGameHud span {
+        font-size: 9px;
+        padding: 1px 4px;
+    }
+
+    #hud.inGameHud .smallHudButton {
+        padding: 3px 5px;
+        font-size: 9px;
+    }
+
+    .constructionHudButton {
+        top: 42px;
+        padding: 5px 7px;
+    }
+
+    #bottomGameUi {
+        bottom: 4px;
+        left: 5px;
+        right: 5px;
+    }
+}
+
+
+.cancelBuildButton {
+    position: absolute;
+    right: 12px;
+    top: 52px;
+    z-index: 8;
+    background: #9b3f32 !important;
+    border: 1px solid #ff9a8f !important;
+    min-width: 190px;
+    padding: 8px 10px;
+    box-shadow: 0 3px 14px rgba(0, 0, 0, 0.35);
+}
+
+.cancelBuildButton:hover {
+    background: #c44f40 !important;
+}
+
+
+.structurePanel {
+    position: absolute;
+    top: 72px;
+    right: 12px;
+    width: 250px;
+    max-width: calc(100% - 24px);
+    background: rgba(13, 13, 16, 0.92);
+    border: 1px solid rgba(255, 226, 138, 0.65);
+    border-radius: 12px;
+    padding: 10px;
+    z-index: 16;
+    text-align: left;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(4px);
+}
+
+.structurePanelHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: #ffe28a;
+    margin-bottom: 8px;
+}
+
+#closeStructurePanelBtn {
+    width: 28px;
+    height: 28px;
+    min-height: 0;
+    padding: 0;
+    border-radius: 8px;
+    background: #3a2b2b;
+    font-size: 18px;
+    line-height: 1;
+}
+
+.structurePanelInfo {
+    color: #ddd;
+    font-size: 12px;
+    line-height: 1.35;
+    margin-bottom: 9px;
+}
+
+.structurePanelActions {
+    display: grid;
+    gap: 7px;
+}
+
+.structurePanelActions button {
+    min-height: 34px;
+    padding: 7px 9px;
+    font-size: 12px;
+}
+
+@media (max-height: 760px) {
+    .structurePanel {
+        top: 58px;
+        width: 220px;
+        padding: 8px;
+    }
+    .structurePanelInfo { font-size: 11px; }
+    .structurePanelActions button { min-height: 30px; padding: 5px 7px; }
 }
