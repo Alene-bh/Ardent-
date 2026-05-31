@@ -16,7 +16,7 @@ const BARRICADE_THICKNESS = 24;
 const BASE_RADIUS = 34;
 const PLAYER_SURVIVAL_SPEED = 1.75;
 const ENEMY_SURVIVAL_SPEED_MULTIPLIER = 0.72;
-const BUILD_PHASE_DURATION = 30000;
+const BUILD_PHASE_DURATION = 90000;
 const BOSS_SPAWN_ZONE = {
     x: WORLD_WIDTH / 2,
     y: WORLD_HEIGHT / 2,
@@ -603,6 +603,7 @@ let savedRunAvailable = false;
 let runDisqualifiedFromLeaderboard = false;
 let leaderboardDisqualificationReason = "";
 let beginnerCommandUsed = false;
+let lastDeathCause = "desconocido";
 
 const alphaTesterCommands = {
     aza: "Aza",
@@ -714,6 +715,13 @@ const BARRICADE_BUILD_COSTS = {
     thorns: 85,
     door: 48
 };
+
+// Ajuste de economía para el modo base/survival infinito:
+// un poquito más de oro para poder levantar defensas, pero muros más caros de escalar.
+const BUILD_ECONOMY_GOLD_MULTIPLIER = 1.16;
+const BARRICADE_STANDARD_UPGRADE_MULTIPLIER = 1.74;
+const BARRICADE_SPECIAL_UPGRADE_MULTIPLIER = 1.56;
+const BARRICADE_DOOR_UPGRADE_MULTIPLIER = 1.48;
 const trapDefinitions = {
     snare: { key: "trapSnare", name: "Trampa de agarre", cost: 55, color: "#9be7ff", radius: 24, duration: 1500 },
     bleed: { key: "trapBleed", name: "Trampa serrada", cost: 75, color: "#ff6b6b", radius: 26, slowAmount: 0.45, slowDuration: 500, bleedDuration: 3000 }
@@ -778,32 +786,56 @@ function getBarricadeKindLabel(kind = "standard") {
     return "Estándar";
 }
 
+function getBarricadeUpgradeMultiplier(kind = "standard") {
+    if (kind === "door") return BARRICADE_DOOR_UPGRADE_MULTIPLIER;
+    if (kind === "standard") return BARRICADE_STANDARD_UPGRADE_MULTIPLIER;
+    return BARRICADE_SPECIAL_UPGRADE_MULTIPLIER;
+}
+
+function getMinimumBarricadeUpgradeCost(b) {
+    const baseCost = getBarricadeBaseCost(b?.kind || "standard");
+    const level = Math.max(0, Number(b?.level) || 0);
+    const tier = Math.max(0, Number(b?.tier) || 0);
+    const steps = (b?.kind === "standard" ? tier + level : level) + 1;
+    const multiplier = getBarricadeUpgradeMultiplier(b?.kind || "standard");
+    return Math.ceil((baseCost * Math.pow(multiplier, Math.max(0, steps - 1))) / 5) * 5;
+}
+
 function ensureBarricadeEconomy(b) {
     if (!b) return b;
     const baseCost = getBarricadeBaseCost(b.kind);
     b.buildCost = Number(b.buildCost) || baseCost;
     b.spent = Number(b.spent) || b.buildCost;
-    b.upgradeCost = Number(b.upgradeCost) || scaleBarricadeCost(baseCost, b.kind === "standard" ? 1.42 : 1.34);
+    const minimumUpgradeCost = getMinimumBarricadeUpgradeCost(b);
+    const currentUpgradeCost = Number(b.upgradeCost) || 0;
+    b.upgradeCost = Math.max(currentUpgradeCost, minimumUpgradeCost);
     return b;
 }
 
 function getTowerBaseMaxHp(t) {
-    if (!t) return 55;
-    if (t.type === "blade") return 95;
-    if (t.type === "spear") return 74;
-    if (t.type === "ballista") return 78;
-    if (t.type === "buffer") return 52;
-    if (t.type === "lucky") return 42;
-    if (t.type === "slow" || t.type === "poison") return 62;
-    return 58;
+    if (!t) return 36;
+    if (t.type === "blade") return 60;
+    if (t.type === "spear") return 44;
+    if (t.type === "rapid") return 22;
+    if (t.type === "ballista") return 48;
+    if (t.type === "buffer") return 34;
+    if (t.type === "lucky") return 28;
+    if (t.type === "slow" || t.type === "poison") return 40;
+    return 36;
 }
 
 function ensureTowerEconomy(t) {
     if (!t) return t;
     t.spent = Number(t.spent) || Number(t.cost) || 0;
     t.upgradeCost = Number(t.upgradeCost) || Math.floor((Number(t.cost) || 100) * 1.35);
-    const fallbackMaxHp = getTowerBaseMaxHp(t) + Math.max(0, (Number(t.level) || 1) - 1) * (t.type === "blade" ? 18 : 8);
-    if (!Number.isFinite(Number(t.maxHp)) || Number(t.maxHp) <= 0) t.maxHp = fallbackMaxHp;
+    const fallbackMaxHp = getTowerBaseMaxHp(t) + Math.max(0, (Number(t.level) || 1) - 1) * (t.type === "blade" ? 8 : t.type === "spear" ? 7 : t.type === "ballista" ? 7 : 5);
+    if (!Number.isFinite(Number(t.maxHp)) || Number(t.maxHp) <= 0) {
+        t.maxHp = fallbackMaxHp;
+    } else if (Number(t.maxHp) > fallbackMaxHp * 1.35) {
+        const hpRatio = Math.max(0.05, Math.min(1, (Number(t.hp) || Number(t.maxHp)) / Math.max(1, Number(t.maxHp))));
+        t.maxHp = fallbackMaxHp;
+        t.hp = Math.max(1, t.maxHp * hpRatio);
+    }
     if (!Number.isFinite(Number(t.hp)) || Number(t.hp) <= 0) t.hp = t.maxHp;
     t.hp = Math.min(t.maxHp, t.hp);
     return t;
@@ -846,7 +878,7 @@ function isCircleInBossSpawnZone(x, y, radius = 0, padding = 0) {
 
 function canStartBuildPlacement(kindLabel = "construir") {
     if (!buildPhaseActive) {
-        showCenterMessage(`Solo podés ${kindLabel} durante los 30s antes de la próxima oleada`, 1200);
+        showCenterMessage(`Solo podés ${kindLabel} durante el descanso antes de la próxima oleada`, 1200);
         return false;
     }
     return true;
@@ -931,7 +963,7 @@ function isTowerTileOccupied(tile, ignoredTower = null) {
 
 const towerDefinitions = [
     { key: "tower1", name: "Básica", type: "basic", cost: 70, upgradeCost: 100, damage: 0.75, range: 230, fireDelay: 900, color: "cyan", label: "B" },
-    { key: "tower2", name: "Rápida", type: "rapid", cost: 40, upgradeCost: 80, damage: 0.30, range: 205, fireDelay: 315, color: "#b9ff7a", label: "R", maxHp: 36 },
+    { key: "tower2", name: "Rápida", type: "rapid", cost: 40, upgradeCost: 80, damage: 0.30, range: 205, fireDelay: 315, color: "#b9ff7a", label: "R", maxHp: 22 },
     { key: "tower3", name: "Perforante", type: "pierce", cost: 160, upgradeCost: 180, damage: 2.2, range: 250, fireDelay: 1200, color: "#ffdf6b", label: "P" },
     { key: "tower4", name: "Hielo", type: "slow", cost: 220, upgradeCost: 240, damage: 0, range: 260, fireDelay: 2600, color: "#9be7ff", label: "H", slowAmount: 0.45, slowDuration: 1600, areaRadius: 58 },
     { key: "tower5", name: "Doble", type: "double", cost: 260, upgradeCost: 300, damage: 0.65, range: 235, fireDelay: 1050, color: "#ff8bd1", label: "D" },
@@ -940,8 +972,8 @@ const towerDefinitions = [
     { key: "tower8", name: "Sanguijuela", type: "siphon", cost: 420, upgradeCost: 460, damage: 0.55, drainAmount: 2.2, range: 245, fireDelay: 850, color: "#b81444", label: "S" },
     { key: "tower9", name: "Buffer", type: "buffer", cost: 620, upgradeCost: 600, damage: 0, range: 180, fireDelay: 999999, color: "#b78cff", label: "+", buffDamage: 0.10, buffSpeed: 0.10 },
     { key: "tower10", name: "Lucky Block", type: "lucky", cost: 240, upgradeCost: 0, damage: 0, range: 0, fireDelay: 999999, color: "#ffe28a", label: "?" },
-    { key: "tower11", name: "Cuchilla", type: "blade", cost: 90, upgradeCost: 120, damage: 0.55, range: 62, fireDelay: 620, color: "#d9d9d9", label: "C", maxHp: 95 },
-    { key: "tower12", name: "Lancera", type: "spear", cost: 135, upgradeCost: 165, damage: 1.05, range: 155, fireDelay: 980, color: "#d7b06a", label: "L", maxHp: 74, laneWidth: 38 }
+    { key: "tower11", name: "Cuchilla", type: "blade", cost: 90, upgradeCost: 120, damage: 0.55, range: 62, fireDelay: 620, color: "#d9d9d9", label: "C", maxHp: 60 },
+    { key: "tower12", name: "Lancera", type: "spear", cost: 135, upgradeCost: 165, damage: 1.05, range: 155, fireDelay: 980, color: "#d7b06a", label: "L", maxHp: 44, laneWidth: 38 }
 ];
 
 const enemyTypes = [
@@ -1175,7 +1207,7 @@ function createFreeBarricade(kind = "standard", x = player ? player.x + 85 : WOR
     b.isBuildBarricade = true;
     b.buildCost = getBarricadeBaseCost(kind);
     b.spent = b.buildCost;
-    b.upgradeCost = scaleBarricadeCost(b.buildCost, kind === "standard" ? 1.42 : kind === "door" ? 1.32 : 1.34);
+    b.upgradeCost = scaleBarricadeCost(b.buildCost, getBarricadeUpgradeMultiplier(kind));
     b.isDoor = kind === "door";
     b.isOpen = false;
     return b;
@@ -1193,14 +1225,42 @@ function getNearestActiveBarricadeTo(x, y) {
 }
 
 function getEnemyMainTarget(enemy) {
-    // El sanador ahora prioriza seguir aliados heridos o grupos de enemigos; no busca destruir estructuras.
+    // El sanador prioriza seguir aliados heridos o grupos de enemigos; no busca destruir estructuras.
     if (enemy && enemy.special === "healer") {
         const supportTarget = getHealerSupportTarget(enemy);
         if (supportTarget) return supportTarget;
     }
 
-    // Modo supervivencia: el objetivo real sos vos. Sin núcleo/base.
-    return { type: "player", x: player.x, y: player.y, radius: 23, object: player };
+    // Supervivencia sandbox: los enemigos quieren destruir todo lo nuestro.
+    // El jugador sigue teniendo prioridad, pero una torre/muro en la cara no se ignora.
+    const candidates = [];
+    if (player && player.hp > 0) {
+        const d = Math.hypot(enemy.x - player.x, enemy.y - player.y);
+        candidates.push({ type: "player", x: player.x, y: player.y, radius: 23, object: player, score: d * 0.72 });
+    }
+
+    (towers || []).forEach(tower => {
+        if (!tower || !tower.owned || tower.hp <= 0) return;
+        const d = Math.hypot(enemy.x - tower.x, enemy.y - tower.y);
+        // Las torres cercanas son comida fácil, pero no reemplazan siempre al jugador.
+        const proximityBonus = d < 150 ? 95 : d < 260 ? 45 : 0;
+        const dangerBonus = tower.type === "blade" || tower.type === "spear" ? 18 : 0;
+        candidates.push({ type: "tower", x: tower.x, y: tower.y, radius: TOWER_COLLISION_RADIUS, object: tower, score: d - proximityBonus - dangerBonus });
+    });
+
+    (barricades || []).forEach(b => {
+        if (!b || !b.active || b.hp <= 0 || b.isOpen) return;
+        const rect = getEntityRect({ ...b, isBuildBarricade: true });
+        const closestX = Math.max(rect.left, Math.min(rect.right, enemy.x));
+        const closestY = Math.max(rect.top, Math.min(rect.bottom, enemy.y));
+        const d = Math.hypot(enemy.x - closestX, enemy.y - closestY);
+        const proximityBonus = d < 120 ? 85 : d < 220 ? 38 : 0;
+        candidates.push({ type: "barricade", x: closestX, y: closestY, radius: 12, object: b, score: d - proximityBonus });
+    });
+
+    if (!candidates.length) return { type: "player", x: player.x, y: player.y, radius: 23, object: player };
+    candidates.sort((a, b) => a.score - b.score);
+    return candidates[0];
 }
 
 function getHealerSupportTarget(healer) {
@@ -1345,6 +1405,20 @@ function damageBarricade(b, amount, sourceEnemy = null) {
     }
 }
 
+function getDamageSourceName(sourceEnemy = null, fallback = "daño desconocido") {
+    if (!sourceEnemy) return fallback;
+    if (sourceEnemy.deathName) return sourceEnemy.deathName;
+    if (sourceEnemy.name) return sourceEnemy.name;
+    if (sourceEnemy.isBossProjectile) return sourceEnemy.burn ? "proyectil ardiente de jefe" : "proyectil de jefe";
+    if (sourceEnemy.special === "doombringer") return "Titán Negro";
+    if (sourceEnemy.special) return sourceEnemy.special;
+    return fallback;
+}
+
+function setLastDeathCause(sourceEnemy = null, fallback = "daño desconocido") {
+    lastDeathCause = getDamageSourceName(sourceEnemy, fallback);
+}
+
 function damagePlayer(amount, sourceEnemy = null, impactX = player ? player.x : 35, impactY = player ? player.y : GAME_HEIGHT / 2, blockedMessage = "¡Golpe bloqueado!") {
     if (!player || player.hp <= 0) return false;
 
@@ -1368,6 +1442,7 @@ function damagePlayer(amount, sourceEnemy = null, impactX = player ? player.x : 
 
     if (player.hp <= 0) {
         player.hp = 0;
+        setLastDeathCause(sourceEnemy, "daño enemigo");
         endRun();
         return true;
     }
@@ -1459,7 +1534,9 @@ function scaleConsumableCost(currentCost, earlyMultiplier) {
 }
 
 function scaleBarricadeCost(currentCost, earlyMultiplier) {
-    return scaleShopCost(currentCost, earlyMultiplier, 1.050, 1500);
+    // Los muros escalan más fuerte que otros upgrades para que llegar a Obsidiana
+    // sea una decisión de inversión, no algo automático en pocas rondas.
+    return scaleShopCost(currentCost, earlyMultiplier, 1.085, 2200);
 }
 
 function scaleTowerUpgradeCost(currentCost) {
@@ -1685,26 +1762,26 @@ function getLateGameGoldMultiplier() {
     const lateWave = wave - 45;
     const logBoost = Math.log10(lateWave + 10);
     const rootBoost = Math.pow(lateWave / 55, 0.42);
-    return 1 + logBoost * 0.55 + rootBoost * 1.15;
+    return 1 + logBoost * 0.62 + rootBoost * 1.25;
 }
 
 function getWaveRewardBonus() {
-    if (wave < 40) return Math.floor(wave * 1.5);
-    return Math.floor(40 * 1.5 + Math.pow(wave - 39, 0.74) * 2.4);
+    if (wave < 40) return Math.floor(wave * 1.75);
+    return Math.floor(40 * 1.75 + Math.pow(wave - 39, 0.76) * 2.75);
 }
 
 function getEnemyRewardForWave(baseReward) {
-    if (wave < 40) return baseReward + Math.floor(wave * 0.45);
-    return baseReward + Math.floor(18 + Math.pow(wave - 39, 0.72) * 0.95);
+    if (wave < 40) return baseReward + Math.floor(wave * 0.52);
+    return baseReward + Math.floor(21 + Math.pow(wave - 39, 0.74) * 1.08);
 }
 
 function getBossRewardForWave(baseReward) {
-    if (wave < 40) return baseReward + wave * 7;
-    return baseReward + Math.floor(220 + Math.pow(wave, 0.76) * 6.8);
+    if (wave < 40) return baseReward + wave * 8;
+    return baseReward + Math.floor(250 + Math.pow(wave, 0.78) * 7.6);
 }
 
 function getGoldAmount(amount) {
-    return Math.ceil(amount * currentGoldMultiplier * getLateGameGoldMultiplier() * (player?.goldBonusMultiplier || 1));
+    return Math.ceil(amount * BUILD_ECONOMY_GOLD_MULTIPLIER * currentGoldMultiplier * getLateGameGoldMultiplier() * (player?.goldBonusMultiplier || 1));
 }
 
 function clampRepeatCount(value) {
@@ -1721,10 +1798,20 @@ function normalizeRepeatCountsByWave(counts) {
     return normalized;
 }
 
-function getRepeatCountForCurrentWave() {
-    const clamped = clampRepeatCount(repeatCountsByWave[wave]);
-    repeatCountsByWave[wave] = clamped;
+function getRepeatTargetWave() {
+    if (buildPhaseActive) return Math.max(1, (Number(wave) || 1) - 1);
+    return Math.max(1, Number(wave) || 1);
+}
+
+function getRepeatCountForWave(targetWave = getRepeatTargetWave()) {
+    const key = Math.max(1, Math.floor(Number(targetWave) || 1));
+    const clamped = clampRepeatCount(repeatCountsByWave[key]);
+    repeatCountsByWave[key] = clamped;
     return clamped;
+}
+
+function getRepeatCountForCurrentWave() {
+    return getRepeatCountForWave(getRepeatTargetWave());
 }
 
 function applyTowerBuffs() {
@@ -1777,6 +1864,7 @@ function createDefaultState() {
     runDisqualifiedFromLeaderboard = false;
     leaderboardDisqualificationReason = "";
     beginnerCommandUsed = false;
+    lastDeathCause = "desconocido";
 
     player = {
         x: WORLD_WIDTH / 2,
@@ -1988,6 +2076,7 @@ function buildSavePayload() {
         runDisqualifiedFromLeaderboard,
         leaderboardDisqualificationReason,
         beginnerCommandUsed,
+        lastDeathCause,
         gameTime,
         gameSpeed,
         speedIndex,
@@ -2102,6 +2191,7 @@ function restoreSavedRun() {
         runDisqualifiedFromLeaderboard = Boolean(data.runDisqualifiedFromLeaderboard);
         leaderboardDisqualificationReason = String(data.leaderboardDisqualificationReason || "").slice(0, 80);
         beginnerCommandUsed = Boolean(data.beginnerCommandUsed);
+        lastDeathCause = String(data.lastDeathCause || "desconocido").slice(0, 80);
         gameTime = Number(data.gameTime) || 0;
         gameSpeed = Number(data.gameSpeed) || 1;
         speedIndex = Number(data.speedIndex) || 0;
@@ -3226,15 +3316,9 @@ function updateBossProjectiles() {
             if (player.immortal) {
                 createImpactParticles(player.x, player.y, "#ffe28a");
             } else {
-                player.hp -= p.damage;
+                const ended = damagePlayer(p.damage, p, player.x, player.y, "¡Proyectil bloqueado!");
                 if (p.burn) { createFireZone(player.x, player.y, 60, Math.max(1.2, p.damage * 0.25), 1800, 450); }
-                triggerRedFlash();
-                createImpactParticles(player.x, player.y, p.color);
-                addDamageText(player.x, player.y - 28, p.damage, false, "#ff7777");
-                if (player.hp <= 0) {
-                    player.hp = 0;
-                    endRun();
-                }
+                if (ended) return;
             }
             bossProjectiles.splice(i, 1);
         }
@@ -3641,9 +3725,16 @@ function updateEnemies() {
 
         if (enemy.bossVariant === "dvd") {
             if (now - enemy.lastAttackTime >= enemy.attackDelay) {
-                const ended = mainTarget.type === "base"
-                    ? damageBase(enemy.damageToDefense, enemy.x, enemy.y)
-                    : damagePlayer(enemy.damageToDefense, enemy, enemy.x, enemy.y, "¡Rebote bloqueado!");
+                let ended = false;
+                if (mainTarget.type === "base") {
+                    ended = damageBase(enemy.damageToDefense, enemy.x, enemy.y);
+                } else if (mainTarget.type === "tower" && mainTarget.object) {
+                    damageTower(mainTarget.object, enemy.damageToDefense || 1, enemy);
+                } else if (mainTarget.type === "barricade" && mainTarget.object) {
+                    damageBarricade(mainTarget.object, enemy.damageToDefense || 1, enemy);
+                } else {
+                    ended = damagePlayer(enemy.damageToDefense, enemy, enemy.x, enemy.y, "¡Rebote bloqueado!");
+                }
                 if (ended) return;
                 enemy.lastAttackTime = now;
                 enemy.x += (enemy.x < mainTarget.x ? -1 : 1) * 120;
@@ -3672,9 +3763,18 @@ function updateEnemies() {
         }
 
         if (now - enemy.lastAttackTime >= enemy.attackDelay) {
-            const ended = mainTarget.type === "base"
-                ? damageBase(enemy.damageToDefense, enemy.x, enemy.y)
-                : damagePlayer(enemy.damageToDefense, enemy, enemy.x, enemy.y, "¡Golpe bloqueado!");
+            let ended = false;
+            if (mainTarget.type === "base") {
+                ended = damageBase(enemy.damageToDefense, enemy.x, enemy.y);
+            } else if (mainTarget.type === "tower" && mainTarget.object) {
+                damageTower(mainTarget.object, enemy.damageToDefense || 1, enemy);
+                createImpactParticles(mainTarget.object.x, mainTarget.object.y, enemy.color || "#ff7777");
+            } else if (mainTarget.type === "barricade" && mainTarget.object) {
+                damageBarricade(mainTarget.object, enemy.damageToDefense || 1, enemy);
+                createImpactParticles(mainTarget.x, mainTarget.y, enemy.color || "#d6a05f");
+            } else {
+                ended = damagePlayer(enemy.damageToDefense, enemy, enemy.x, enemy.y, "¡Golpe bloqueado!");
+            }
             enemy.lastAttackTime = now;
             if (ended) return;
         }
@@ -4053,7 +4153,10 @@ function explodeEnemyOnDeath(enemy) {
     if (!hitBarricade && enemy.x <= 35 + radius) {
         player.hp = Math.max(0, player.hp - Math.ceil(damage * 0.45));
         triggerRedFlash();
-        if (player.hp <= 0) endRun();
+        if (player.hp <= 0) {
+            setLastDeathCause(enemy, "explosión enemiga");
+            endRun();
+        }
     }
 }
 
@@ -4223,7 +4326,7 @@ function enterBuildPhase(completedWave, goldBonus = 0) {
     resetWaveStats();
     closeShop();
     updateBuildPhaseUI();
-    showCenterMessage(`Wave ${completedWave} completada · +${formatMoney(goldBonus)} oro · 30 segundos antes de la próxima oleada`, 1900);
+    showCenterMessage(`Wave ${completedWave} completada · +${formatMoney(goldBonus)} oro · 1 minuto y medio antes de la próxima oleada`, 1900);
     autoSaveRun(true);
 }
 
@@ -4274,12 +4377,19 @@ function updateBuildPhase() {
     updateBuildPhaseUI();
 }
 
+function formatBuildPhaseTime(ms) {
+    const totalSeconds = Math.max(1, Math.ceil(ms / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (minutes <= 0) return `${seconds}s`;
+    return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
 function updateBuildPhaseUI() {
     if (!skipBuildPhaseBtn) return;
     skipBuildPhaseBtn.classList.toggle("hidden", !buildPhaseActive);
     if (buildPhaseActive) {
-        const remaining = Math.max(1, Math.ceil(getBuildPhaseRemainingMs() / 1000));
-        skipBuildPhaseBtn.textContent = `Próxima oleada en ${remaining}s · Saltar`;
+        skipBuildPhaseBtn.textContent = `Próxima oleada en ${formatBuildPhaseTime(getBuildPhaseRemainingMs())} · Saltar`;
     }
 }
 
@@ -4309,6 +4419,10 @@ function setLeaderboardStatus(message) {
     if (leaderboardGameStatusText) leaderboardGameStatusText.textContent = message;
 }
 
+function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[ch] || ch));
+}
+
 function renderLeaderboard(scores = []) {
     const lists = [leaderboardList, leaderboardGameList].filter(Boolean);
 
@@ -4329,12 +4443,14 @@ function renderLeaderboard(scores = []) {
             const name = String(entry.name || "Jugador").slice(0, 18);
             const scoreValue = formatLeaderboardNumber(entry.score);
             const isBeginner = Boolean(entry.beginner || entry.beginnerCommandUsed);
+            const killedBy = String(entry.killedBy || entry.deathCause || "").slice(0, 80);
+            const deathText = killedBy ? ` · mató: ${escapeHtml(killedBy)}` : "";
 
             li.innerHTML = `
                 <div class="leaderboardEntry">
                     <div>
                         <div class="leaderboardName"><span class="leaderboardNameText"></span>${isBeginner ? ' <span class="leaderboardBeginnerTag">(beginner)</span>' : ''}</div>
-                        <div class="leaderboardMeta">${waveText}${dateText ? " · " + dateText : ""}</div>
+                        <div class="leaderboardMeta">${waveText}${dateText ? " · " + dateText : ""}${deathText}</div>
                     </div>
                     <div class="leaderboardScore">${scoreValue}</div>
                 </div>
@@ -4397,7 +4513,9 @@ async function submitLeaderboardScore() {
             wave: Math.max(1, Math.floor(wave || 1)),
             version: "0.7.6.0",
             beginner: Boolean(beginnerCommandUsed),
-            beginnerCommandUsed: Boolean(beginnerCommandUsed)
+            beginnerCommandUsed: Boolean(beginnerCommandUsed),
+            killedBy: String(lastDeathCause || "desconocido").slice(0, 80),
+            deathCause: String(lastDeathCause || "desconocido").slice(0, 80)
         };
 
         const response = await fetch("/api/leaderboard", {
@@ -4444,9 +4562,9 @@ function endRun() {
     if (isNewRecord) {
         bestScore = score;
         localStorage.setItem("towerDefenseBestScore", bestScore);
-        deathMessageText.textContent = "¡Nuevo récord! El jugador cayó, pero esta run fue la mejor hasta ahora.";
+        deathMessageText.textContent = `¡Nuevo récord! Te mató: ${lastDeathCause || "desconocido"}. Esta run fue la mejor hasta ahora.`;
     } else {
-        deathMessageText.textContent = "El jugador cayó. La run terminó y el progreso se reinició.";
+        deathMessageText.textContent = `Te mató: ${lastDeathCause || "desconocido"}. La run terminó y el progreso se reinició.`;
     }
 
     finalScoreText.textContent = formatCompactNumber(score);
@@ -5722,22 +5840,25 @@ function updateTowerShopVisibility() {
         const price = costs[def.key] ?? def.cost;
         if (btn) {
             const extraDisabled = !!pendingTowerPurchase || full || !buildPhaseActive;
-            const extraTitle = !buildPhaseActive ? "Solo podés construir durante los 30s entre oleadas." : full ? "Límite de slots de torre alcanzado. Comprá un slot extra." : pendingTowerPurchase ? "Ya estás colocando una torre" : "";
+            const extraTitle = !buildPhaseActive ? "Solo podés construir durante el descanso entre oleadas." : full ? "Límite de slots de torre alcanzado. Comprá un slot extra." : pendingTowerPurchase ? "Ya estás colocando una torre" : "";
             setShopButtonAffordability(btn, price, extraDisabled, extraTitle);
         }
     });
-    if (buyTrapSnareBtn) setShopButtonAffordability(buyTrapSnareBtn, costs.trapSnare ?? trapDefinitions.snare.cost, !buildPhaseActive || !!pendingTrapPlacement, !buildPhaseActive ? "Solo durante los 30s entre oleadas." : "");
-    if (buyTrapBleedBtn) setShopButtonAffordability(buyTrapBleedBtn, costs.trapBleed ?? trapDefinitions.bleed.cost, !buildPhaseActive || !!pendingTrapPlacement, !buildPhaseActive ? "Solo durante los 30s entre oleadas." : "");
+    if (buyTrapSnareBtn) setShopButtonAffordability(buyTrapSnareBtn, costs.trapSnare ?? trapDefinitions.snare.cost, !buildPhaseActive || !!pendingTrapPlacement, !buildPhaseActive ? "Solo durante el descanso entre oleadas." : "");
+    if (buyTrapBleedBtn) setShopButtonAffordability(buyTrapBleedBtn, costs.trapBleed ?? trapDefinitions.bleed.cost, !buildPhaseActive || !!pendingTrapPlacement, !buildPhaseActive ? "Solo durante el descanso entre oleadas." : "");
     if (trapSnareCostText) trapSnareCostText.textContent = formatMoney(costs.trapSnare ?? trapDefinitions.snare.cost);
     if (trapBleedCostText) trapBleedCostText.textContent = formatMoney(costs.trapBleed ?? trapDefinitions.bleed.cost);
 
     if (repeatWaveBtn) {
-        const repeats = getRepeatCountForCurrentWave();
-        repeatWaveBtn.classList.toggle("hidden", waveInProgress);
-        repeatWaveBtn.disabled = waveInProgress || repeats >= REPEAT_LIMIT_PER_WAVE;
+        const targetWave = getRepeatTargetWave();
+        const repeats = getRepeatCountForWave(targetWave);
+        const canRepeat = buildPhaseActive && !waveInProgress && targetWave >= 1;
+        repeatWaveBtn.classList.toggle("hidden", !canRepeat);
+        repeatWaveBtn.disabled = !canRepeat || repeats >= REPEAT_LIMIT_PER_WAVE;
         repeatWaveBtn.textContent = repeats >= REPEAT_LIMIT_PER_WAVE
-            ? "Repetir oleada: límite alcanzado"
-            : `Repetir oleada (${repeats}/${REPEAT_LIMIT_PER_WAVE}) · 50% oro`;
+            ? `Repetir ${targetWave}: límite`
+            : `Repetir ${targetWave} (${repeats}/${REPEAT_LIMIT_PER_WAVE})`;
+        repeatWaveBtn.title = "Repite la misma oleada con 50% de oro. Máximo 3 repeticiones por oleada.";
     }
 
     if (nextWaveBtn) {
@@ -6172,7 +6293,7 @@ function runConsoleCommand(rawCommand) {
         fireZones = [];
         effects = [];
         damageTexts = [];
-        appendConsoleLog("Comando endwave activado: oleada completada y descanso de 30s iniciado. Esta run no entra al leaderboard normal.");
+        appendConsoleLog("Comando endwave activado: oleada completada y descanso de 1m30s iniciado. Esta run no entra al leaderboard normal.");
         showCenterMessage("END WAVE", 800);
         completeWave();
         updateHud(true);
@@ -6492,7 +6613,10 @@ function upgradeBarricadeSelected() {
         const paid = Number(b.upgradeCost) || 0;
         b.spent = (Number(b.spent) || 0) + paid;
         upgradeBarricadeInstance(b, b.kind || "standard", false);
-        b.upgradeCost = scaleBarricadeCost(paid || getBarricadeBaseCost(b.kind), b.kind === "standard" ? 1.55 : 1.42);
+        b.upgradeCost = Math.max(
+            scaleBarricadeCost(paid || getBarricadeBaseCost(b.kind), getBarricadeUpgradeMultiplier(b.kind || "standard")),
+            getMinimumBarricadeUpgradeCost(b)
+        );
     });
     showCenterMessage(selected.length > 1 ? `${selected.length} barricadas mejoradas` : "Barricada mejorada", 850);
     updateHud(true); updateStructurePanel(); autoSaveRun(true);
@@ -7499,7 +7623,7 @@ function upgradeTower(index, silent = false) {
         tower.buffSpeed += 0.018;
     }
 
-    const hpGain = tower.type === "blade" ? 18 : tower.type === "spear" ? 11 : tower.type === "ballista" ? 12 : 8;
+    const hpGain = tower.type === "blade" ? 8 : tower.type === "spear" ? 7 : tower.type === "ballista" ? 7 : 5;
     tower.maxHp = Math.max(oldMaxHp + hpGain, Number(tower.maxHp) || 0);
     tower.hp = Math.min(tower.maxHp, (Number(tower.hp) || oldMaxHp) + hpGain);
 
@@ -7707,16 +7831,33 @@ pauseSfxVolume.addEventListener("input", () => {
 
 repeatWaveBtn.addEventListener("click", () => {
     if (waveInProgress) return;
-    const repeats = getRepeatCountForCurrentWave();
+    if (!buildPhaseActive) {
+        showCenterMessage("Solo podés repetir durante el descanso", 900);
+        updateHud();
+        return;
+    }
+
+    const targetWave = getRepeatTargetWave();
+    const repeats = getRepeatCountForWave(targetWave);
     if (repeats >= REPEAT_LIMIT_PER_WAVE) {
         showCenterMessage("Límite de repeticiones", 900);
         updateHud();
         return;
     }
 
-    repeatCountsByWave[wave] = Math.min(REPEAT_LIMIT_PER_WAVE, repeats + 1);
+    repeatCountsByWave[targetWave] = Math.min(REPEAT_LIMIT_PER_WAVE, repeats + 1);
     isRepeatingWave = true;
     currentGoldMultiplier = 0.5;
+    buildPhaseActive = false;
+    buildPhaseEndsAt = 0;
+    pausedBuildPhaseRemainingMs = 0;
+    wave = targetWave;
+    closeShop();
+    clearStructureSelection();
+    cancelBarricadePlacement(false);
+    cancelTrapPlacement(false);
+    cancelTowerPlacement(false);
+    showCenterMessage(`Repitiendo oleada ${targetWave}`, 900);
     startWave();
 });
 
