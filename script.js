@@ -1697,8 +1697,10 @@ function getMineCostForCount(count = (mines || []).length) {
 
 function getMineIncomeForWave(targetWave = wave) {
     const safeWave = Math.max(1, Number(targetWave) || 1);
-    // Escala suave: ayuda mucho en early, acompaña en late, pero no reemplaza matar enemigos.
-    return getGoldAmount(10 + Math.floor(Math.pow(safeWave, 0.72) * 4.2));
+    // Mina buffeada: más retorno temprano/medio, pero curva más plana en late.
+    // No usa el multiplicador late-game general para no transformarse en impresora infinita.
+    const baseIncome = 28 + Math.floor(Math.sqrt(safeWave) * 5);
+    return Math.ceil(baseIncome * BUILD_ECONOMY_GOLD_MULTIPLIER * currentGoldMultiplier * (player?.goldBonusMultiplier || 1));
 }
 
 function isMinePositionValid(x, y) {
