@@ -259,6 +259,9 @@ const abilitySlots = {
     eclipse: document.getElementById("abilityEclipseSlot")
 };
 
+const inventorySlotsPanel = document.getElementById("inventorySlots");
+const inventoryCooldownText = document.getElementById("inventoryCooldownText");
+
 const redFlash = document.getElementById("redFlash");
 const bossBarBox = document.getElementById("bossBarBox");
 const bossBarFill = document.getElementById("bossBarFill");
@@ -484,6 +487,7 @@ const MAX_EFFECTS = 80;
 let lastAutoSaveAt = 0;
 let lastHudUpdateAt = 0;
 let towerSlotsRenderSignature = "";
+let inventoryRenderSignature = "";
 let savedRunAvailable = false;
 
 const alphaTesterCommands = {
@@ -492,7 +496,8 @@ const alphaTesterCommands = {
     valen: "Valen",
     lio: "Lio",
     ema: "Ema",
-    lal: "Lal"
+    lal: "Lal",
+    dylan: "Dylan"
 };
 
 let wave;
@@ -513,6 +518,8 @@ let fireZones;
 let damageTexts;
 let particles;
 let effects;
+let inventory;
+let inventoryCooldownUntil;
 
 let enemiesToSpawn;
 let enemiesSpawned;
@@ -551,6 +558,20 @@ let lastDoomWave = -999;
 
 const TOWER_TILE_SIZE = 50;
 const TOWER_TILE_HALF = TOWER_TILE_SIZE / 2;
+
+const INVENTORY_SLOT_COUNT = 5;
+const INVENTORY_STACK_SIZE = 5;
+const INVENTORY_GLOBAL_COOLDOWN = 5000;
+
+const consumableDefinitions = {
+    smallPotion: { name: "Poción chica", shortName: "Chica", color: "#57d7ff", effect: "heal", heal: 6, duration: 2500, message: "Poción chica" },
+    mediumPotion: { name: "Poción mediana", shortName: "Mediana", color: "#ff74b8", effect: "heal", heal: 14, duration: 3500, message: "Poción mediana" },
+    largePotion: { name: "Poción grande", shortName: "Grande", color: "#ff4e64", effect: "heal", heal: 30, duration: 5000, message: "Poción grande" },
+    shieldPotion: { name: "Amuleto protector", shortName: "Escudo", color: "#8fa8ff", effect: "shield", message: "¡Escudo listo!" },
+    attackSpeedPotion: { name: "Poción de rapidez", shortName: "Rapidez", color: "#ffe35c", effect: "attackSpeed", duration: 10000, message: "¡Rapidez!" },
+    doubleShotPotion: { name: "Poción de doble disparo", shortName: "Doble", color: "#c97cff", effect: "doubleShot", duration: 9000, message: "¡Doble disparo!" },
+    lifeStealPotion: { name: "Poción vampírica", shortName: "Vampírica", color: "#d71945", effect: "lifeSteal", duration: 10000, message: "¡Vampirismo!" }
+};
 
 // Línea reservada para la segunda barricada.
 // No se pueden colocar torretas en esta columna, así la barricada avanzada
@@ -604,7 +625,7 @@ const towerDefinitions = [
     { key: "tower3", name: "Perforante", type: "pierce", cost: 160, upgradeCost: 180, damage: 3, range: 250, fireDelay: 1200, color: "#ffdf6b", label: "P" },
     { key: "tower4", name: "Hielo", type: "slow", cost: 220, upgradeCost: 240, damage: 0, range: 260, fireDelay: 2600, color: "#9be7ff", label: "H", slowAmount: 0.45, slowDuration: 1600, areaRadius: 58 },
     { key: "tower5", name: "Doble", type: "double", cost: 260, upgradeCost: 300, damage: 1, range: 235, fireDelay: 1050, color: "#ff8bd1", label: "D" },
-    { key: "tower6", name: "Veneno", type: "poison", cost: 310, upgradeCost: 350, damage: 2.2, range: 240, fireDelay: 3000, color: "#8cff4a", label: "V", areaRadius: 52, poisonDuration: 2800, tickDelay: 700 },
+    { key: "tower6", name: "Veneno", type: "poison", cost: 310, upgradeCost: 350, damage: 2.45, range: 248, fireDelay: 2850, color: "#8cff4a", label: "V", areaRadius: 58, poisonDuration: 3200, tickDelay: 650 },
     { key: "tower7", name: "Ballesta", type: "ballista", cost: 360, upgradeCost: 420, damage: 14, range: 320, fireDelay: 2850, color: "#c58b4b", label: "X" },
     { key: "tower8", name: "Sanguijuela", type: "siphon", cost: 420, upgradeCost: 460, damage: 1, drainAmount: 2.8, range: 245, fireDelay: 850, color: "#b81444", label: "S" },
     { key: "tower9", name: "Buffer", type: "buffer", cost: 620, upgradeCost: 600, damage: 0, range: 180, fireDelay: 999999, color: "#b78cff", label: "+", buffDamage: 0.16, buffSpeed: 0.12 },
@@ -676,7 +697,7 @@ const specialEnemyTypes = [
         attackDelay: 1200,
         special: "healer",
         unlockWave: 8,
-        healRadius: 95,
+        healRadius: 135,
         healAmount: 2,
         healDelay: 1600
     },
@@ -1319,6 +1340,8 @@ function createDefaultState() {
     damageTexts = [];
     particles = [];
     effects = [];
+    inventory = createEmptyInventory();
+    inventoryCooldownUntil = 0;
 
     enemiesToSpawn = 0;
     enemiesSpawned = 0;
@@ -1393,6 +1416,8 @@ function buildSavePayload() {
         damageTexts,
         particles,
         effects,
+        inventory,
+        inventoryCooldownUntil,
         waveStats,
         uiMode: waveInProgress ? "wave" : (!shop.classList.contains("hidden") ? "shop" : (!waveSummaryPanel.classList.contains("hidden") ? "summary" : "shop"))
     };
@@ -1503,6 +1528,8 @@ function restoreSavedRun() {
         damageTexts = Array.isArray(data.damageTexts) ? data.damageTexts : [];
         particles = Array.isArray(data.particles) ? data.particles : [];
         effects = Array.isArray(data.effects) ? data.effects : [];
+        inventory = normalizeInventory(data.inventory);
+        inventoryCooldownUntil = Number(data.inventoryCooldownUntil) || 0;
         waveStats = data.waveStats || { kills: 0, gold: 0, score: 0, bonus: 0 };
 
         relinkSavedReferences();
@@ -1512,6 +1539,7 @@ function restoreSavedRun() {
         pendingTowerPurchase = null;
         pendingTowerMoveIndex = null;
         towerSlotsRenderSignature = "";
+        inventoryRenderSignature = "";
         lastFrameTime = performance.now();
         frameScale = 1;
 
@@ -1578,6 +1606,17 @@ function startGame() {
             createDefaultState();
             hasActiveRun = true;
             startWave();
+        } else {
+            // Si la partida se guardó justo al pausar/cambiar de pantalla,
+            // al continuar una oleada debe arrancar limpia: sin pausa y corriendo.
+            isPaused = false;
+            pausePanel.classList.add("hidden");
+            confirmRestartBox.classList.add("hidden");
+            if (waveInProgress) {
+                gameRunning = true;
+                shop.classList.add("hidden");
+                waveSummaryPanel.classList.add("hidden");
+            }
         }
     } else {
         isPaused = false;
@@ -1625,6 +1664,9 @@ function startWave() {
     shop.classList.add("hidden");
     waveSummaryPanel.classList.add("hidden");
     gameOverScreen.classList.add("hidden");
+    pausePanel.classList.add("hidden");
+    consolePanel.classList.add("hidden");
+    confirmRestartBox.classList.add("hidden");
 
     if (isBossWave()) {
         showCenterMessage("¡BOSS!", 1800);
@@ -2257,7 +2299,9 @@ function updateEnemies() {
 
         enemy.isAttacking = true;
 
-        if (enemy.special === "doombringer") {
+        const targetBarricade = getCurrentDefenseBarricade();
+
+        if (enemy.special === "doombringer" && !targetBarricade) {
             if (player && player.immortal) {
                 createImpactParticles(enemy.x, enemy.y, "#ffe28a");
                 enemies.splice(i, 1);
@@ -2270,7 +2314,11 @@ function updateEnemies() {
             return;
         }
 
-        const targetBarricade = getCurrentDefenseBarricade();
+        if (enemy.special === "doombringer" && targetBarricade) {
+            enemy.damageToDefense = Math.min(enemy.damageToDefense || 0, 8);
+            enemy.attackDelay = Math.min(enemy.attackDelay || 1600, 1600);
+        }
+
 
         if (targetBarricade) {
             enemy.target = "barricade";
@@ -3818,6 +3866,224 @@ function markShopButtonAffordability(button, cost) {
     if (cantAfford) button.title = `Faltan ${numericCost - coins} monedas`;
 }
 
+
+function createEmptyInventory() {
+    return Array.from({ length: INVENTORY_SLOT_COUNT }, () => ({ itemKey: null, quantity: 0 }));
+}
+
+function normalizeInventory(savedInventory) {
+    const normalized = createEmptyInventory();
+    if (!Array.isArray(savedInventory)) return normalized;
+
+    savedInventory.slice(0, INVENTORY_SLOT_COUNT).forEach((slot, index) => {
+        if (!slot || !slot.itemKey || !consumableDefinitions[slot.itemKey]) return;
+        const quantity = Math.max(0, Math.min(INVENTORY_STACK_SIZE, Math.floor(Number(slot.quantity) || 0)));
+        if (quantity > 0) normalized[index] = { itemKey: slot.itemKey, quantity };
+    });
+
+    return normalized;
+}
+
+function getInventoryCount() {
+    return (inventory || []).reduce((sum, slot) => sum + (Number(slot.quantity) || 0), 0);
+}
+
+function findInventorySlotForItem(itemKey) {
+    if (!inventory) inventory = createEmptyInventory();
+
+    const existingStackIndex = inventory.findIndex(slot => slot.itemKey === itemKey && slot.quantity < INVENTORY_STACK_SIZE);
+    if (existingStackIndex >= 0) return existingStackIndex;
+
+    return inventory.findIndex(slot => !slot.itemKey || slot.quantity <= 0);
+}
+
+function hasInventorySpaceFor(itemKey) {
+    return findInventorySlotForItem(itemKey) >= 0;
+}
+
+function addConsumableToInventory(itemKey) {
+    const slotIndex = findInventorySlotForItem(itemKey);
+    if (slotIndex < 0) return false;
+
+    const slot = inventory[slotIndex];
+    if (!slot.itemKey || slot.quantity <= 0) {
+        inventory[slotIndex] = { itemKey, quantity: 1 };
+    } else {
+        slot.quantity = Math.min(INVENTORY_STACK_SIZE, slot.quantity + 1);
+    }
+
+    return true;
+}
+
+function buyConsumableToInventory(itemKey, costKey, costMultiplier) {
+    const def = consumableDefinitions[itemKey];
+    if (!def || !costs || coins < costs[costKey]) return;
+
+    if (!hasInventorySpaceFor(itemKey)) {
+        showCenterMessage("Inventario lleno", 800);
+        updateHud(true);
+        return;
+    }
+
+    coins -= costs[costKey];
+    addConsumableToInventory(itemKey);
+    costs[costKey] = scaleConsumableCost(costs[costKey], costMultiplier);
+    showCenterMessage(`${def.name} guardada`, 700);
+    updateHud(true);
+    autoSaveRun(true);
+}
+
+function applyConsumableEffect(itemKey) {
+    const def = consumableDefinitions[itemKey];
+    if (!def || !player) return false;
+
+    if (def.effect === "heal") {
+        if (!hasDamagedPlayerHp()) {
+            showCenterMessage("Vida llena", 600);
+            return false;
+        }
+        healOverTime(def.heal, def.duration);
+    }
+
+    if (def.effect === "shield") {
+        player.shieldCharges += 1;
+    }
+
+    if (def.effect === "attackSpeed") {
+        player.attackSpeedUntil = getGameTime() + def.duration;
+    }
+
+    if (def.effect === "doubleShot") {
+        player.doubleShotUntil = getGameTime() + def.duration;
+    }
+
+    if (def.effect === "lifeSteal") {
+        player.lifeStealPercent = 0.22;
+        player.lifeStealUntil = getGameTime() + def.duration;
+    }
+
+    showCenterMessage(def.message, 750);
+    return true;
+}
+
+function consumeInventorySlot(slotIndex) {
+    if (!gameStarted || !player || !inventory || isPaused || !waveInProgress) return;
+
+    const slot = inventory[slotIndex];
+    if (!slot || !slot.itemKey || slot.quantity <= 0) return;
+
+    const now = getGameTime();
+    const remaining = inventoryCooldownUntil - now;
+    if (remaining > 0) {
+        showCenterMessage(`Cooldown ${Math.ceil(remaining / 1000)}s`, 550);
+        return;
+    }
+
+    if (!applyConsumableEffect(slot.itemKey)) {
+        updateHud(true);
+        return;
+    }
+
+    slot.quantity -= 1;
+    if (slot.quantity <= 0) {
+        slot.itemKey = null;
+        slot.quantity = 0;
+    }
+
+    inventoryCooldownUntil = now + INVENTORY_GLOBAL_COOLDOWN;
+    updateHud(true);
+    autoSaveRun(true);
+}
+
+function getInventoryRenderSignature() {
+    if (!inventory) return "no-inventory";
+
+    const itemSignature = inventory.map(slot => {
+        if (!slot || !slot.itemKey || slot.quantity <= 0) return "empty";
+        return `${slot.itemKey}:${slot.quantity}`;
+    }).join("|");
+
+    return `${itemSignature}|wave:${waveInProgress ? 1 : 0}|paused:${isPaused ? 1 : 0}|started:${gameStarted ? 1 : 0}`;
+}
+
+function updateInventoryCooldownVisual(cooldownRemaining, cooldownProgress) {
+    if (!inventorySlotsPanel) return;
+
+    const buttons = inventorySlotsPanel.querySelectorAll(".inventorySlotButton");
+    buttons.forEach((button, index) => {
+        const slot = inventory[index];
+        const def = slot && slot.itemKey ? consumableDefinitions[slot.itemKey] : null;
+
+        if (cooldownRemaining > 0) {
+            button.classList.add("cooldown");
+            button.style.setProperty("--cooldown", `${cooldownProgress * 360}deg`);
+        } else {
+            button.classList.remove("cooldown");
+            button.style.removeProperty("--cooldown");
+        }
+
+        button.disabled = !waveInProgress || isPaused || !def || cooldownRemaining > 0;
+    });
+}
+
+function renderInventory(force = false) {
+    if (!inventorySlotsPanel) return;
+    if (!inventory) inventory = createEmptyInventory();
+
+    const now = getGameTime();
+    const cooldownRemaining = Math.max(0, inventoryCooldownUntil - now);
+    const cooldownProgress = cooldownRemaining > 0 ? Math.min(1, cooldownRemaining / INVENTORY_GLOBAL_COOLDOWN) : 0;
+    const signature = getInventoryRenderSignature();
+
+    // Importante: durante la oleada NO reconstruimos los botones cada refresh del HUD.
+    // Antes se hacía innerHTML constante y, al tener el mouse encima, el slot se destruía/recreaba:
+    // eso causaba titileo y podía comerse el click. Ahora solo recreamos si cambió el contenido real.
+    if (force || signature !== inventoryRenderSignature || inventorySlotsPanel.children.length !== INVENTORY_SLOT_COUNT) {
+        inventoryRenderSignature = signature;
+        inventorySlotsPanel.innerHTML = "";
+
+        inventory.forEach((slot, index) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "inventorySlotButton";
+            button.dataset.slotIndex = index;
+
+            const def = slot && slot.itemKey ? consumableDefinitions[slot.itemKey] : null;
+            if (def && slot.quantity > 0) {
+                button.style.setProperty("--potion-color", def.color || "#9be7ff");
+                button.innerHTML = `
+                    <span class="inventoryPotionDot" aria-hidden="true"></span>
+                    <span class="inventoryName">${def.shortName}</span>
+                    <span class="inventoryQty">${slot.quantity}</span>
+                `;
+                button.title = `${def.name} · Click para consumir durante una oleada`;
+            } else {
+                button.classList.add("empty");
+                button.style.removeProperty("--potion-color");
+                button.innerHTML = `<span class="inventoryEmptyDot" aria-hidden="true"></span><span class="inventoryName">Vacío</span><span class="inventoryQty">0</span>`;
+                button.title = "Slot vacío";
+            }
+
+            button.addEventListener("click", event => {
+                event.preventDefault();
+                event.stopPropagation();
+                consumeInventorySlot(index);
+            });
+
+            inventorySlotsPanel.appendChild(button);
+        });
+    }
+
+    updateInventoryCooldownVisual(cooldownRemaining, cooldownProgress);
+
+    if (inventoryCooldownText) {
+        const count = getInventoryCount();
+        inventoryCooldownText.textContent = cooldownRemaining > 0
+            ? `Cooldown global: ${Math.ceil(cooldownRemaining / 1000)}s · Inventario ${count}/${INVENTORY_SLOT_COUNT * INVENTORY_STACK_SIZE}`
+            : `Listo · Inventario ${count}/${INVENTORY_SLOT_COUNT * INVENTORY_STACK_SIZE}`;
+    }
+}
+
 function hasDamagedPlayerHp() {
     return player && player.hp < player.maxHp;
 }
@@ -3884,15 +4150,16 @@ function updateHud(force = false) {
     if (doubleShotPotionCostText) doubleShotPotionCostText.textContent = costs.doubleShotPotion;
     if (lifeStealPotionCostText) lifeStealPotionCostText.textContent = costs.lifeStealPotion;
 
-    const needsHealing = hasDamagedPlayerHp();
-    const fullLifeTitle = "No podés comprar pociones de vida si tenés la vida llena.";
-    setShopButtonAffordability(buySmallPotionBtn, costs.smallPotion, !needsHealing, needsHealing ? "" : fullLifeTitle);
-    setShopButtonAffordability(buyMediumPotionBtn, costs.mediumPotion, !needsHealing, needsHealing ? "" : fullLifeTitle);
-    setShopButtonAffordability(buyLargePotionBtn, costs.largePotion, !needsHealing, needsHealing ? "" : fullLifeTitle);
-    setShopButtonAffordability(buyShieldPotionBtn, costs.shieldPotion);
-    setShopButtonAffordability(buyAttackSpeedPotionBtn, costs.attackSpeedPotion);
-    setShopButtonAffordability(buyDoubleShotPotionBtn, costs.doubleShotPotion);
-    setShopButtonAffordability(buyLifeStealPotionBtn, costs.lifeStealPotion);
+    renderInventory();
+
+    const inventoryFullTitle = "Inventario lleno: 5 slots de x5 consumibles.";
+    setShopButtonAffordability(buySmallPotionBtn, costs.smallPotion, !hasInventorySpaceFor("smallPotion"), hasInventorySpaceFor("smallPotion") ? "" : inventoryFullTitle);
+    setShopButtonAffordability(buyMediumPotionBtn, costs.mediumPotion, !hasInventorySpaceFor("mediumPotion"), hasInventorySpaceFor("mediumPotion") ? "" : inventoryFullTitle);
+    setShopButtonAffordability(buyLargePotionBtn, costs.largePotion, !hasInventorySpaceFor("largePotion"), hasInventorySpaceFor("largePotion") ? "" : inventoryFullTitle);
+    setShopButtonAffordability(buyShieldPotionBtn, costs.shieldPotion, !hasInventorySpaceFor("shieldPotion"), hasInventorySpaceFor("shieldPotion") ? "" : inventoryFullTitle);
+    setShopButtonAffordability(buyAttackSpeedPotionBtn, costs.attackSpeedPotion, !hasInventorySpaceFor("attackSpeedPotion"), hasInventorySpaceFor("attackSpeedPotion") ? "" : inventoryFullTitle);
+    setShopButtonAffordability(buyDoubleShotPotionBtn, costs.doubleShotPotion, !hasInventorySpaceFor("doubleShotPotion"), hasInventorySpaceFor("doubleShotPotion") ? "" : inventoryFullTitle);
+    setShopButtonAffordability(buyLifeStealPotionBtn, costs.lifeStealPotion, !hasInventorySpaceFor("lifeStealPotion"), hasInventorySpaceFor("lifeStealPotion") ? "" : inventoryFullTitle);
 
     repairBarricadeCostText.textContent = costs.repairBarricade;
     upgradeBarricadeCostText.textContent = costs.upgradeBarricade;
@@ -4571,72 +4838,19 @@ upgradeCritBtn.addEventListener("click", () => {
     }
 });
 
-buySmallPotionBtn.addEventListener("click", () => {
-    if (!hasDamagedPlayerHp()) return;
-    if (coins >= costs.smallPotion) {
-        coins -= costs.smallPotion;
-        healOverTime(6, 2500);
-        costs.smallPotion = scaleConsumableCost(costs.smallPotion, 1.15);
-        updateHud();
-    }
-});
+buySmallPotionBtn.addEventListener("click", () => buyConsumableToInventory("smallPotion", "smallPotion", 1.15));
 
-buyMediumPotionBtn.addEventListener("click", () => {
-    if (!hasDamagedPlayerHp()) return;
-    if (coins >= costs.mediumPotion) {
-        coins -= costs.mediumPotion;
-        healOverTime(14, 3500);
-        costs.mediumPotion = scaleConsumableCost(costs.mediumPotion, 1.18);
-        updateHud();
-    }
-});
+buyMediumPotionBtn.addEventListener("click", () => buyConsumableToInventory("mediumPotion", "mediumPotion", 1.18));
 
-buyLargePotionBtn.addEventListener("click", () => {
-    if (!hasDamagedPlayerHp()) return;
-    if (coins >= costs.largePotion) {
-        coins -= costs.largePotion;
-        healOverTime(30, 5000);
-        costs.largePotion = scaleConsumableCost(costs.largePotion, 1.22);
-        updateHud();
-    }
-});
+buyLargePotionBtn.addEventListener("click", () => buyConsumableToInventory("largePotion", "largePotion", 1.22));
 
-buyShieldPotionBtn?.addEventListener("click", () => {
-    if (coins < costs.shieldPotion) return;
-    coins -= costs.shieldPotion;
-    player.shieldCharges += 1;
-    costs.shieldPotion = scaleConsumableCost(costs.shieldPotion, 1.18);
-    showCenterMessage("¡Escudo listo!", 700);
-    updateHud();
-});
+buyShieldPotionBtn?.addEventListener("click", () => buyConsumableToInventory("shieldPotion", "shieldPotion", 1.18));
 
-buyAttackSpeedPotionBtn?.addEventListener("click", () => {
-    if (coins < costs.attackSpeedPotion) return;
-    coins -= costs.attackSpeedPotion;
-    player.attackSpeedUntil = getGameTime() + 10000;
-    costs.attackSpeedPotion = scaleConsumableCost(costs.attackSpeedPotion, 1.2);
-    showCenterMessage("¡Rapidez!", 700);
-    updateHud();
-});
+buyAttackSpeedPotionBtn?.addEventListener("click", () => buyConsumableToInventory("attackSpeedPotion", "attackSpeedPotion", 1.2));
 
-buyDoubleShotPotionBtn?.addEventListener("click", () => {
-    if (coins < costs.doubleShotPotion) return;
-    coins -= costs.doubleShotPotion;
-    player.doubleShotUntil = getGameTime() + 9000;
-    costs.doubleShotPotion = scaleConsumableCost(costs.doubleShotPotion, 1.18);
-    showCenterMessage("¡Doble disparo!", 800);
-    updateHud();
-});
+buyDoubleShotPotionBtn?.addEventListener("click", () => buyConsumableToInventory("doubleShotPotion", "doubleShotPotion", 1.18));
 
-buyLifeStealPotionBtn?.addEventListener("click", () => {
-    if (coins < costs.lifeStealPotion) return;
-    coins -= costs.lifeStealPotion;
-    player.lifeStealPercent = 0.22;
-    player.lifeStealUntil = getGameTime() + 10000;
-    costs.lifeStealPotion = scaleConsumableCost(costs.lifeStealPotion, 1.18);
-    showCenterMessage("¡Vampirismo!", 800);
-    updateHud();
-});
+buyLifeStealPotionBtn?.addEventListener("click", () => buyConsumableToInventory("lifeStealPotion", "lifeStealPotion", 1.18));
 
 repairBarricadeBtn.addEventListener("click", () => {
     const damaged = (barricades || []).filter(b => b.active && b.maxHp > 0 && b.hp < b.maxHp).sort((a, b) => (a.hp / a.maxHp) - (b.hp / b.maxHp))[0];
@@ -4822,13 +5036,14 @@ function upgradeTower(index) {
     }
 
     if (tower.type === "poison") {
-        // Nerf de balance: el veneno mantiene utilidad en área, pero deja de
-        // escalar como condición ganadora automática con 2-3 torres nivel 3.
-        tower.damage += 0.75;
-        tower.range += 8;
-        tower.areaRadius += 2;
-        tower.poisonDuration += 150;
-        tower.fireDelay = Math.max(2400, tower.fireDelay - 80);
+        // Buff ligero: el veneno ahora puede sostener una build propia sin
+        // convertirse en la opción dominante del juego.
+        tower.damage += 0.9;
+        tower.range += 10;
+        tower.areaRadius += 3;
+        tower.poisonDuration += 220;
+        tower.tickDelay = Math.max(520, (tower.tickDelay || 650) - 15);
+        tower.fireDelay = Math.max(2250, tower.fireDelay - 95);
     }
 
     if (tower.type === "siphon") {
