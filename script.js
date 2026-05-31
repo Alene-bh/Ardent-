@@ -5487,18 +5487,55 @@ function drawMines() {
     (mines || []).forEach(mine => {
         const radius = mine.radius || MINE_COLLISION_RADIUS;
         const pulse = mine.pulseUntil && mine.pulseUntil > getGameTime();
-        ctx.fillStyle = pulse ? "rgba(255,215,106,0.78)" : "rgba(255,215,106,0.48)";
+        const glowRadius = radius + (pulse ? 13 : 7);
+
+        ctx.save();
+        ctx.shadowColor = pulse ? "#ffe28a" : "rgba(255,215,106,0.75)";
+        ctx.shadowBlur = pulse ? 18 : 10;
+
+        // Base oscura bien visible sobre el suelo verde.
+        ctx.fillStyle = "rgba(42, 30, 8, 0.96)";
+        ctx.beginPath();
+        ctx.arc(mine.x, mine.y, radius + 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Cuerpo dorado de la mina.
+        ctx.fillStyle = pulse ? "rgba(255,226,138,0.95)" : "rgba(255,215,106,0.86)";
         ctx.beginPath();
         ctx.arc(mine.x, mine.y, radius, 0, Math.PI * 2);
         ctx.fill();
-        ctx.strokeStyle = mine.color || "#ffd76a";
-        ctx.lineWidth = pulse ? 4 : 2;
+
+        // Borde externo/pulso.
+        ctx.strokeStyle = pulse ? "#fff0a8" : (mine.color || "#ffd76a");
+        ctx.lineWidth = pulse ? 4 : 3;
         ctx.beginPath();
-        ctx.arc(mine.x, mine.y, radius + (pulse ? 7 : 3), 0, Math.PI * 2);
+        ctx.arc(mine.x, mine.y, glowRadius, 0, Math.PI * 2);
         ctx.stroke();
+
+        ctx.restore();
+
+        // Pico/mina estilo mineral para que no parezca una trampa circular más.
+        ctx.fillStyle = "#7a4b18";
+        ctx.beginPath();
+        ctx.moveTo(mine.x, mine.y - radius - 2);
+        ctx.lineTo(mine.x + radius * 0.75, mine.y + radius * 0.42);
+        ctx.lineTo(mine.x - radius * 0.75, mine.y + radius * 0.42);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.strokeStyle = "rgba(255,255,255,0.8)";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
         ctx.fillStyle = "#2b2100";
-        ctx.font = "bold 13px Arial";
-        ctx.fillText("$", mine.x - 4, mine.y + 5);
+        ctx.font = "bold 16px Arial";
+        ctx.fillText("$", mine.x - 5, mine.y + 6);
+
+        if (mine.lastIncome) {
+            ctx.fillStyle = "rgba(255,255,255,0.9)";
+            ctx.font = "bold 10px Arial";
+            ctx.fillText(`+${formatMoney(mine.lastIncome)}`, mine.x - 16, mine.y - radius - 12);
+        }
     });
 }
 
@@ -6317,6 +6354,7 @@ function draw() {
     drawPath();
     drawBase();
     drawBarricade();
+    drawMines();
     drawTraps();
     drawPlayer();
     drawTowerPlacementTiles();
