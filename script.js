@@ -5266,12 +5266,41 @@ function drawTowers() {
 
         if (tower.type === "spear") {
             const dir = getDirectionVector(tower.rotation || 0);
-            ctx.strokeStyle = "rgba(255,226,138,0.8)";
+            // La lanza visible escala con el rango real de la torre.
+            // Así puede colocarse detrás de una barricada y verse claramente
+            // cómo atraviesa hacia afuera en la dirección elegida.
+            const spearLength = Math.max(42, tower.range || 155);
+            const baseOffset = 11;
+            const tipX = tower.x + dir.x * spearLength;
+            const tipY = tower.y + dir.y * spearLength;
+            const startX = tower.x + dir.x * baseOffset;
+            const startY = tower.y + dir.y * baseOffset;
+            const perpX = -dir.y;
+            const perpY = dir.x;
+            const headLength = Math.min(22, Math.max(13, spearLength * 0.07));
+            const headWidth = 8;
+
+            ctx.strokeStyle = "rgba(255,226,138,0.34)";
+            ctx.lineWidth = Math.max(10, Math.min(18, (tower.laneWidth || 38) * 0.38));
+            ctx.beginPath();
+            ctx.moveTo(startX, startY);
+            ctx.lineTo(tipX, tipY);
+            ctx.stroke();
+
+            ctx.strokeStyle = "rgba(255,246,190,0.92)";
             ctx.lineWidth = 4;
             ctx.beginPath();
-            ctx.moveTo(tower.x, tower.y);
-            ctx.lineTo(tower.x + dir.x * 30, tower.y + dir.y * 30);
+            ctx.moveTo(startX, startY);
+            ctx.lineTo(tipX, tipY);
             ctx.stroke();
+
+            ctx.fillStyle = "rgba(255,246,190,0.95)";
+            ctx.beginPath();
+            ctx.moveTo(tipX, tipY);
+            ctx.lineTo(tipX - dir.x * headLength + perpX * headWidth, tipY - dir.y * headLength + perpY * headWidth);
+            ctx.lineTo(tipX - dir.x * headLength - perpX * headWidth, tipY - dir.y * headLength - perpY * headWidth);
+            ctx.closePath();
+            ctx.fill();
         }
 
         if (tower.type === "blade") {
