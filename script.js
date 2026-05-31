@@ -549,6 +549,7 @@ const RESERVED_BARRICADE_TILES = createReservedBarricadeLaneTiles();
 const towerSlots = createTowerPlacementTiles();
 
 let pendingTowerPurchase = null;
+let pendingTowerMoveIndex = null;
 
 function createReservedBarricadeLaneTiles() {
     const tiles = [];
@@ -945,8 +946,8 @@ function getTowerDefinition(keyOrType) {
     return towerDefinitions.find(def => def.key === keyOrType || def.type === keyOrType);
 }
 
-function isTowerTileOccupied(tile) {
-    return towers.some(tower => Math.hypot(tower.x - tile.x, tower.y - tile.y) < 2);
+function isTowerTileOccupied(tile, ignoredTower = null) {
+    return towers.some(tower => tower !== ignoredTower && Math.hypot(tower.x - tile.x, tower.y - tile.y) < 2);
 }
 
 function getTowerTileAt(x, y) {
@@ -956,8 +957,8 @@ function getTowerTileAt(x, y) {
     ));
 }
 
-function isTowerTileAvailable(tile) {
-    return !!tile && !isTowerTileOccupied(tile);
+function isTowerTileAvailable(tile, ignoredTower = null) {
+    return !!tile && !isTowerTileOccupied(tile, ignoredTower);
 }
 
 function createTowerFromDefinition(def, paidCost = def.cost, tile = null) {
@@ -975,7 +976,9 @@ function createTowerFromDefinition(def, paidCost = def.cost, tile = null) {
         spent: paidCost,
         upgradeCost: def.upgradeCost || Math.floor(def.cost * 1.35),
         damageMultiplier: 1,
-        fireDelayMultiplier: 1
+        fireDelayMultiplier: 1,
+        activePoisonZoneExpiresAt: 0,
+        activeSlowZoneNextShotAt: 0
     };
 }
 
@@ -1007,6 +1010,48 @@ function cancelTowerPlacement(showShopAgain = true) {
     if (showShopAgain && !waveInProgress && hasActiveRun) {
         shop.classList.remove("hidden");
     }
+    updateHud();
+}
+
+function beginTowerMove(index) {
+    const tower = towers[index];
+    if (!tower) return;
+
+    pendingTowerPurchase = null;
+    pendingTowerMoveIndex = index;
+    shop.classList.add("hidden");
+    waveSummaryPanel.classList.add("hidden");
+    showCenterMessage(`Mové: ${tower.name}`, 1100);
+    updateHud();
+}
+
+function cancelTowerMove(showShopAgain = true) {
+    if (pendingTowerMoveIndex === null) return;
+    pendingTowerMoveIndex = null;
+    if (showShopAgain && !waveInProgress && hasActiveRun) {
+        shop.classList.remove("hidden");
+    }
+    updateHud();
+}
+
+function finishTowerMove(tile) {
+    const tower = towers[pendingTowerMoveIndex];
+
+    if (!tower) {
+        cancelTowerMove(true);
+        return;
+    }
+
+    if (!tile || !isTowerTileAvailable(tile, tower)) {
+        showCenterMessage("Tile ocupado o inválido", 700);
+        return;
+    }
+
+    tower.x = tile.x;
+    tower.y = tile.y;
+    pendingTowerMoveIndex = null;
+    if (!waveInProgress && hasActiveRun) shop.classList.remove("hidden");
+    showCenterMessage(`${tower.name} movida`, 750);
     updateHud();
 }
 
@@ -1553,7 +1598,8 @@ function addTowerProjectile(tower, targetX, targetY, options = {}) {
         slowDuration: options.slowDuration,
         areaRadius: options.areaRadius,
         poisonDuration: options.poisonDuration,
-        tickDelay: options.tickDelay
+        tickDelay: options.tickDelay,
+        sourceTower: tower
     });
 }
 
@@ -1595,6 +1641,8 @@ function shoot(targetX, targetY, owner = "player", tower = null) {
     if (owner === "tower") {
         if (!tower || !tower.owned) return;
         if (tower.type === "buffer") return;
+        if (tower.type === "poison" && now < (tower.activePoisonZoneExpiresAt || 0)) return;
+        if (tower.type === "slow" && now < (tower.activeSlowZoneNextShotAt || 0)) return;
         if (now - tower.lastShotTime < getTowerDelay(tower)) return;
 
         tower.lastShotTime = now;
@@ -2051,14 +2099,14 @@ function updateProjectiles() {
 
             if (dist < p.radius + e.radius) {
                 if (p.type === "slow") {
-                    createSlowZone(p.x, p.y, p.areaRadius, p.slowAmount, p.slowDuration);
+                    createSlowZone(p.x, p.y, p.areaRadius, p.slowAmount, p.slowDuration, p.sourceTower);
                     createImpactParticles(p.x, p.y, p.color);
                     projectiles.splice(i, 1);
                     break;
                 }
 
                 if (p.type === "poison") {
-                    createPoisonZone(p.x, p.y, p.areaRadius, p.damage || 5, p.poisonDuration, p.tickDelay);
+                    createPoisonZone(p.x, p.y, p.areaRadius, p.damage || 5, p.poisonDuration, p.tickDelay, p.sourceTower);
                     createImpactParticles(p.x, p.y, p.color);
                     projectiles.splice(i, 1);
                     break;
@@ -2159,31 +2207,40 @@ function splitEnemy(enemy) {
     }
 }
 
-function createSlowZone(x, y, radius, slowAmount, duration) {
+function createSlowZone(x, y, radius, slowAmount, duration, sourceTower = null) {
     const now = getGameTime();
+    const expiresAt = now + duration;
 
     slowZones.push({
         x,
         y,
         radius,
         createdAt: now,
-        expiresAt: now + duration,
-        slowAmount
+        expiresAt,
+        slowAmount,
+        sourceTower
     });
+
+    if (sourceTower) {
+        // La torre de hielo puede volver a castear recién cuando a su propia zona
+        // le quede la mitad de duración. Esto evita el spam infinito al mejorarla.
+        sourceTower.activeSlowZoneNextShotAt = now + duration / 2;
+    }
 
     enemies.forEach(enemy => {
         const dist = Math.hypot(enemy.x - x, enemy.y - y);
 
         if (dist <= radius && !enemy.slowImmune) {
             enemy.slowMultiplier = slowAmount;
-            enemy.slowUntil = now + duration;
+            enemy.slowUntil = expiresAt;
         }
     });
 }
 
 
-function createPoisonZone(x, y, radius, damage, duration, tickDelay) {
+function createPoisonZone(x, y, radius, damage, duration, tickDelay, sourceTower = null) {
     const now = getGameTime();
+    const expiresAt = now + duration;
 
     poisonZones.push({
         x,
@@ -2192,8 +2249,15 @@ function createPoisonZone(x, y, radius, damage, duration, tickDelay) {
         damage,
         tickDelay,
         nextTickAt: now,
-        expiresAt: now + duration
+        expiresAt,
+        sourceTower
     });
+
+    if (sourceTower) {
+        // La torre de veneno no puede crear otra zona hasta que termine
+        // la zona activa que generó esta misma torre.
+        sourceTower.activePoisonZoneExpiresAt = expiresAt;
+    }
 
     effects.push({
         type: "circle",
@@ -2725,9 +2789,12 @@ function endRun() {
 }
 
 function healOverTime(totalHeal, durationMs) {
+    if (!gameStarted || !player || totalHeal <= 0) return;
+
     const ticks = 10;
-    const healPerTick = totalHeal / ticks;
     const tickDuration = durationMs / ticks;
+    const startHp = player.hp;
+    const maxFinalHp = Math.min(player.maxHp, startHp + totalHeal);
     let currentTick = 0;
 
     const interval = setInterval(() => {
@@ -2736,17 +2803,18 @@ function healOverTime(totalHeal, durationMs) {
             return;
         }
 
-        if (player.hp >= player.maxHp) {
-            clearInterval(interval);
-            return;
-        }
-
-        player.hp = Math.min(player.maxHp, player.hp + healPerTick);
-        player.hp = Math.round(player.hp);
-
         currentTick++;
+        const progress = Math.min(1, currentTick / ticks);
 
-        if (currentTick >= ticks) clearInterval(interval);
+        // En vez de sumar decimales y redondear cada tick, calculamos contra
+        // el HP inicial. Así la poción cura exactamente lo que promete, salvo
+        // cuando choca contra la vida máxima.
+        player.hp = Math.min(player.maxHp, startHp + (maxFinalHp - startHp) * progress);
+
+        if (currentTick >= ticks || player.hp >= player.maxHp) {
+            player.hp = maxFinalHp;
+            clearInterval(interval);
+        }
 
         updateHud();
     }, tickDuration);
@@ -3152,7 +3220,8 @@ function activateAlphaTesterBadge(name) {
 
 
 function drawTowerPlacementTiles() {
-    if (!pendingTowerPurchase) return;
+    const movingTower = pendingTowerMoveIndex !== null ? towers[pendingTowerMoveIndex] : null;
+    if (!pendingTowerPurchase && !movingTower) return;
 
     const hoveredTile = getTowerTileAt(mousePosition.x, mousePosition.y);
 
@@ -3166,7 +3235,7 @@ function drawTowerPlacementTiles() {
     });
 
     towerSlots.forEach(tile => {
-        const occupied = isTowerTileOccupied(tile);
+        const occupied = isTowerTileOccupied(tile, movingTower);
         const hovered = hoveredTile === tile;
 
         ctx.fillStyle = occupied
@@ -3189,8 +3258,8 @@ function drawTowerPlacementTiles() {
     ctx.font = "bold 12px Arial";
     ctx.fillText("Línea de barricada", RESERVED_BARRICADE_LANE_X - 48, 26);
 
-    const def = getTowerDefinition(pendingTowerPurchase.defKey);
-    if (def && hoveredTile && isTowerTileAvailable(hoveredTile)) {
+    const def = pendingTowerPurchase ? getTowerDefinition(pendingTowerPurchase.defKey) : movingTower;
+    if (def && hoveredTile && isTowerTileAvailable(hoveredTile, movingTower)) {
         ctx.strokeStyle = "rgba(255,255,255,0.35)";
         ctx.lineWidth = 2;
         ctx.beginPath();
@@ -3199,10 +3268,11 @@ function drawTowerPlacementTiles() {
     }
 
     ctx.fillStyle = "rgba(0,0,0,0.72)";
-    ctx.fillRect(145, 12, 610, 34);
+    ctx.fillRect(145, 12, 650, 34);
     ctx.fillStyle = "white";
     ctx.font = "bold 15px Arial";
-    ctx.fillText("Elegí un tile verde para colocar la torreta · Columna naranja reservada para barricada", 160, 34);
+    const actionText = movingTower ? "Elegí un tile verde para mover la torreta" : "Elegí un tile verde para colocar la torreta";
+    ctx.fillText(`${actionText} · Click derecho/Esc cancela`, 160, 34);
 }
 
 function drawTowers() {
@@ -3611,6 +3681,7 @@ function renderTowerSlotsPanel() {
                 <strong>Slot ${index + 1}: ${tower.name}</strong><br>
                 <small>Nivel ${tower.level} · Pos: ${Math.round(tower.x)},${Math.round(tower.y)} · Gastado: ${Math.round(tower.spent || 0)} · Venta: ${refund}</small>${buffText}<br>
                 <button type="button" data-tower-action="upgrade" data-index="${index}" ${coins < tower.upgradeCost ? "disabled" : ""}>Mejorar (${tower.upgradeCost})</button>
+                <button type="button" data-tower-action="move" data-index="${index}">Mover</button>
                 <button type="button" data-tower-action="sell" data-index="${index}" class="dangerMiniButton">Vender (${refund})</button>
             </div>`;
     }).join("");
@@ -3977,15 +4048,17 @@ canvas.addEventListener("mousemove", event => {
 canvas.addEventListener("mousedown", event => {
     updateMousePosition(event);
 
-    if (pendingTowerPurchase) {
+    if (pendingTowerPurchase || pendingTowerMoveIndex !== null) {
         event.preventDefault();
         if (event.button === 2) {
             cancelTowerPlacement(true);
+            cancelTowerMove(true);
             return;
         }
 
         const tile = getTowerTileAt(mousePosition.x, mousePosition.y);
-        finishTowerPlacement(tile);
+        if (pendingTowerPurchase) finishTowerPlacement(tile);
+        else finishTowerMove(tile);
         return;
     }
 
@@ -3993,9 +4066,10 @@ canvas.addEventListener("mousedown", event => {
 });
 
 canvas.addEventListener("contextmenu", event => {
-    if (pendingTowerPurchase) {
+    if (pendingTowerPurchase || pendingTowerMoveIndex !== null) {
         event.preventDefault();
         cancelTowerPlacement(true);
+        cancelTowerMove(true);
     }
 });
 
@@ -4024,8 +4098,9 @@ window.addEventListener("keydown", event => {
     }
 
     if (event.code === "Escape") {
-        if (pendingTowerPurchase) {
+        if (pendingTowerPurchase || pendingTowerMoveIndex !== null) {
             cancelTowerPlacement(true);
+            cancelTowerMove(true);
             return;
         }
 
@@ -4336,6 +4411,7 @@ function handleTowerSlotActionClick(event) {
 
     if (!Number.isInteger(index)) return;
     if (action === "upgrade") upgradeTower(index);
+    if (action === "move") beginTowerMove(index);
     if (action === "sell") sellTower(index);
 }
 
