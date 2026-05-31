@@ -1295,6 +1295,32 @@ function getHealerSupportTarget(healer) {
     return { type: "ally", x: best.x, y: best.y, radius: Math.max(70, (healer.healRadius || 180) * 0.42), object: best };
 }
 
+function updateHealerMovementOnly(enemy, mainTarget) {
+    // El clérigo/sanador es 100% soporte: sigue aliados y cura, pero nunca ataca
+    // al jugador, torres, murallas ni base. Esto evita daño fantasma cuando llega
+    // al radio de su objetivo aliado.
+    enemy.target = "ally";
+    enemy.isAttacking = false;
+
+    if (!mainTarget || mainTarget.type !== "ally") return false;
+
+    const dx = mainTarget.x - enemy.x;
+    const dy = mainTarget.y - enemy.y;
+    const distance = Math.hypot(dx, dy);
+    const keepDistance = Math.max(42, Math.min(95, (enemy.healRadius || 180) * 0.36));
+
+    if (distance > keepDistance) {
+        const nx = dx / (distance || 1);
+        const ny = dy / (distance || 1);
+        enemy.x += nx * enemy.speed * gameSpeed * frameScale;
+        enemy.y += ny * enemy.speed * gameSpeed * frameScale;
+        enemy.x = clampWorldX(enemy.x, enemy.radius + 3);
+        enemy.y = clampWorldY(enemy.y, enemy.radius + 3);
+    }
+
+    return true;
+}
+
 function getBlockingBarricadeForEnemy(enemy, targetX, targetY) {
     let best = null;
     let bestDist = Infinity;
@@ -1814,6 +1840,58 @@ function getRepeatCountForCurrentWave() {
     return getRepeatCountForWave(getRepeatTargetWave());
 }
 
+function updateAutoRepeatWaveButton() {
+    if (!autoRepeatWaveBtn) return;
+    const targetWave = getRepeatTargetWave();
+    const repeats = getRepeatCountForWave(targetWave);
+    const atLimit = repeats >= REPEAT_LIMIT_PER_WAVE;
+
+    if (atLimit && autoRepeatWaveMode) {
+        autoRepeatWaveMode = false;
+    }
+
+    autoRepeatWaveBtn.textContent = autoRepeatWaveMode
+        ? `Auto repetir ON (${repeats}/${REPEAT_LIMIT_PER_WAVE})`
+        : `Auto repetir OFF`;
+    autoRepeatWaveBtn.classList.toggle("autoActive", autoRepeatWaveMode);
+    autoRepeatWaveBtn.disabled = atLimit && !waveInProgress && buildPhaseActive;
+    autoRepeatWaveBtn.title = atLimit
+        ? "Esta oleada ya alcanzó el máximo de 3 repeticiones."
+        : "Repite automáticamente la misma oleada durante el descanso. Máximo 3 veces por oleada.";
+}
+
+function canAutoRepeatTargetWave(targetWave = getRepeatTargetWave()) {
+    return autoRepeatWaveMode && getRepeatCountForWave(targetWave) < REPEAT_LIMIT_PER_WAVE;
+}
+
+function prepareRepeatWave(targetWave, source = "manual") {
+    const normalizedWave = Math.max(1, Math.floor(Number(targetWave) || 1));
+    const repeats = getRepeatCountForWave(normalizedWave);
+    if (repeats >= REPEAT_LIMIT_PER_WAVE) {
+        if (source === "auto") {
+            autoRepeatWaveMode = false;
+            updateAutoRepeatWaveButton();
+        }
+        return false;
+    }
+
+    repeatCountsByWave[normalizedWave] = Math.min(REPEAT_LIMIT_PER_WAVE, repeats + 1);
+    isRepeatingWave = true;
+    currentGoldMultiplier = 0.5;
+    buildPhaseActive = false;
+    buildPhaseEndsAt = 0;
+    pausedBuildPhaseRemainingMs = 0;
+    wave = normalizedWave;
+    closeShop();
+    clearStructureSelection();
+    cancelBarricadePlacement(false);
+    cancelTrapPlacement(false);
+    cancelTowerPlacement(false);
+    showCenterMessage(`${source === "auto" ? "Auto repitiendo" : "Repitiendo"} oleada ${normalizedWave}`, 900);
+    startWave();
+    return true;
+}
+
 function applyTowerBuffs() {
     towers.forEach(t => {
         t.damageMultiplier = 1;
@@ -2081,7 +2159,7 @@ function buildSavePayload() {
         gameSpeed,
         speedIndex,
         autoMode,
-        autoRepeatWaveMode: false,
+        autoRepeatWaveMode,
         buildPhaseActive,
         buildPhaseRemainingMs: buildPhaseActive ? Math.max(0, buildPhaseEndsAt - performance.now()) : 0,
         waveInProgress,
@@ -2196,7 +2274,7 @@ function restoreSavedRun() {
         gameSpeed = Number(data.gameSpeed) || 1;
         speedIndex = Number(data.speedIndex) || 0;
         autoMode = Boolean(data.autoMode);
-        autoRepeatWaveMode = false;
+        autoRepeatWaveMode = Boolean(data.autoRepeatWaveMode);
         buildPhaseActive = Boolean(data.buildPhaseActive);
         buildPhaseEndsAt = buildPhaseActive ? performance.now() + Math.max(1000, Math.min(BUILD_PHASE_DURATION, Number(data.buildPhaseRemainingMs) || BUILD_PHASE_DURATION)) : 0;
         pausedBuildPhaseRemainingMs = 0;
@@ -3292,16 +3370,11 @@ function updateBossProjectiles() {
 
         const hitBarricade = getBossProjectileBarricadeHit(p);
         if (hitBarricade) {
-            if (player && player.shieldCharges > 0) {
-                player.shieldCharges--;
-                createImpactParticles(hitBarricade.x, p.y, "#9be7ff");
-                showCenterMessage("¡Proyectil bloqueado!", 550);
-            } else {
-                damageBarricade(hitBarricade, p.damage, p);
-                if (p.burn) createFireZone(hitBarricade.x, p.y, 54, Math.max(1.2, p.damage * 0.28), 1800, 450);
-                createImpactParticles(hitBarricade.x, p.y, p.color);
-                addDamageText(hitBarricade.x + 20, p.y - 18, p.damage * BOSS_BARRICADE_DAMAGE_MULTIPLIER, false, "#ffb36b");
-            }
+            // El escudo del jugador solo bloquea golpes al jugador, no impactos a murallas.
+            damageBarricade(hitBarricade, p.damage, p);
+            if (p.burn) createFireZone(hitBarricade.x, p.y, 54, Math.max(1.2, p.damage * 0.28), 1800, 450);
+            createImpactParticles(hitBarricade.x, p.y, p.color);
+            addDamageText(hitBarricade.x + 20, p.y - 18, p.damage * BOSS_BARRICADE_DAMAGE_MULTIPLIER, false, "#ffb36b");
             bossProjectiles.splice(i, 1);
             continue;
         }
@@ -3649,6 +3722,11 @@ function updateEnemies() {
     for (let i = enemies.length - 1; i >= 0; i--) {
         const enemy = enemies[i];
         const mainTarget = getEnemyMainTarget(enemy);
+
+        if (enemy.special === "healer" && updateHealerMovementOnly(enemy, mainTarget)) {
+            continue;
+        }
+
         const blockingBarricade = enemy.special === "healer" ? null : getBlockingBarricadeForEnemy(enemy, mainTarget.x, mainTarget.y);
 
         if (blockingBarricade) {
@@ -3657,14 +3735,8 @@ function updateEnemies() {
 
             if (enemy.bossVariant === "dvd") {
                 if (now - enemy.lastAttackTime >= enemy.attackDelay) {
-                    if (player.shieldCharges > 0) {
-                        player.shieldCharges--;
-                        createImpactParticles(blockingBarricade.x, blockingBarricade.y, "#9be7ff");
-                        showCenterMessage("¡Rebote bloqueado!", 600);
-                    } else {
-                        damageBarricade(blockingBarricade, enemy.damageToDefense, enemy);
-                        createImpactParticles(blockingBarricade.x, blockingBarricade.y, "#9be7ff");
-                    }
+                    damageBarricade(blockingBarricade, enemy.damageToDefense, enemy);
+                    createImpactParticles(blockingBarricade.x, blockingBarricade.y, "#9be7ff");
                     enemy.lastAttackTime = now;
                     enemy.x += (enemy.x < mainTarget.x ? -1 : 1) * 120;
                     enemy.dvdVy *= -1;
@@ -3680,14 +3752,9 @@ function updateEnemies() {
             }
 
             if (now - enemy.lastAttackTime >= enemy.attackDelay) {
-                if (player.shieldCharges > 0) {
-                    player.shieldCharges--;
-                    createImpactParticles(blockingBarricade.x, blockingBarricade.y, "#9be7ff");
-                    showCenterMessage("¡Golpe bloqueado!", 600);
-                } else {
-                    damageBarricade(blockingBarricade, enemy.damageToDefense, enemy);
-                    createImpactParticles(blockingBarricade.x, blockingBarricade.y, "#d6a05f");
-                }
+                // Si el enemigo está pegando a una barricada, no debe consumir escudo ni contar como golpe al jugador.
+                damageBarricade(blockingBarricade, enemy.damageToDefense, enemy);
+                createImpactParticles(blockingBarricade.x, blockingBarricade.y, "#d6a05f");
                 enemy.lastAttackTime = now;
             }
             continue;
@@ -3875,6 +3942,12 @@ function killEnemy(index) {
     waveStats.score += enemy.scoreValue;
 
     createDeathExplosion(enemy.x, enemy.y, enemy.color, enemy.isBoss ? 28 : 14);
+
+    if (enemy.isBoss) {
+        // Al morir un jefe, sus balas activas desaparecen para que no queden flotando
+        // ni sigan dañando después de derrotarlo.
+        bossProjectiles = [];
+    }
 
     if (enemy.special === "exploder") {
         explodeEnemyOnDeath(enemy);
@@ -4350,6 +4423,15 @@ function beginNextWaveFromBuildPhase(source = "timer") {
     gameRunning = false;
     waveInProgress = false;
 
+    const repeatTargetWave = getRepeatTargetWave();
+    if (canAutoRepeatTargetWave(repeatTargetWave)) {
+        updateBuildPhaseUI();
+        prepareRepeatWave(repeatTargetWave, "auto");
+        buildPhaseStartingWave = false;
+        autoSaveRun(true);
+        return;
+    }
+
     updateBuildPhaseUI();
     showCenterMessage(`Oleada ${wave}`, 900);
     startWave();
@@ -4389,8 +4471,14 @@ function updateBuildPhaseUI() {
     if (!skipBuildPhaseBtn) return;
     skipBuildPhaseBtn.classList.toggle("hidden", !buildPhaseActive);
     if (buildPhaseActive) {
-        skipBuildPhaseBtn.textContent = `Próxima oleada en ${formatBuildPhaseTime(getBuildPhaseRemainingMs())} · Saltar`;
+        const targetWave = getRepeatTargetWave();
+        const repeats = getRepeatCountForWave(targetWave);
+        const nextLabel = canAutoRepeatTargetWave(targetWave)
+            ? `Auto repetir ${targetWave} (${repeats}/${REPEAT_LIMIT_PER_WAVE})`
+            : `Próxima oleada en ${formatBuildPhaseTime(getBuildPhaseRemainingMs())}`;
+        skipBuildPhaseBtn.textContent = `${nextLabel} · Saltar`;
     }
+    updateAutoRepeatWaveButton();
 }
 
 function showWaveSummary() {
@@ -4858,6 +4946,64 @@ function drawBase() {
     ctx.restore();
 }
 
+function drawBarricadeThorns(rect, dims, orientation = "horizontal") {
+    ctx.save();
+    ctx.fillStyle = "#ff9f55";
+
+    const isVertical = orientation === "vertical";
+    const count = isVertical
+        ? Math.max(3, Math.floor(dims.height / 18))
+        : Math.max(3, Math.floor(dims.width / 18));
+
+    if (isVertical) {
+        const step = dims.height / count;
+        const centerX = rect.left + dims.width / 2;
+        const spikeLength = Math.min(12, Math.max(7, dims.width * 0.55));
+        const halfBase = Math.min(7, step * 0.32);
+
+        for (let i = 0; i < count; i++) {
+            const y = rect.top + step * (i + 0.5);
+
+            // Pinchos hacia ambos lados para que la muralla vertical también se lea rotada.
+            ctx.beginPath();
+            ctx.moveTo(centerX, y - halfBase);
+            ctx.lineTo(centerX + spikeLength, y);
+            ctx.lineTo(centerX, y + halfBase);
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.moveTo(centerX, y - halfBase);
+            ctx.lineTo(centerX - spikeLength, y);
+            ctx.lineTo(centerX, y + halfBase);
+            ctx.fill();
+        }
+    } else {
+        const step = dims.width / count;
+        const centerY = rect.top + dims.height / 2;
+        const spikeLength = Math.min(12, Math.max(7, dims.height * 0.55));
+        const halfBase = Math.min(7, step * 0.32);
+
+        for (let i = 0; i < count; i++) {
+            const x = rect.left + step * (i + 0.5);
+
+            // Pinchos hacia arriba y abajo para la muralla horizontal.
+            ctx.beginPath();
+            ctx.moveTo(x - halfBase, centerY);
+            ctx.lineTo(x, centerY - spikeLength);
+            ctx.lineTo(x + halfBase, centerY);
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.moveTo(x - halfBase, centerY);
+            ctx.lineTo(x, centerY + spikeLength);
+            ctx.lineTo(x + halfBase, centerY);
+            ctx.fill();
+        }
+    }
+
+    ctx.restore();
+}
+
 function drawBarricade() {
     (barricades || []).forEach(b => {
         if (!b.active || b.hp <= 0) return;
@@ -4877,16 +5023,7 @@ function drawBarricade() {
         ctx.strokeRect(rect.left, rect.top, dims.width, dims.height);
 
         if (b.thorns) {
-            ctx.fillStyle = "#ff9f55";
-            for (let i = 0; i < 5; i++) {
-                const tx = rect.left + 10 + i * (dims.width / 5);
-                const ty = rect.top + dims.height / 2;
-                ctx.beginPath();
-                ctx.moveTo(tx, ty);
-                ctx.lineTo(tx + 10, ty - 9);
-                ctx.lineTo(tx + 20, ty);
-                ctx.fill();
-            }
+            drawBarricadeThorns(rect, dims, b.orientation || "horizontal");
         }
 
         const hpPercent = b.maxHp > 0 ? Math.max(0, b.hp / b.maxHp) : 0;
@@ -5861,6 +5998,8 @@ function updateTowerShopVisibility() {
         repeatWaveBtn.title = "Repite la misma oleada con 50% de oro. Máximo 3 repeticiones por oleada.";
     }
 
+    updateAutoRepeatWaveButton();
+
     if (nextWaveBtn) {
         nextWaveBtn.classList.toggle("hidden", waveInProgress);
         nextWaveBtn.disabled = waveInProgress;
@@ -6485,6 +6624,10 @@ function findBarricadeAtWorldPoint(x, y) {
 }
 
 function handleStructureClickSelection(event) {
+    // Durante una oleada no se pueden seleccionar ni tocar estructuras: evita paneles,
+    // toggles de puertas y clicks accidentales que traban la pelea.
+    if (!buildPhaseActive || waveInProgress) return false;
+
     const tower = findTowerAtWorldPoint(mousePosition.x, mousePosition.y);
     if (tower) {
         selectStructure("tower", tower, event.ctrlKey || event.metaKey);
@@ -6671,6 +6814,11 @@ function sellTowerSelected() {
 }
 
 function handleStructurePanelAction(action) {
+    if (!buildPhaseActive || waveInProgress) {
+        clearStructureSelection();
+        showCenterMessage("Solo podés editar estructuras en descanso", 900);
+        return;
+    }
     if (action === "upgrade") {
         if (selectedStructureType === "tower") upgradeTowerSelected();
         else upgradeBarricadeSelected();
@@ -6730,6 +6878,8 @@ canvas.addEventListener("mousemove", event => {
 });
 
 function handleCanvasPlacementPointer(event) {
+    event.preventDefault();
+    canvas.blur();
     updateMousePosition(event);
 
     if (pendingBarricadePlacement) {
@@ -6793,6 +6943,10 @@ canvas.addEventListener("contextmenu", event => {
 });
 
 window.addEventListener("mouseup", () => {
+    isMouseDown = false;
+});
+
+canvas.addEventListener("mouseleave", () => {
     isMouseDown = false;
 });
 
@@ -7838,28 +7992,28 @@ repeatWaveBtn.addEventListener("click", () => {
     }
 
     const targetWave = getRepeatTargetWave();
-    const repeats = getRepeatCountForWave(targetWave);
-    if (repeats >= REPEAT_LIMIT_PER_WAVE) {
+    if (!prepareRepeatWave(targetWave, "manual")) {
         showCenterMessage("Límite de repeticiones", 900);
         updateHud();
-        return;
     }
-
-    repeatCountsByWave[targetWave] = Math.min(REPEAT_LIMIT_PER_WAVE, repeats + 1);
-    isRepeatingWave = true;
-    currentGoldMultiplier = 0.5;
-    buildPhaseActive = false;
-    buildPhaseEndsAt = 0;
-    pausedBuildPhaseRemainingMs = 0;
-    wave = targetWave;
-    closeShop();
-    clearStructureSelection();
-    cancelBarricadePlacement(false);
-    cancelTrapPlacement(false);
-    cancelTowerPlacement(false);
-    showCenterMessage(`Repitiendo oleada ${targetWave}`, 900);
-    startWave();
 });
+
+if (autoRepeatWaveBtn) {
+    autoRepeatWaveBtn.addEventListener("click", () => {
+        const targetWave = getRepeatTargetWave();
+        const repeats = getRepeatCountForWave(targetWave);
+        if (!autoRepeatWaveMode && repeats >= REPEAT_LIMIT_PER_WAVE) {
+            showCenterMessage("Límite de auto-repetición", 900);
+            updateAutoRepeatWaveButton();
+            return;
+        }
+
+        autoRepeatWaveMode = !autoRepeatWaveMode;
+        showCenterMessage(autoRepeatWaveMode ? "AUTO REPETIR ON" : "AUTO REPETIR OFF", 750);
+        updateAutoRepeatWaveButton();
+        autoSaveRun(true);
+    });
+}
 
 
 nextWaveBtn.addEventListener("click", () => {
