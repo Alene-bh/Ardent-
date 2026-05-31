@@ -17,15 +17,34 @@ const BASE_RADIUS = 34;
 const PLAYER_SURVIVAL_SPEED = 1.75;
 const ENEMY_SURVIVAL_SPEED_MULTIPLIER = 0.72;
 const BUILD_PHASE_DURATION = 30000;
+const BOSS_SPAWN_ZONE = {
+    x: WORLD_WIDTH / 2,
+    y: WORLD_HEIGHT / 2,
+    // Zona central de jefes: cuadrada, aprox. 2 barricadas por lado.
+    width: BARRICADE_LENGTH * 2,
+    height: BARRICADE_LENGTH * 2
+};
+const TRAP_COLLISION_RADIUS = 18;
+const TOWER_ROTATION_STEP = Math.PI / 2;
+
+// Balance infinito: las oleadas deben volverse más intensas, no más largas.
+// El último enemigo debería spawnear siempre dentro de esta ventana aproximada.
+const MAX_WAVE_SPAWN_DURATION = 58000;
+const MIN_WAVE_SPAWN_INTERVAL = 85;
+const MAX_LATE_WAVE_ENEMIES = 430;
+const MAX_BOSS_WAVE_ENEMIES = 300;
 let buildPhaseActive = false;
 let buildPhaseEndsAt = 0;
+let pausedBuildPhaseRemainingMs = 0;
 let buildPhaseStartingWave = false;
 let camera = { x: 0, y: 0 };
 let baseCore = null;
 let basePlaced = false;
 let pendingBasePlacement = false;
 let pendingBarricadePlacement = null;
+let pendingTrapPlacement = null;
 let barricadeBuildOrientation = "horizontal";
+let towerBuildRotation = 0;
 let canvasPixelRatio = 1;
 
 function resizeCanvasForDisplay() {
@@ -70,6 +89,10 @@ let audioSettings = {
     sfxEnabled: localStorage.getItem("tdSfxEnabled") !== "false",
     musicVolume: Number(localStorage.getItem("tdMusicVolume")) || 0.28,
     sfxVolume: Number(localStorage.getItem("tdSfxVolume")) || 0.28
+};
+
+let visualSettings = {
+    minimapScale: Math.max(0.65, Math.min(1.35, Number(localStorage.getItem("tdMinimapScale")) || 0.82))
 };
 
 const defaultControlBindings = {
@@ -213,6 +236,40 @@ function applyAudioSettingsToUI() {
     syncMusicState();
 }
 
+
+function saveVisualSettings() {
+    localStorage.setItem("tdMinimapScale", visualSettings.minimapScale);
+}
+
+function formatMinimapScaleLabel(value = visualSettings.minimapScale) {
+    return `${Math.round(Number(value) * 100)}%`;
+}
+
+function applyVisualSettingsToUI() {
+    const value = String(visualSettings.minimapScale);
+    if (menuMinimapSize) menuMinimapSize.value = value;
+    if (pauseMinimapSize) pauseMinimapSize.value = value;
+    if (menuMinimapSizeText) menuMinimapSizeText.textContent = formatMinimapScaleLabel();
+    if (pauseMinimapSizeText) pauseMinimapSizeText.textContent = formatMinimapScaleLabel();
+}
+
+function updateMinimapScale(value) {
+    const next = Math.max(0.65, Math.min(1.35, Number(value) || 0.82));
+    visualSettings.minimapScale = next;
+    saveVisualSettings();
+    applyVisualSettingsToUI();
+}
+
+function getBottomUiGameHeight() {
+    const bottomUi = document.getElementById("bottomGameUi");
+    const stage = document.getElementById("playStage");
+    if (!bottomUi || !stage || bottomUi.classList.contains("hidden")) return 76;
+    const stageRect = stage.getBoundingClientRect();
+    const uiRect = bottomUi.getBoundingClientRect();
+    if (!stageRect.height || !uiRect.height) return 76;
+    return Math.max(58, Math.min(135, (uiRect.height / stageRect.height) * GAME_HEIGHT));
+}
+
 function shouldMusicBePlaying() {
     return (
         soundEnabled &&
@@ -346,6 +403,7 @@ const upgradeBarricadeBtn = document.getElementById("upgradeBarricadeBtn");
 const buyRegenBarricadeBtn = document.getElementById("buyRegenBarricadeBtn");
 const buyExplosiveBarricadeBtn = document.getElementById("buyExplosiveBarricadeBtn");
 const buyThornsBarricadeBtn = document.getElementById("buyThornsBarricadeBtn");
+const buyDoorBarricadeBtn = document.getElementById("buyDoorBarricadeBtn");
 const barricadeSlot1Btn = document.getElementById("barricadeSlot1Btn");
 const barricadeSlot2Btn = document.getElementById("barricadeSlot2Btn");
 
@@ -365,6 +423,7 @@ const buyTower7Btn = document.getElementById("buyTower7Btn");
 const buyTower8Btn = document.getElementById("buyTower8Btn");
 const buyTower9Btn = document.getElementById("buyTower9Btn");
 const buyTower10Btn = document.getElementById("buyTower10Btn");
+const buyTower11Btn = document.getElementById("buyTower11Btn");
 const towerSlotsPanel = document.getElementById("towerSlotsPanel");
 const towerLimitText = document.getElementById("towerLimitText");
 const buyTowerSlotBtn = document.getElementById("buyTowerSlotBtn");
@@ -417,6 +476,7 @@ const upgradeBarricadeCostText = document.getElementById("upgradeBarricadeCostTe
 const regenBarricadeCostText = document.getElementById("regenBarricadeCostText");
 const explosiveBarricadeCostText = document.getElementById("explosiveBarricadeCostText");
 const thornsBarricadeCostText = document.getElementById("thornsBarricadeCostText");
+const doorBarricadeCostText = document.getElementById("doorBarricadeCostText");
 const barricadeTierText = document.getElementById("barricadeTierText");
 
 const tower1CostText = document.getElementById("tower1CostText");
@@ -446,6 +506,12 @@ const tower7CostText = document.getElementById("tower7CostText");
 const tower8CostText = document.getElementById("tower8CostText");
 const tower9CostText = document.getElementById("tower9CostText");
 const tower10CostText = document.getElementById("tower10CostText");
+const tower11CostText = document.getElementById("tower11CostText");
+const tower12CostText = document.getElementById("tower12CostText");
+const trapSnareCostText = document.getElementById("trapSnareCostText");
+const trapBleedCostText = document.getElementById("trapBleedCostText");
+const buyTrapSnareBtn = document.getElementById("buyTrapSnareBtn");
+const buyTrapBleedBtn = document.getElementById("buyTrapBleedBtn");
 
 const bombCostText = document.getElementById("bombCostText");
 const freezeCostText = document.getElementById("freezeCostText");
@@ -473,6 +539,11 @@ const pauseMusicToggle = document.getElementById("pauseMusicToggle");
 const pauseMusicVolume = document.getElementById("pauseMusicVolume");
 const pauseSfxToggle = document.getElementById("pauseSfxToggle");
 const pauseSfxVolume = document.getElementById("pauseSfxVolume");
+
+const menuMinimapSize = document.getElementById("menuMinimapSize");
+const menuMinimapSizeText = document.getElementById("menuMinimapSizeText");
+const pauseMinimapSize = document.getElementById("pauseMinimapSize");
+const pauseMinimapSizeText = document.getElementById("pauseMinimapSizeText");
 
 const speedBtn = document.getElementById("speedBtn");
 const autoModeBtn = document.getElementById("autoModeBtn");
@@ -531,6 +602,7 @@ let selectedBarricadeSlotIndex = 0;
 let savedRunAvailable = false;
 let runDisqualifiedFromLeaderboard = false;
 let leaderboardDisqualificationReason = "";
+let beginnerCommandUsed = false;
 
 const alphaTesterCommands = {
     aza: "Aza",
@@ -560,6 +632,9 @@ let fireZones;
 let damageTexts;
 let particles;
 let effects;
+let traps;
+let titanShards;
+let pendingTitanReward = null;
 let inventory;
 let inventoryCooldownUntil;
 
@@ -633,11 +708,29 @@ let selectedStructureIds = [];
 let selectedStructureType = null;
 
 const BARRICADE_BUILD_COSTS = {
-    standard: 100,
-    regen: 180,
-    explosive: 220,
-    thorns: 130
+    standard: 62,
+    regen: 112,
+    explosive: 135,
+    thorns: 85,
+    door: 48
 };
+const trapDefinitions = {
+    snare: { key: "trapSnare", name: "Trampa de agarre", cost: 55, color: "#9be7ff", radius: 24, duration: 1500 },
+    bleed: { key: "trapBleed", name: "Trampa serrada", cost: 75, color: "#ff6b6b", radius: 26, slowAmount: 0.45, slowDuration: 500, bleedDuration: 3000 }
+};
+const BARRICADE_UNLOCK_WAVE = 3;
+const TOWER_REPAIR_COST_FACTOR = 0.28;
+const TITAN_SHARD_RADIUS = 15;
+const TITAN_REWARD_OPTION_COUNT = 3;
+const TITAN_VARIANTS = [
+    { key: "burn", name: "Titán Ígneo", color: "#18040a", hpMultiplier: 0.92, speedMultiplier: 0.9, cooldown: 2600 },
+    { key: "dash", name: "Titán Embestida", color: "#050505", hpMultiplier: 1.45, speedMultiplier: 0.78, cooldown: 3600 },
+    { key: "split", name: "Titán Trino", color: "#160016", hpMultiplier: 0.95, speedMultiplier: 0.86, cooldown: 1800 }
+];
+
+function pickTitanVariant() {
+    return TITAN_VARIANTS[Math.floor(Math.random() * TITAN_VARIANTS.length)];
+}
 
 
 function createReservedBarricadeLaneTiles() {
@@ -681,6 +774,7 @@ function getBarricadeKindLabel(kind = "standard") {
     if (kind === "regen") return "Regenerativa";
     if (kind === "explosive") return "Explosiva";
     if (kind === "thorns") return "Espinas";
+    if (kind === "door") return "Puerta";
     return "Estándar";
 }
 
@@ -693,10 +787,25 @@ function ensureBarricadeEconomy(b) {
     return b;
 }
 
+function getTowerBaseMaxHp(t) {
+    if (!t) return 55;
+    if (t.type === "blade") return 95;
+    if (t.type === "spear") return 74;
+    if (t.type === "ballista") return 78;
+    if (t.type === "buffer") return 52;
+    if (t.type === "lucky") return 42;
+    if (t.type === "slow" || t.type === "poison") return 62;
+    return 58;
+}
+
 function ensureTowerEconomy(t) {
     if (!t) return t;
     t.spent = Number(t.spent) || Number(t.cost) || 0;
     t.upgradeCost = Number(t.upgradeCost) || Math.floor((Number(t.cost) || 100) * 1.35);
+    const fallbackMaxHp = getTowerBaseMaxHp(t) + Math.max(0, (Number(t.level) || 1) - 1) * (t.type === "blade" ? 18 : 8);
+    if (!Number.isFinite(Number(t.maxHp)) || Number(t.maxHp) <= 0) t.maxHp = fallbackMaxHp;
+    if (!Number.isFinite(Number(t.hp)) || Number(t.hp) <= 0) t.hp = t.maxHp;
+    t.hp = Math.min(t.maxHp, t.hp);
     return t;
 }
 
@@ -718,6 +827,46 @@ function isBuildRectInsideWorld(rect) {
     return rect.left >= 0 && rect.right <= WORLD_WIDTH && rect.top >= 0 && rect.bottom <= WORLD_HEIGHT;
 }
 
+function getBossSpawnRect(padding = 0) {
+    return {
+        left: BOSS_SPAWN_ZONE.x - BOSS_SPAWN_ZONE.width / 2 - padding,
+        right: BOSS_SPAWN_ZONE.x + BOSS_SPAWN_ZONE.width / 2 + padding,
+        top: BOSS_SPAWN_ZONE.y - BOSS_SPAWN_ZONE.height / 2 - padding,
+        bottom: BOSS_SPAWN_ZONE.y + BOSS_SPAWN_ZONE.height / 2 + padding
+    };
+}
+
+function isRectInBossSpawnZone(rect, padding = 0) {
+    return rectsOverlap(rect, getBossSpawnRect(padding), 0);
+}
+
+function isCircleInBossSpawnZone(x, y, radius = 0, padding = 0) {
+    return circleIntersectsRect(x, y, radius, getBossSpawnRect(padding), 0);
+}
+
+function canStartBuildPlacement(kindLabel = "construir") {
+    if (!buildPhaseActive) {
+        showCenterMessage(`Solo podés ${kindLabel} durante los 30s antes de la próxima oleada`, 1200);
+        return false;
+    }
+    return true;
+}
+
+function getDirectionVector(rotation = 0) {
+    return { x: Math.cos(rotation || 0), y: Math.sin(rotation || 0) };
+}
+
+function rotateTowerObject(tower) {
+    if (!tower) return;
+    tower.rotation = ((Number(tower.rotation) || 0) + TOWER_ROTATION_STEP) % (Math.PI * 2);
+}
+
+function getRotationLabel(rotation = 0) {
+    const normalized = ((rotation % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+    const index = Math.round(normalized / TOWER_ROTATION_STEP) % 4;
+    return ["derecha", "abajo", "izquierda", "arriba"][index];
+}
+
 
 function circleIntersectsRect(cx, cy, radius, rect, padding = 0) {
     const closestX = Math.max(rect.left - padding, Math.min(rect.right + padding, cx));
@@ -736,22 +885,38 @@ function buildCircleOverlapsEnemy(x, y, radius, padding = 10) {
 function isTowerPositionOccupied(x, y, ignoredTower = null) {
     const towerRect = getEntityRect({ x, y, radius: TOWER_COLLISION_RADIUS });
     if (!isBuildRectInsideWorld(towerRect)) return true;
+    if (isRectInBossSpawnZone(towerRect, 8)) return true;
     if (baseCore && Math.hypot(x - baseCore.x, y - baseCore.y) < BASE_RADIUS + TOWER_COLLISION_RADIUS + 18) return true;
     if (player && Math.hypot(x - player.x, y - player.y) < 38) return true;
     if (buildCircleOverlapsEnemy(x, y, TOWER_COLLISION_RADIUS, 10)) return true;
     if ((towers || []).some(t => t !== ignoredTower && rectsOverlap(towerRect, getEntityRect({ x: t.x, y: t.y, radius: TOWER_COLLISION_RADIUS }), 6))) return true;
-    if ((barricades || []).some(b => b.active && b.hp > 0 && rectsOverlap(towerRect, getEntityRect({ ...b, isBuildBarricade: true }), 6))) return true;
+    if ((barricades || []).some(b => b.active && b.hp > 0 && !b.isOpen && rectsOverlap(towerRect, getEntityRect({ ...b, isBuildBarricade: true }), 6))) return true;
+    if ((traps || []).some(trap => Math.hypot(trap.x - x, trap.y - y) < TRAP_COLLISION_RADIUS + TOWER_COLLISION_RADIUS + 6)) return true;
     return false;
 }
 
 function isBarricadePositionValid(x, y, orientation = barricadeBuildOrientation, ignoredBarricade = null) {
     const rect = getEntityRect({ x, y, orientation, isBuildBarricade: true });
     if (!isBuildRectInsideWorld(rect)) return false;
+    if (isRectInBossSpawnZone(rect, 8)) return false;
     if (baseCore && rectsOverlap(rect, getEntityRect({ x: baseCore.x, y: baseCore.y, radius: BASE_RADIUS }), 10)) return false;
     if (player && rectsOverlap(rect, getEntityRect({ x: player.x, y: player.y, radius: 22 }), 8)) return false;
     if (buildRectOverlapsEnemy(rect, 10)) return false;
     if ((towers || []).some(t => rectsOverlap(rect, getEntityRect({ x: t.x, y: t.y, radius: TOWER_COLLISION_RADIUS }), 6))) return false;
-    if ((barricades || []).some(b => b !== ignoredBarricade && b.active && b.hp > 0 && rectsOverlap(rect, getEntityRect({ ...b, isBuildBarricade: true }), 4))) return false;
+    if ((barricades || []).some(b => b !== ignoredBarricade && b.active && b.hp > 0 && !b.isOpen && rectsOverlap(rect, getEntityRect({ ...b, isBuildBarricade: true }), 4))) return false;
+    if ((traps || []).some(trap => circleIntersectsRect(trap.x, trap.y, TRAP_COLLISION_RADIUS + 6, rect, 0))) return false;
+    return true;
+}
+
+function isTrapPositionValid(x, y) {
+    const trapRect = getEntityRect({ x, y, radius: TRAP_COLLISION_RADIUS });
+    if (!isBuildRectInsideWorld(trapRect)) return false;
+    if (isCircleInBossSpawnZone(x, y, TRAP_COLLISION_RADIUS, 8)) return false;
+    if (player && Math.hypot(x - player.x, y - player.y) < TRAP_COLLISION_RADIUS + 24) return false;
+    if (buildCircleOverlapsEnemy(x, y, TRAP_COLLISION_RADIUS, 8)) return false;
+    if ((towers || []).some(t => Math.hypot(t.x - x, t.y - y) < TOWER_COLLISION_RADIUS + TRAP_COLLISION_RADIUS + 6)) return false;
+    if ((barricades || []).some(b => b.active && b.hp > 0 && !b.isOpen && circleIntersectsRect(x, y, TRAP_COLLISION_RADIUS + 4, getEntityRect({ ...b, isBuildBarricade: true }), 0))) return false;
+    if ((traps || []).some(trap => Math.hypot(trap.x - x, trap.y - y) < TRAP_COLLISION_RADIUS * 2 + 4)) return false;
     return true;
 }
 
@@ -766,7 +931,7 @@ function isTowerTileOccupied(tile, ignoredTower = null) {
 
 const towerDefinitions = [
     { key: "tower1", name: "Básica", type: "basic", cost: 70, upgradeCost: 100, damage: 0.75, range: 230, fireDelay: 900, color: "cyan", label: "B" },
-    { key: "tower2", name: "Rápida", type: "rapid", cost: 105, upgradeCost: 145, damage: 0.42, range: 215, fireDelay: 360, color: "#b9ff7a", label: "R" },
+    { key: "tower2", name: "Rápida", type: "rapid", cost: 40, upgradeCost: 80, damage: 0.30, range: 205, fireDelay: 315, color: "#b9ff7a", label: "R", maxHp: 36 },
     { key: "tower3", name: "Perforante", type: "pierce", cost: 160, upgradeCost: 180, damage: 2.2, range: 250, fireDelay: 1200, color: "#ffdf6b", label: "P" },
     { key: "tower4", name: "Hielo", type: "slow", cost: 220, upgradeCost: 240, damage: 0, range: 260, fireDelay: 2600, color: "#9be7ff", label: "H", slowAmount: 0.45, slowDuration: 1600, areaRadius: 58 },
     { key: "tower5", name: "Doble", type: "double", cost: 260, upgradeCost: 300, damage: 0.65, range: 235, fireDelay: 1050, color: "#ff8bd1", label: "D" },
@@ -774,7 +939,9 @@ const towerDefinitions = [
     { key: "tower7", name: "Ballesta", type: "ballista", cost: 360, upgradeCost: 420, damage: 9.5, range: 320, fireDelay: 2850, color: "#c58b4b", label: "X" },
     { key: "tower8", name: "Sanguijuela", type: "siphon", cost: 420, upgradeCost: 460, damage: 0.55, drainAmount: 2.2, range: 245, fireDelay: 850, color: "#b81444", label: "S" },
     { key: "tower9", name: "Buffer", type: "buffer", cost: 620, upgradeCost: 600, damage: 0, range: 180, fireDelay: 999999, color: "#b78cff", label: "+", buffDamage: 0.10, buffSpeed: 0.10 },
-    { key: "tower10", name: "Lucky Block", type: "lucky", cost: 240, upgradeCost: 0, damage: 0, range: 0, fireDelay: 999999, color: "#ffe28a", label: "?" }
+    { key: "tower10", name: "Lucky Block", type: "lucky", cost: 240, upgradeCost: 0, damage: 0, range: 0, fireDelay: 999999, color: "#ffe28a", label: "?" },
+    { key: "tower11", name: "Cuchilla", type: "blade", cost: 90, upgradeCost: 120, damage: 0.55, range: 62, fireDelay: 620, color: "#d9d9d9", label: "C", maxHp: 95 },
+    { key: "tower12", name: "Lancera", type: "spear", cost: 135, upgradeCost: 165, damage: 1.05, range: 155, fireDelay: 980, color: "#d7b06a", label: "L", maxHp: 74, laneWidth: 38 }
 ];
 
 const enemyTypes = [
@@ -834,17 +1001,17 @@ const specialEnemyTypes = [
     {
         name: "Clérigo Verde",
         color: "#73ff9f",
-        hp: 7,
-        speed: 0.48,
-        reward: 14,
+        hp: 12,
+        speed: 0.50,
+        reward: 18,
         score: 30,
         damageToDefense: 1,
         attackDelay: 1200,
         special: "healer",
         unlockWave: 8,
-        healRadius: 135,
-        healAmount: 2,
-        healDelay: 1600
+        healRadius: 220,
+        healAmount: 3,
+        healDelay: 1350
     },
     {
         name: "Kamikaze Carmesí",
@@ -876,15 +1043,15 @@ const specialEnemyTypes = [
     {
         name: "Hechicero Blanco",
         color: "#ece6ff",
-        hp: 10,
-        speed: 0.34,
-        reward: 24,
+        hp: 15,
+        speed: 0.22,
+        reward: 30,
         score: 48,
         damageToDefense: 2,
         attackDelay: 1250,
         special: "summoner",
         unlockWave: 17,
-        summonDelay: 4300
+        summonDelay: 5200
     },
     {
         name: "Inmune al hielo",
@@ -1008,7 +1175,9 @@ function createFreeBarricade(kind = "standard", x = player ? player.x + 85 : WOR
     b.isBuildBarricade = true;
     b.buildCost = getBarricadeBaseCost(kind);
     b.spent = b.buildCost;
-    b.upgradeCost = scaleBarricadeCost(b.buildCost, kind === "standard" ? 1.42 : 1.34);
+    b.upgradeCost = scaleBarricadeCost(b.buildCost, kind === "standard" ? 1.42 : kind === "door" ? 1.32 : 1.34);
+    b.isDoor = kind === "door";
+    b.isOpen = false;
     return b;
 }
 
@@ -1024,15 +1193,53 @@ function getNearestActiveBarricadeTo(x, y) {
 }
 
 function getEnemyMainTarget(enemy) {
+    // El sanador ahora prioriza seguir aliados heridos o grupos de enemigos; no busca destruir estructuras.
+    if (enemy && enemy.special === "healer") {
+        const supportTarget = getHealerSupportTarget(enemy);
+        if (supportTarget) return supportTarget;
+    }
+
     // Modo supervivencia: el objetivo real sos vos. Sin núcleo/base.
     return { type: "player", x: player.x, y: player.y, radius: 23, object: player };
+}
+
+function getHealerSupportTarget(healer) {
+    let best = null;
+    let bestScore = -Infinity;
+
+    (enemies || []).forEach(other => {
+        if (!other || other === healer || other.hp <= 0 || other.special === "healer") return;
+        const dist = Math.hypot(other.x - healer.x, other.y - healer.y);
+        const missingRatio = Math.max(0, 1 - other.hp / Math.max(1, other.maxHp || 1));
+        const allyWeight = other.isBoss ? 5 : other.special ? 2.2 : 1;
+        const score = missingRatio * 120 * allyWeight - dist * 0.12 + Math.min(35, (healer.healRadius || 180) / Math.max(1, dist));
+        if (score > bestScore) {
+            bestScore = score;
+            best = other;
+        }
+    });
+
+    if (!best) {
+        (enemies || []).forEach(other => {
+            if (!other || other === healer || other.hp <= 0 || other.special === "healer") return;
+            const dist = Math.hypot(other.x - healer.x, other.y - healer.y);
+            const score = -dist + (other.isBoss ? 350 : other.special ? 120 : 0);
+            if (score > bestScore) {
+                bestScore = score;
+                best = other;
+            }
+        });
+    }
+
+    if (!best) return null;
+    return { type: "ally", x: best.x, y: best.y, radius: Math.max(70, (healer.healRadius || 180) * 0.42), object: best };
 }
 
 function getBlockingBarricadeForEnemy(enemy, targetX, targetY) {
     let best = null;
     let bestDist = Infinity;
     (barricades || []).forEach(b => {
-        if (!b.active || b.hp <= 0) return;
+        if (!b.active || b.hp <= 0 || b.isOpen) return;
         const rect = getEntityRect({ ...b, isBuildBarricade: true });
         const closestX = Math.max(rect.left, Math.min(rect.right, enemy.x));
         const closestY = Math.max(rect.top, Math.min(rect.bottom, enemy.y));
@@ -1243,19 +1450,20 @@ function formatMissingMoney(value) {
 }
 
 function scaleStatCost(currentCost, earlyMultiplier) {
-    return scaleShopCost(currentCost, earlyMultiplier, 1.10, 1200);
+    // Early mantiene el precio actual, late suaviza fuerte para que el juego pueda escalar a miles de oleadas.
+    return scaleShopCost(currentCost, earlyMultiplier, 1.055, 1600);
 }
 
 function scaleConsumableCost(currentCost, earlyMultiplier) {
-    return scaleShopCost(currentCost, earlyMultiplier, 1.08, 850);
+    return scaleShopCost(currentCost, earlyMultiplier, 1.035, 1200);
 }
 
 function scaleBarricadeCost(currentCost, earlyMultiplier) {
-    return scaleShopCost(currentCost, earlyMultiplier, 1.10, 1000);
+    return scaleShopCost(currentCost, earlyMultiplier, 1.050, 1500);
 }
 
 function scaleTowerUpgradeCost(currentCost) {
-    return scaleShopCost(currentCost, 1.42, 1.12, 950);
+    return scaleShopCost(currentCost, 1.42, 1.055, 1500);
 }
 
 function clampTowerSlotLimit(value) {
@@ -1285,6 +1493,18 @@ function isTowerTileOccupied(tile, ignoredTower = null) {
     return towers.some(tower => tower !== ignoredTower && Math.hypot(tower.x - tile.x, tower.y - tile.y) < 2);
 }
 
+function isTrapPositionValid(x, y) {
+    const trapRect = getEntityRect({ x, y, radius: TRAP_COLLISION_RADIUS });
+    if (!isBuildRectInsideWorld(trapRect)) return false;
+    if (isCircleInBossSpawnZone(x, y, TRAP_COLLISION_RADIUS, 8)) return false;
+    if (player && Math.hypot(x - player.x, y - player.y) < TRAP_COLLISION_RADIUS + 24) return false;
+    if (buildCircleOverlapsEnemy(x, y, TRAP_COLLISION_RADIUS, 8)) return false;
+    if ((towers || []).some(t => Math.hypot(t.x - x, t.y - y) < TOWER_COLLISION_RADIUS + TRAP_COLLISION_RADIUS + 6)) return false;
+    if ((barricades || []).some(b => b.active && b.hp > 0 && !b.isOpen && circleIntersectsRect(x, y, TRAP_COLLISION_RADIUS + 4, getEntityRect({ ...b, isBuildBarricade: true }), 0))) return false;
+    if ((traps || []).some(trap => Math.hypot(trap.x - x, trap.y - y) < TRAP_COLLISION_RADIUS * 2 + 4)) return false;
+    return true;
+}
+
 function getTowerTileAt(x, y) {
     const point = getSnappedBuildPoint(x, y);
     return { x: point.x, y: point.y, size: TOWER_TILE_SIZE };
@@ -1303,11 +1523,14 @@ function createTowerFromDefinition(def, paidCost = def.cost, tile = null) {
         owned: true,
         x: tile.x,
         y: tile.y,
+        rotation: Number(def.rotation) || towerBuildRotation || 0,
         slotIndex: towers.length,
         level: 1,
         lastShotTime: 0,
         spent: paidCost,
         upgradeCost: def.upgradeCost || Math.floor(def.cost * 1.35),
+        maxHp: def.maxHp || getTowerBaseMaxHp(def),
+        hp: def.maxHp || getTowerBaseMaxHp(def),
         damageMultiplier: 1,
         fireDelayMultiplier: 1,
         activePoisonZoneExpiresAt: 0,
@@ -1316,6 +1539,7 @@ function createTowerFromDefinition(def, paidCost = def.cost, tile = null) {
 }
 
 function beginTowerPlacement(defKey) {
+    if (!canStartBuildPlacement("construir torres")) return;
     if (towers.length >= towerSlotLimit) {
         showCenterMessage("Límite de slots de torre alcanzado", 900);
         return;
@@ -1332,6 +1556,7 @@ function beginTowerPlacement(defKey) {
 
     clearStructureSelection();
     pendingTowerPurchase = { defKey, price };
+    towerBuildRotation = 0;
     pendingBarricadePlacement = null;
     closeShop();
     waveSummaryPanel.classList.add("hidden");
@@ -1430,6 +1655,7 @@ function finishTowerPlacement(tile) {
         showCenterMessage(`${def.name} colocada · seguí colocando o cancelá`, 900);
     }
 
+    def = { ...def, rotation: towerBuildRotation };
     const tower = createTowerFromDefinition(def, price, tile);
     if (!tower) {
         coins += price;
@@ -1455,14 +1681,30 @@ function finishTowerPlacement(tile) {
 function getLateGameGoldMultiplier() {
     if (wave <= 45) return 1;
 
-    // Acompaña el escalado de precios sin regalar el early-game.
-    // En late sube de forma suave para que las mejoras no pidan 4+ oleadas completas.
-    const lateProgress = (wave - 45) / 55;
-    return Math.min(6.5, 1 + Math.pow(lateProgress, 1.22));
+    // Curva infinita suave: no explota en early, pero en oleadas muy altas acompaña upgrades largos.
+    const lateWave = wave - 45;
+    const logBoost = Math.log10(lateWave + 10);
+    const rootBoost = Math.pow(lateWave / 55, 0.42);
+    return 1 + logBoost * 0.55 + rootBoost * 1.15;
+}
+
+function getWaveRewardBonus() {
+    if (wave < 40) return Math.floor(wave * 1.5);
+    return Math.floor(40 * 1.5 + Math.pow(wave - 39, 0.74) * 2.4);
+}
+
+function getEnemyRewardForWave(baseReward) {
+    if (wave < 40) return baseReward + Math.floor(wave * 0.45);
+    return baseReward + Math.floor(18 + Math.pow(wave - 39, 0.72) * 0.95);
+}
+
+function getBossRewardForWave(baseReward) {
+    if (wave < 40) return baseReward + wave * 7;
+    return baseReward + Math.floor(220 + Math.pow(wave, 0.76) * 6.8);
 }
 
 function getGoldAmount(amount) {
-    return Math.ceil(amount * currentGoldMultiplier * getLateGameGoldMultiplier());
+    return Math.ceil(amount * currentGoldMultiplier * getLateGameGoldMultiplier() * (player?.goldBonusMultiplier || 1));
 }
 
 function clampRepeatCount(value) {
@@ -1520,8 +1762,11 @@ function updateTowerSlotIndexes() {
 
 function applyPlayerLifeSteal(damageDone, source = "player") {
     if (!player || source !== "player") return;
-    if (getGameTime() > player.lifeStealUntil) return;
-    const heal = Math.max(0, damageDone * (player.lifeStealPercent || 0));
+    const activePotionSteal = getGameTime() <= (player.lifeStealUntil || 0) ? (player.lifeStealPercent || 0) : 0;
+    const permanentSteal = player.permanentLifeStealPercent || 0;
+    const totalSteal = activePotionSteal + permanentSteal;
+    if (totalSteal <= 0) return;
+    const heal = Math.max(0, damageDone * totalSteal);
     if (heal > 0) healDefensesAndPlayer(heal);
 }
 
@@ -1531,6 +1776,7 @@ function createDefaultState() {
     score = 0;
     runDisqualifiedFromLeaderboard = false;
     leaderboardDisqualificationReason = "";
+    beginnerCommandUsed = false;
 
     player = {
         x: WORLD_WIDTH / 2,
@@ -1550,6 +1796,10 @@ function createDefaultState() {
         attackSpeedUntil: 0,
         lifeStealUntil: 0,
         lifeStealPercent: 0,
+        permanentLifeStealPercent: 0,
+        goldBonusMultiplier: 1,
+        bleedPowerMultiplier: 1,
+        passiveDoubleShotChance: 0,
         immortal: false,
         alphaTester: Boolean(alphaTesterName),
         developer: Boolean(developerName),
@@ -1618,7 +1868,7 @@ function createDefaultState() {
             name: "Rayo",
             key: codeToLabel(controlBindings.lightning),
             owned: false,
-            cost: 650,
+            cost: 980,
             cooldown: 22000,
             lastUsed: -Infinity
         },
@@ -1626,7 +1876,7 @@ function createDefaultState() {
             name: "Meteorito",
             key: codeToLabel(controlBindings.meteor),
             owned: false,
-            cost: 950,
+            cost: 1750,
             cooldown: 30000,
             lastUsed: -Infinity
         },
@@ -1634,7 +1884,7 @@ function createDefaultState() {
             name: "Eclipse",
             key: codeToLabel(controlBindings.eclipse),
             owned: false,
-            cost: 1350,
+            cost: 2800,
             cooldown: 42000,
             lastUsed: -Infinity
         }
@@ -1658,10 +1908,11 @@ function createDefaultState() {
         regenBarricade: 180,
         explosiveBarricade: 220,
         thornsBarricade: 130,
+        doorBarricade: 48,
         towerSlot: FIRST_TOWER_SLOT_COST,
 
         tower1: 70,
-        tower2: 105,
+        tower2: 40,
         tower3: 160,
         tower4: 220,
         tower5: 260,
@@ -1669,7 +1920,11 @@ function createDefaultState() {
         tower7: 360,
         tower8: 420,
         tower9: 620,
-        tower10: 240
+        tower10: 240,
+        tower11: 90,
+        tower12: 135,
+        trapSnare: 55,
+        trapBleed: 75
     };
 
     enemies = [];
@@ -1681,6 +1936,9 @@ function createDefaultState() {
     damageTexts = [];
     particles = [];
     effects = [];
+    traps = [];
+    titanShards = [];
+    pendingTitanReward = null;
     inventory = createEmptyInventory();
     inventoryCooldownUntil = 0;
 
@@ -1729,6 +1987,7 @@ function buildSavePayload() {
         score,
         runDisqualifiedFromLeaderboard,
         leaderboardDisqualificationReason,
+        beginnerCommandUsed,
         gameTime,
         gameSpeed,
         speedIndex,
@@ -1765,6 +2024,9 @@ function buildSavePayload() {
         damageTexts,
         particles,
         effects,
+        traps,
+        titanShards,
+        pendingTitanReward,
         inventory,
         inventoryCooldownUntil,
         waveStats,
@@ -1839,6 +2101,7 @@ function restoreSavedRun() {
         score = Number(data.score) || 0;
         runDisqualifiedFromLeaderboard = Boolean(data.runDisqualifiedFromLeaderboard);
         leaderboardDisqualificationReason = String(data.leaderboardDisqualificationReason || "").slice(0, 80);
+        beginnerCommandUsed = Boolean(data.beginnerCommandUsed);
         gameTime = Number(data.gameTime) || 0;
         gameSpeed = Number(data.gameSpeed) || 1;
         speedIndex = Number(data.speedIndex) || 0;
@@ -1846,6 +2109,7 @@ function restoreSavedRun() {
         autoRepeatWaveMode = false;
         buildPhaseActive = Boolean(data.buildPhaseActive);
         buildPhaseEndsAt = buildPhaseActive ? performance.now() + Math.max(1000, Math.min(BUILD_PHASE_DURATION, Number(data.buildPhaseRemainingMs) || BUILD_PHASE_DURATION)) : 0;
+        pausedBuildPhaseRemainingMs = 0;
         waveInProgress = buildPhaseActive ? false : Boolean(data.waveInProgress);
         gameRunning = Boolean(!buildPhaseActive && data.gameRunning && data.waveInProgress);
         enemiesToSpawn = Number(data.enemiesToSpawn) || 0;
@@ -1881,7 +2145,15 @@ function restoreSavedRun() {
         updateTowerSlotIndexes();
 
         abilities = data.abilities || abilities;
+        if (abilities.lightning) abilities.lightning.cost = Math.max(Number(abilities.lightning.cost) || 0, 980);
+        if (abilities.meteor) abilities.meteor.cost = Math.max(Number(abilities.meteor.cost) || 0, 1750);
+        if (abilities.eclipse) abilities.eclipse.cost = Math.max(Number(abilities.eclipse.cost) || 0, 2800);
         costs = data.costs || costs;
+        if (!Number.isFinite(Number(costs.tower11))) costs.tower11 = 90;
+        if (!Number.isFinite(Number(costs.tower12))) costs.tower12 = 135;
+        if (!Number.isFinite(Number(costs.doorBarricade))) costs.doorBarricade = getBarricadeBaseCost("door");
+        if (!Number.isFinite(Number(costs.trapSnare))) costs.trapSnare = trapDefinitions.snare.cost;
+        if (!Number.isFinite(Number(costs.trapBleed))) costs.trapBleed = trapDefinitions.bleed.cost;
         if (!Number.isFinite(Number(costs.towerSlot))) costs.towerSlot = getTowerSlotCostForLimit(towerSlotLimit);
         applyControlsToAbilities();
 
@@ -1894,6 +2166,9 @@ function restoreSavedRun() {
         damageTexts = Array.isArray(data.damageTexts) ? data.damageTexts : [];
         particles = Array.isArray(data.particles) ? data.particles : [];
         effects = Array.isArray(data.effects) ? data.effects : [];
+        traps = Array.isArray(data.traps) ? data.traps : [];
+        titanShards = Array.isArray(data.titanShards) ? data.titanShards : [];
+        pendingTitanReward = data.pendingTitanReward || null;
         inventory = normalizeInventory(data.inventory);
         inventoryCooldownUntil = Number(data.inventoryCooldownUntil) || 0;
         waveStats = data.waveStats || { kills: 0, gold: 0, score: 0, bonus: 0 };
@@ -2036,8 +2311,8 @@ function startWave() {
     enemiesToSpawn = getEnemiesAmountForWave();
     enemiesSpawned = 0;
 
-    spawnInterval = Math.max(260, 900 - wave * 16);
-    lastSpawnTime = getGameTime();
+    spawnInterval = getSpawnIntervalForWave(enemiesToSpawn);
+    lastSpawnTime = getGameTime() - spawnInterval;
     doomSpawnedThisWave = false;
 
     closeShop();
@@ -2060,8 +2335,24 @@ function startWave() {
 }
 
 function getEnemiesAmountForWave() {
-    if (isBossWave()) return 10 + wave * 2;
-    return 12 + wave * 4;
+    // La cantidad sube hasta cierto punto y luego se vuelve densidad/calidad, no duración infinita.
+    const earlyCount = 12 + wave * 4;
+    if (wave <= 35) return isBossWave() ? Math.max(18, Math.floor(earlyCount * 0.75)) : earlyCount;
+
+    const lateCount = Math.floor(150 + Math.log10(wave + 1) * 42 + Math.pow(wave - 35, 0.36) * 18);
+    const capped = Math.min(MAX_LATE_WAVE_ENEMIES, lateCount);
+
+    if (isBossWave()) {
+        return Math.min(MAX_BOSS_WAVE_ENEMIES, Math.max(65, Math.floor(capped * 0.72)));
+    }
+
+    return capped;
+}
+
+function getSpawnIntervalForWave(amount) {
+    const naturalInterval = Math.max(MIN_WAVE_SPAWN_INTERVAL, 900 - wave * 16);
+    const maxDurationInterval = Math.max(MIN_WAVE_SPAWN_INTERVAL, Math.floor(MAX_WAVE_SPAWN_DURATION / Math.max(1, amount)));
+    return Math.min(naturalInterval, maxDurationInterval);
 }
 
 function isBossWave() {
@@ -2083,14 +2374,23 @@ function getEnemyTypeForWave() {
     const specialPool = specialEnemyTypes.filter(type => wave >= type.unlockWave);
 
     if (specialPool.length > 0 && Math.random() < getSpecialEnemyChance()) {
-        return specialPool[Math.floor(Math.random() * specialPool.length)];
+        const weighted = [];
+        specialPool.forEach(type => {
+            const weight = type.special === "healer" ? 0.38 : type.special === "summoner" ? 0.85 : 1;
+            const count = Math.max(1, Math.round(weight * 10));
+            for (let i = 0; i < count; i++) weighted.push(type);
+        });
+        return weighted[Math.floor(Math.random() * weighted.length)];
     }
 
     return normalPool[Math.floor(Math.random() * normalPool.length)];
 }
 
 function getSpecialEnemyChance() {
-    return Math.min(0.38, 0.13 + wave * 0.008);
+    if (wave < 35) return Math.min(0.38, 0.13 + wave * 0.008);
+    if (wave < 100) return Math.min(0.62, 0.34 + (wave - 35) * 0.0042);
+    if (wave < 350) return Math.min(0.82, 0.62 + (wave - 100) * 0.0008);
+    return 0.90;
 }
 
 function getRandomSpawnPoint() {
@@ -2102,14 +2402,41 @@ function getRandomSpawnPoint() {
     return { x: -margin, y: Math.random() * WORLD_HEIGHT };
 }
 
+function getBossSpawnPoint() {
+    return {
+        x: BOSS_SPAWN_ZONE.x + (Math.random() - 0.5) * BOSS_SPAWN_ZONE.width * 0.35,
+        y: BOSS_SPAWN_ZONE.y + (Math.random() - 0.5) * BOSS_SPAWN_ZONE.height * 0.35
+    };
+}
+
+function getEnemyHpScaling() {
+    if (wave <= 45) return 1 + wave * 0.13;
+
+    // Late infinito: vida sube mucho, pero con curva sublineal para evitar números absurdos demasiado pronto.
+    const earlyPart = 1 + 45 * 0.13;
+    const latePart = Math.pow(wave - 45, 0.78) * 0.34;
+    const deepLatePart = Math.log10(wave + 1) * Math.max(0, wave - 300) * 0.0009;
+    return earlyPart + latePart + deepLatePart;
+}
+
+function getEnemySpeedScaling() {
+    if (wave <= 60) return wave * 0.012;
+    return 60 * 0.012 + Math.min(1.15, Math.log10(wave - 50) * 0.16);
+}
+
+function getWaveScoreBonus() {
+    if (wave < 40) return wave;
+    return Math.floor(40 + Math.pow(wave - 39, 0.78) * 4);
+}
+
 function createEnemyFromType(type, options = {}) {
-    const hpScaling = options.ignoreScaling ? 1 : 1 + wave * 0.13;
-    const speedScaling = options.ignoreScaling ? 0 : wave * 0.012;
+    const hpScaling = options.ignoreScaling ? 1 : getEnemyHpScaling();
+    const speedScaling = options.ignoreScaling ? 0 : getEnemySpeedScaling();
     const maxHp = Math.max(1, Math.ceil(type.hp * hpScaling));
     const speed = (type.speed + speedScaling) * ENEMY_SURVIVAL_SPEED_MULTIPLIER;
     const spawnPoint = options.spawnPoint || getRandomSpawnPoint();
 
-    return {
+    const enemy = {
         x: options.x ?? spawnPoint.x,
         y: options.y ?? spawnPoint.y,
         radius: options.radius ?? 18,
@@ -2119,8 +2446,8 @@ function createEnemyFromType(type, options = {}) {
         baseSpeed: speed,
         originalBaseSpeed: speed,
         speed,
-        reward: options.reward ?? type.reward + Math.floor(wave * 0.45),
-        scoreValue: options.scoreValue ?? type.score + wave,
+        reward: options.reward ?? getEnemyRewardForWave(type.reward),
+        scoreValue: options.scoreValue ?? type.score + getWaveScoreBonus(),
         damageToDefense: type.damageToDefense,
         attackDelay: type.attackDelay,
         originalAttackDelay: type.attackDelay,
@@ -2152,8 +2479,31 @@ function createEnemyFromType(type, options = {}) {
         lastInvisTime: getGameTime() + Math.random() * 1400,
         invisibleUntil: 0,
         untargetable: false,
-        isMini: Boolean(options.isMini)
+        isMini: Boolean(options.isMini),
+        healerFollowTargetId: null
     };
+
+    if (enemy.special === "doombringer") {
+        const variant = options.titanVariant || pickTitanVariant();
+        enemy.titanVariant = variant.key;
+        enemy.name = variant.name;
+        enemy.color = variant.color;
+        enemy.maxHp = Math.ceil(enemy.maxHp * variant.hpMultiplier * (options.titanCopy ? 0.62 : 1));
+        enemy.hp = enemy.maxHp;
+        enemy.baseSpeed *= variant.speedMultiplier;
+        enemy.originalBaseSpeed = enemy.baseSpeed;
+        enemy.speed = enemy.baseSpeed;
+        enemy.radius = options.radius ?? (options.titanCopy ? 28 : 34);
+        enemy.lastTitanSpecialAt = getGameTime() + 1200 + Math.random() * 900;
+        enemy.titanSpecialCooldown = variant.cooldown;
+        enemy.titanSplitDone = Boolean(options.titanCopy);
+        enemy.titanCopy = Boolean(options.titanCopy);
+        enemy.damageToDefense = options.titanCopy ? 5 : 8;
+        enemy.attackDelay = options.titanCopy ? 1650 : 1450;
+        enemy.originalAttackDelay = enemy.attackDelay;
+    }
+
+    return enemy;
 }
 
 function shouldSpawnDoomEnemy() {
@@ -2162,7 +2512,7 @@ function shouldSpawnDoomEnemy() {
     // Nunca aparece en dos oleadas consecutivas. Desde late-game se vuelve
     // más probable, pero sigue siendo una amenaza rara y especial.
     if (lastDoomWave === wave - 1) return false;
-    return Math.random() < Math.min(0.12, 0.018 + (wave - 30) * 0.0025);
+    return Math.random() < Math.min(0.22, 0.018 + Math.pow(wave - 30, 0.55) * 0.006);
 }
 
 function spawnEnemy() {
@@ -2183,8 +2533,26 @@ function spawnEnemy() {
         if (type && type.special === "doombringer") type = enemyTypes[Math.floor(Math.random() * getUnlockedEnemyCount())];
     }
 
+    if (type && type.special === "healer") {
+        const maxHealers = Math.max(1, Math.min(2, Math.floor(enemiesToSpawn / 32)));
+        const currentHealers = enemies.filter(e => e.special === "healer").length;
+        if (currentHealers >= maxHealers) {
+            type = enemyTypes[Math.floor(Math.random() * getUnlockedEnemyCount())];
+        }
+    }
+
     enemies.push(createEnemyFromType(type));
     enemiesSpawned++;
+}
+
+function getBossHpScaling() {
+    if (wave <= 45) return 1 + wave * 0.28;
+    return 1 + 45 * 0.28 + Math.pow(wave - 45, 0.82) * 0.72;
+}
+
+function getBossSpeedScaling() {
+    if (wave <= 80) return wave * 0.0045;
+    return 80 * 0.0045 + Math.min(0.75, Math.log10(wave - 70) * 0.08);
 }
 
 function spawnMiniEnemy(x, y) {
@@ -2212,11 +2580,11 @@ function spawnMiniEnemy(x, y) {
 
 function spawnBoss() {
     const type = getBossTypeForWave();
-    const hpScaling = 1 + wave * 0.28;
+    const hpScaling = getBossHpScaling();
     const maxHp = Math.ceil(type.hp * hpScaling);
-    const speed = (type.speed + wave * 0.0045) * ENEMY_SURVIVAL_SPEED_MULTIPLIER;
+    const speed = (type.speed + getBossSpeedScaling()) * ENEMY_SURVIVAL_SPEED_MULTIPLIER;
 
-    const spawn = getRandomSpawnPoint();
+    const spawn = getBossSpawnPoint();
     enemies.push({
         x: spawn.x,
         y: spawn.y,
@@ -2227,8 +2595,8 @@ function spawnBoss() {
         baseSpeed: speed,
         originalBaseSpeed: speed,
         speed,
-        reward: type.reward + wave * 7,
-        scoreValue: type.score + wave * 16,
+        reward: getBossRewardForWave(type.reward),
+        scoreValue: type.score + getWaveScoreBonus() * 10,
         damageToDefense: type.damageToDefense,
         attackDelay: type.attackDelay,
         originalAttackDelay: type.attackDelay,
@@ -2292,7 +2660,7 @@ function shoot(targetX, targetY, owner = "player", tower = null) {
         const baseAngle = Math.atan2(targetY - player.y, targetX - player.x);
         const isCrit = Math.random() < player.critChance;
         const damage = isCrit ? player.damage * player.critMultiplier : player.damage;
-        const doubleShotActive = now < player.doubleShotUntil;
+        const doubleShotActive = now < player.doubleShotUntil || Math.random() < (player.passiveDoubleShotChance || 0);
         const offsets = doubleShotActive ? [-0.085, 0.085] : [0];
 
         offsets.forEach(offset => {
@@ -2414,7 +2782,7 @@ function resolvePlayerBarricadeCollision(oldX, oldY) {
     if (!player) return;
     const playerRect = getEntityRect({ x: player.x, y: player.y, radius: 22 });
     for (const b of (barricades || [])) {
-        if (!b.active || b.hp <= 0) continue;
+        if (!b.active || b.hp <= 0 || b.isOpen) continue;
         const rect = getEntityRect({ ...b, isBuildBarricade: true });
         if (rectsOverlap(playerRect, rect, 2)) {
             player.x = oldX;
@@ -2456,13 +2824,92 @@ function updatePlayerMovement() {
     player.y += dy * speed;
     clampPlayerToPlayableArea();
     resolvePlayerBarricadeCollision(oldX, oldY);
+    resolvePlayerEnemyCollision(oldX, oldY);
+}
+
+function updateSpearTower(tower) {
+    const now = getGameTime();
+    const delay = getTowerDelay(tower);
+    if (now - tower.lastShotTime < delay) return;
+
+    const dir = getDirectionVector(tower.rotation || 0);
+    const range = tower.range || 150;
+    const laneWidth = tower.laneWidth || 38;
+    let bestEnemy = null;
+    let bestForward = Infinity;
+
+    enemies.forEach(enemy => {
+        if (enemy.untargetable || enemy.hp <= 0) return;
+        const rx = enemy.x - tower.x;
+        const ry = enemy.y - tower.y;
+        const forward = rx * dir.x + ry * dir.y;
+        if (forward < 0 || forward > range + enemy.radius) return;
+        const side = Math.abs(rx * -dir.y + ry * dir.x);
+        if (side <= laneWidth / 2 + enemy.radius && forward < bestForward) {
+            bestEnemy = enemy;
+            bestForward = forward;
+        }
+    });
+
+    if (!bestEnemy) return;
+
+    tower.lastShotTime = now;
+    const damage = getTowerDamage(tower);
+    enemies.forEach(enemy => {
+        if (enemy.untargetable || enemy.hp <= 0) return;
+        const rx = enemy.x - tower.x;
+        const ry = enemy.y - tower.y;
+        const forward = rx * dir.x + ry * dir.y;
+        if (forward < 0 || forward > range + enemy.radius) return;
+        const side = Math.abs(rx * -dir.y + ry * dir.x);
+        if (side <= laneWidth / 2 + enemy.radius) {
+            damageEnemy(enemy, damage, false, tower.color, "tower");
+            enemy.hitFlash = 0.75;
+        }
+    });
+
+    effects.push({ type: "spear", x: tower.x, y: tower.y, dx: dir.x, dy: dir.y, length: range, width: laneWidth, life: 10, color: tower.color });
+    for (let i = enemies.length - 1; i >= 0; i--) {
+        if (enemies[i].hp <= 0) killEnemy(i);
+    }
 }
 
 function updateTowers() {
     applyTowerBuffs();
 
     towers.forEach(tower => {
-        if (!tower.owned || tower.type === "buffer") return;
+        ensureTowerEconomy(tower);
+        if (!tower.owned || tower.hp <= 0 || tower.type === "buffer") return;
+
+        if (tower.type === "spear") {
+            updateSpearTower(tower);
+            return;
+        }
+
+        if (tower.type === "blade") {
+            const now = getGameTime();
+            const delay = getTowerDelay(tower);
+            if (now - tower.lastShotTime >= delay) {
+                let hitCount = 0;
+                enemies.forEach(enemy => {
+                    if (enemy.untargetable || enemy.hp <= 0) return;
+                    const dist = Math.hypot(enemy.x - tower.x, enemy.y - tower.y);
+                    if (dist <= tower.range + enemy.radius) {
+                        damageEnemy(enemy, getTowerDamage(tower), false, tower.color, "tower");
+                        enemy.hitFlash = 0.8;
+                        hitCount++;
+                    }
+                });
+                if (hitCount > 0) {
+                    tower.lastShotTime = now;
+                    effects.push({ type: "circle", x: tower.x, y: tower.y, radius: 10, maxRadius: tower.range, life: 12, color: tower.color });
+                    for (let i = enemies.length - 1; i >= 0; i--) {
+                        if (enemies[i].hp <= 0) killEnemy(i);
+                    }
+                }
+            }
+            return;
+        }
 
         let closestEnemy = null;
         let closestDistanceSq = Infinity;
@@ -2492,8 +2939,64 @@ function getDefenseLineX() {
     return player ? player.x : 35;
 }
 
+
+function updateTitanVariantSpecials(enemy, now) {
+    if (!enemy || enemy.special !== "doombringer" || enemy.hp <= 0) return;
+    if (now - (enemy.lastTitanSpecialAt || 0) < (enemy.titanSpecialCooldown || 2800)) return;
+    enemy.lastTitanSpecialAt = now;
+
+    if (enemy.titanVariant === "burn") {
+        const tx = player ? player.x : enemy.x;
+        const ty = player ? player.y : enemy.y;
+        fireBossProjectile(enemy.x, enemy.y, tx, ty, {
+            speed: 3.8,
+            radius: 11,
+            damage: Math.max(4, Math.ceil(4 + wave * 0.08)),
+            color: "#7a1bff",
+            life: 5200,
+            burn: true
+        });
+        effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 8, maxRadius: 64, life: 18, color: "#7a1bff" });
+        return;
+    }
+
+    if (enemy.titanVariant === "dash") {
+        const tx = player ? player.x : enemy.x;
+        const ty = player ? player.y : enemy.y;
+        const angle = Math.atan2(ty - enemy.y, tx - enemy.x);
+        const distance = enemy.titanCopy ? 135 : 215;
+        enemy.x = clampWorldX(enemy.x + Math.cos(angle) * distance, enemy.radius + 4);
+        enemy.y = clampWorldY(enemy.y + Math.sin(angle) * distance, enemy.radius + 4);
+        enemy.knockbackX = 0;
+        effects.push({ type: "line", x1: enemy.x - Math.cos(angle) * distance, y1: enemy.y - Math.sin(angle) * distance, x2: enemy.x, y2: enemy.y, life: 22, color: "#222222" });
+        effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 14, maxRadius: 82, life: 22, color: "#050505" });
+        return;
+    }
+
+    if (enemy.titanVariant === "split" && !enemy.titanSplitDone && !enemy.titanCopy) {
+        enemy.titanSplitDone = true;
+        showCenterMessage("¡El Titán se triplica!", 900);
+        for (let i = 0; i < 2; i++) {
+            const angle = Math.PI * 2 * (i / 2) + Math.random() * 0.55;
+            const cloneType = specialEnemyTypes.find(t => t.special === "doombringer");
+            enemies.push(createEnemyFromType(cloneType, {
+                x: clampWorldX(enemy.x + Math.cos(angle) * 72, 44),
+                y: clampWorldY(enemy.y + Math.sin(angle) * 72, 44),
+                titanVariant: TITAN_VARIANTS.find(v => v.key === "split"),
+                titanCopy: true,
+                ignoreScaling: false,
+                reward: Math.max(8, Math.floor(enemy.reward * 0.25)),
+                scoreValue: Math.max(30, Math.floor(enemy.scoreValue * 0.25))
+            }));
+        }
+        effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 18, maxRadius: 120, life: 34, color: "#b64dff" });
+    }
+}
+
 function updateEnemySpecials(now, defenseLineX) {
     enemies.forEach(enemy => {
+        updateTitanVariantSpecials(enemy, now);
+
         if (enemy.special === "frenzy") {
             const hpPercent = enemy.hp / enemy.maxHp;
             let multiplier = 1;
@@ -2554,8 +3057,9 @@ function updateEnemySpecials(now, defenseLineX) {
         if (enemy.special === "summoner" && !enemy.isAttacking && enemies.length < 85 && now - enemy.lastSummonTime >= enemy.summonDelay) {
             enemy.lastSummonTime = now;
 
-            for (let i = 0; i < 3; i++) {
-                spawnMiniEnemy(enemy.x + 18 + i * 14, enemy.y + (i - 1) * 24);
+            for (let i = 0; i < 6; i++) {
+                const angle = (Math.PI * 2 / 6) * i;
+                spawnMiniEnemy(enemy.x + Math.cos(angle) * 28, enemy.y + Math.sin(angle) * 28);
             }
 
             effects.push({
@@ -2597,7 +3101,8 @@ function fireBossProjectile(x, y, targetX, targetY, options = {}) {
         damage: options.damage ?? Math.max(2, Math.ceil(2 + wave * 0.12)),
         color: options.color ?? "#ffb36b",
         life: options.life ?? 4200,
-        isBossProjectile: true
+        isBossProjectile: true,
+        burn: Boolean(options.burn)
     });
 }
 
@@ -2703,6 +3208,7 @@ function updateBossProjectiles() {
                 showCenterMessage("¡Proyectil bloqueado!", 550);
             } else {
                 damageBarricade(hitBarricade, p.damage, p);
+                if (p.burn) createFireZone(hitBarricade.x, p.y, 54, Math.max(1.2, p.damage * 0.28), 1800, 450);
                 createImpactParticles(hitBarricade.x, p.y, p.color);
                 addDamageText(hitBarricade.x + 20, p.y - 18, p.damage * BOSS_BARRICADE_DAMAGE_MULTIPLIER, false, "#ffb36b");
             }
@@ -2721,6 +3227,7 @@ function updateBossProjectiles() {
                 createImpactParticles(player.x, player.y, "#ffe28a");
             } else {
                 player.hp -= p.damage;
+                if (p.burn) { createFireZone(player.x, player.y, 60, Math.max(1.2, p.damage * 0.25), 1800, 450); }
                 triggerRedFlash();
                 createImpactParticles(player.x, player.y, p.color);
                 addDamageText(player.x, player.y - 28, p.damage, false, "#ff7777");
@@ -2803,12 +3310,236 @@ function resolveEnemyCollisions() {
     });
 }
 
+
+function damageTower(tower, amount, sourceEnemy = null) {
+    if (!tower || tower.hp <= 0) return;
+    ensureTowerEconomy(tower);
+    const finalAmount = (sourceEnemy && sourceEnemy.isBoss) ? amount * 1.15 : amount;
+    tower.hp -= finalAmount;
+    createImpactParticles(tower.x, tower.y, sourceEnemy && sourceEnemy.color ? sourceEnemy.color : "#ff7777");
+    addDamageText(tower.x, tower.y - 24, finalAmount, false, "#ff7777");
+    if (tower.hp <= 0) {
+        const name = tower.name || "Torre";
+        towers = towers.filter(t => t !== tower);
+        updateTowerSlotIndexes();
+        selectedStructureIds = selectedStructureIds.filter(id => String(id) !== String(tower.id));
+        showCenterMessage(`¡${name} destruida!`, 900);
+        updateHud(true);
+    }
+}
+
+function getBlockingTowerForEnemy(enemy) {
+    let best = null;
+    let bestDist = Infinity;
+    (towers || []).forEach(tower => {
+        if (!tower || !tower.owned || tower.hp <= 0) return;
+        const d = Math.hypot(enemy.x - tower.x, enemy.y - tower.y);
+        const touchDistance = (enemy.radius || 12) + TOWER_COLLISION_RADIUS + 5;
+        if (d <= touchDistance && d < bestDist) {
+            best = tower;
+            bestDist = d;
+        }
+    });
+    return best;
+}
+
+function resolvePlayerEnemyCollision(oldX = player ? player.x : 0, oldY = player ? player.y : 0) {
+    if (!player || !enemies || enemies.length === 0) return;
+    let blocked = false;
+    enemies.forEach(enemy => {
+        if (!enemy || enemy.hp <= 0 || enemy.untargetable) return;
+        const minDist = (enemy.radius || 12) + 22;
+        let dx = player.x - enemy.x;
+        let dy = player.y - enemy.y;
+        let dist = Math.hypot(dx, dy);
+        if (dist >= minDist) return;
+        blocked = true;
+        if (dist < 0.001) {
+            dx = player.x >= oldX ? 1 : -1;
+            dy = 0;
+            dist = 1;
+        }
+        const nx = dx / dist;
+        const ny = dy / dist;
+        const overlap = minDist - dist;
+        player.x += nx * overlap * 0.72;
+        player.y += ny * overlap * 0.72;
+        // El enemigo también cede un poquito para que no sea una pared perfecta.
+        enemy.x -= nx * overlap * (enemy.isBoss ? 0.08 : 0.18);
+        enemy.y -= ny * overlap * (enemy.isBoss ? 0.08 : 0.18);
+        enemy.x = clampWorldX(enemy.x, (enemy.radius || 12) + 3);
+        enemy.y = clampWorldY(enemy.y, (enemy.radius || 12) + 3);
+    });
+    if (blocked) {
+        clampPlayerToPlayableArea();
+        resolvePlayerBarricadeCollision(oldX, oldY);
+    }
+}
+
+function getBleedTickDamage(enemy, sourcePower = 1) {
+    const hpPart = (enemy.maxHp || 1) * (enemy.isBoss ? 0.006 : 0.014);
+    const wavePart = Math.pow(Math.max(1, wave), 0.45) * 0.035;
+    return Math.max(0.45, (hpPart + wavePart) * sourcePower * (player?.bleedPowerMultiplier || 1));
+}
+
+function applyBleed(enemy, sourcePower = 1, duration = 3000) {
+    if (!enemy || enemy.hp <= 0) return;
+    const now = getGameTime();
+    const tickDamage = getBleedTickDamage(enemy, sourcePower);
+    enemy.bleedUntil = Math.max(enemy.bleedUntil || 0, now + duration);
+    enemy.bleedTickDamage = Math.max(enemy.bleedTickDamage || 0, tickDamage);
+    enemy.nextBleedTickAt = Math.min(enemy.nextBleedTickAt || now, now + 500);
+}
+
+function updateBleeds(now = getGameTime()) {
+    enemies.forEach(enemy => {
+        if (!enemy.bleedUntil || enemy.bleedUntil <= now || enemy.hp <= 0) return;
+        if (!enemy.nextBleedTickAt || now >= enemy.nextBleedTickAt) {
+            enemy.nextBleedTickAt = now + 500;
+            damageEnemy(enemy, enemy.bleedTickDamage || 0.5, false, "#ff6b6b", "bleed");
+            enemy.hitFlash = 0.55;
+        }
+    });
+    for (let i = enemies.length - 1; i >= 0; i--) {
+        if (enemies[i].hp <= 0) killEnemy(i);
+    }
+}
+
+function createTrap(typeKey, x, y) {
+    const def = trapDefinitions[typeKey];
+    if (!def) return null;
+    return { id: Date.now() + Math.random(), type: typeKey, x, y, radius: def.radius, color: def.color, name: def.name, cost: def.cost };
+}
+
+function triggerTrap(trap, enemy) {
+    if (!trap || !enemy) return;
+    if (trap.type === "snare") {
+        enemy.slowMultiplier = 0;
+        enemy.slowUntil = getGameTime() + trapDefinitions.snare.duration;
+        effects.push({ type: "circle", x: trap.x, y: trap.y, radius: 8, maxRadius: 58, life: 18, color: trap.color });
+        showCenterMessage("¡Enemigo atrapado!", 550);
+    }
+    if (trap.type === "bleed") {
+        const def = trapDefinitions.bleed;
+        enemy.slowMultiplier = Math.min(enemy.slowMultiplier || 1, def.slowAmount);
+        enemy.slowUntil = Math.max(enemy.slowUntil || 0, getGameTime() + def.slowDuration);
+        applyBleed(enemy, 1.15, def.bleedDuration);
+        effects.push({ type: "circle", x: trap.x, y: trap.y, radius: 8, maxRadius: 54, life: 16, color: trap.color });
+    }
+}
+
+function updateTraps() {
+    if (!traps || !traps.length || !enemies || !enemies.length) return;
+    for (let i = traps.length - 1; i >= 0; i--) {
+        const trap = traps[i];
+        const enemy = enemies.find(e => e.hp > 0 && !e.untargetable && Math.hypot(e.x - trap.x, e.y - trap.y) <= (trap.radius || TRAP_COLLISION_RADIUS) + e.radius);
+        if (!enemy) continue;
+        triggerTrap(trap, enemy);
+        traps.splice(i, 1);
+    }
+}
+
+
+function dropTitanShard(x, y) {
+    titanShards = titanShards || [];
+    titanShards.push({ id: Date.now() + Math.random(), x, y, radius: TITAN_SHARD_RADIUS, color: "#b64dff" });
+    showCenterMessage("¡Fragmento del Titán!", 1200);
+}
+
+function updateTitanShards() {
+    if (!player || !titanShards || !titanShards.length || pendingTitanReward) return;
+    for (let i = titanShards.length - 1; i >= 0; i--) {
+        const shard = titanShards[i];
+        if (Math.hypot(player.x - shard.x, player.y - shard.y) <= 28 + (shard.radius || TITAN_SHARD_RADIUS)) {
+            titanShards.splice(i, 1);
+            openTitanRewardChoice();
+            autoSaveRun(true);
+            break;
+        }
+    }
+}
+
+function getTitanRewardPool() {
+    const lockedAbilityKeys = Object.keys(abilities || {}).filter(key => abilities[key] && !abilities[key].owned);
+    const pool = [
+        { type: "crit", title: "+2% crítico", desc: "Aumenta permanentemente la chance crítica.", apply: () => { player.critChance = Math.min(0.75, (player.critChance || 0) + 0.02); } },
+        { type: "lifesteal", title: "+2% robo de vida", desc: "Robo de vida permanente para disparos del jugador.", apply: () => { player.permanentLifeStealPercent = Math.min(0.35, (player.permanentLifeStealPercent || 0) + 0.02); } },
+        { type: "bleedGold", title: "Sangrado + oro", desc: "+8% oro y +10% potencia de sangrado.", apply: () => { player.goldBonusMultiplier = (player.goldBonusMultiplier || 1) + 0.08; player.bleedPowerMultiplier = (player.bleedPowerMultiplier || 1) + 0.10; } },
+        { type: "double", title: "+3% doble disparo", desc: "Chance permanente de doble disparo pasivo.", apply: () => { player.passiveDoubleShotChance = Math.min(0.35, (player.passiveDoubleShotChance || 0) + 0.03); } },
+        { type: "towerSlot", title: "+1 slot de torre", desc: "Aumenta la capacidad máxima si todavía hay lugar.", apply: () => { towerSlotLimit = clampTowerSlotLimit(towerSlotLimit + 1); } },
+        { type: "gold", title: "Bolsa violeta", desc: "Gana oro escalado por oleada.", apply: () => { coins += getGoldAmount(450 + wave * 28); } },
+        { type: "items", title: "Pack de consumibles", desc: "Recibís pociones útiles al inventario.", apply: () => { addConsumableToInventory("shieldPotion"); addConsumableToInventory("attackSpeedPotion"); addConsumableToInventory("mediumPotion"); } },
+        { type: "freeRapid", title: "Torre rápida gratis", desc: "Te coloca una torre rápida en la mochila de construcción como reembolso en oro.", apply: () => { coins += costs.tower2 || 40; showCenterMessage("Oro para torre rápida recibido", 800); } },
+        { type: "maxhp", title: "+8 vida máxima", desc: "Más margen para sobrevivir.", apply: () => { player.maxHp += 8; player.hp = Math.min(player.maxHp, player.hp + 8); } }
+    ];
+    lockedAbilityKeys.forEach(key => {
+        pool.push({ type: "ability_" + key, title: `Habilidad: ${abilities[key].name}`, desc: "Desbloquea una habilidad que todavía no tenías.", apply: () => { abilities[key].owned = true; } });
+    });
+    return pool;
+}
+
+function pickTitanRewardOptions() {
+    const pool = getTitanRewardPool();
+    const picked = [];
+    while (pool.length && picked.length < TITAN_REWARD_OPTION_COUNT) {
+        const idx = Math.floor(Math.random() * pool.length);
+        picked.push(pool.splice(idx, 1)[0]);
+    }
+    return picked.map((r, index) => ({ id: Date.now() + Math.random() + index, type: r.type, title: r.title, desc: r.desc }));
+}
+
+function openTitanRewardChoice() {
+    pendingTitanReward = { options: pickTitanRewardOptions() };
+    updateTitanRewardPanel();
+}
+
+function applyTitanRewardOption(option) {
+    const reward = getTitanRewardPool().find(r => r.type === option.type);
+    if (!reward) return;
+    reward.apply();
+    showCenterMessage(`Recompensa: ${reward.title}`, 1200);
+    pendingTitanReward = null;
+    updateTitanRewardPanel();
+    updateHud(true);
+    autoSaveRun(true);
+}
+
+function ensureTitanRewardPanel() {
+    let panel = document.getElementById("titanRewardPanel");
+    if (panel) return panel;
+    panel = document.createElement("div");
+    panel.id = "titanRewardPanel";
+    panel.className = "titanRewardPanel hidden";
+    document.body.appendChild(panel);
+    panel.addEventListener("click", event => {
+        const btn = event.target.closest("button[data-titan-reward-index]");
+        if (!btn || !pendingTitanReward) return;
+        const option = pendingTitanReward.options[Number(btn.dataset.titanRewardIndex)];
+        if (option) applyTitanRewardOption(option);
+    });
+    return panel;
+}
+
+function updateTitanRewardPanel() {
+    const panel = ensureTitanRewardPanel();
+    if (!pendingTitanReward || !pendingTitanReward.options || !pendingTitanReward.options.length) {
+        panel.classList.add("hidden");
+        panel.innerHTML = "";
+        return;
+    }
+    panel.classList.remove("hidden");
+    panel.innerHTML = `<h2>Fragmento del Titán</h2><p>Elegí 1 recompensa</p><div class="titanRewardOptions">${pendingTitanReward.options.map((o, i) => `<button type="button" data-titan-reward-index="${i}"><strong>?</strong><span>${o.title}</span><small>${o.desc}</small></button>`).join("")}</div>`;
+}
+
 function updateEnemies() {
     const now = getGameTime();
     const defenseLineX = getDefenseLineX();
 
     updateEnemySpecials(now, defenseLineX);
     updateBossSpecials(now, defenseLineX);
+    updateBleeds(now);
+    updateTraps();
+    updateTitanShards();
 
     enemies.forEach(enemy => {
         if (enemy.slowImmune) {
@@ -2834,7 +3565,7 @@ function updateEnemies() {
     for (let i = enemies.length - 1; i >= 0; i--) {
         const enemy = enemies[i];
         const mainTarget = getEnemyMainTarget(enemy);
-        const blockingBarricade = getBlockingBarricadeForEnemy(enemy, mainTarget.x, mainTarget.y);
+        const blockingBarricade = enemy.special === "healer" ? null : getBlockingBarricadeForEnemy(enemy, mainTarget.x, mainTarget.y);
 
         if (blockingBarricade) {
             enemy.isAttacking = true;
@@ -2873,6 +3604,17 @@ function updateEnemies() {
                     damageBarricade(blockingBarricade, enemy.damageToDefense, enemy);
                     createImpactParticles(blockingBarricade.x, blockingBarricade.y, "#d6a05f");
                 }
+                enemy.lastAttackTime = now;
+            }
+            continue;
+        }
+
+        const blockingTower = enemy.special === "healer" ? null : getBlockingTowerForEnemy(enemy);
+        if (blockingTower) {
+            enemy.isAttacking = true;
+            enemy.target = "tower";
+            if (now - enemy.lastAttackTime >= enemy.attackDelay) {
+                damageTower(blockingTower, enemy.damageToDefense || 1, enemy);
                 enemy.lastAttackTime = now;
             }
             continue;
@@ -2919,9 +3661,14 @@ function updateEnemies() {
                 showCenterMessage("Titán anulado", 800);
                 continue;
             }
-            showCenterMessage(mainTarget.type === "base" ? "EL TITÁN DESTRUYÓ EL NÚCLEO" : "EL TITÁN TE ALCANZÓ", 1200);
-            if (mainTarget.type === "base") damageBase(9999, enemy.x, enemy.y); else { player.hp = 0; endRun(); }
-            return;
+            if (now - enemy.lastAttackTime >= enemy.attackDelay) {
+                const titanHit = enemy.titanVariant === "dash" ? 14 : enemy.titanVariant === "burn" ? 9 : 11;
+                const ended = damagePlayer(titanHit, enemy, enemy.x, enemy.y, "¡Golpe del Titán bloqueado!");
+                if (enemy.titanVariant === "burn") createFireZone(player.x, player.y, 62, 1.8 + wave * 0.015, 1800, 450);
+                enemy.lastAttackTime = now;
+                if (ended) return;
+            }
+            continue;
         }
 
         if (now - enemy.lastAttackTime >= enemy.attackDelay) {
@@ -3037,6 +3784,10 @@ function killEnemy(index) {
         splitEnemy(enemy);
     }
 
+    if (enemy.special === "doombringer") {
+        dropTitanShard(enemy.x, enemy.y);
+    }
+
     enemies.splice(index, 1);
 }
 
@@ -3055,11 +3806,12 @@ function splitEnemy(enemy) {
         splitLevel: nextLevel
     };
 
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < 3; i++) {
+        const angle = (Math.PI * 2 / 3) * i + Math.random() * 0.35;
         enemies.push(createEnemyFromType(childType, {
-            x: enemy.x + 18,
-            y: clampWorldY(enemy.y + (i === 0 ? -22 : 22), 42),
-            radius: Math.max(10, enemy.radius * 0.78),
+            x: clampWorldX(enemy.x + Math.cos(angle) * 24, 42),
+            y: clampWorldY(enemy.y + Math.sin(angle) * 24, 42),
+            radius: Math.max(9, enemy.radius * 0.72),
             ignoreScaling: true,
             splitLevel: nextLevel
         }));
@@ -3217,6 +3969,16 @@ function updateEclipseEffects() {
     const now = getGameTime();
 
     effects.forEach(effect => {
+        if (effect.type === "spear") {
+            const alpha = Math.max(0, effect.life / 10);
+            ctx.strokeStyle = `rgba(255,226,138,${alpha})`;
+            ctx.lineWidth = effect.width || 22;
+            ctx.beginPath();
+            ctx.moveTo(effect.x, effect.y);
+            ctx.lineTo(effect.x + effect.dx * effect.length, effect.y + effect.dy * effect.length);
+            ctx.stroke();
+            return;
+        }
         if (effect.type !== "eclipse" || effect.finalDone) return;
 
         if (now < effect.expiresAt && now >= effect.nextPulseAt) {
@@ -3434,8 +4196,8 @@ function completeWave() {
     gameRunning = false;
 
     const completedWave = wave;
-    const waveBonus = wave * 20;
-    const goldBonus = getGoldAmount(8 + Math.floor(wave * 1.5));
+    const waveBonus = Math.floor(wave * 20 + Math.pow(Math.max(0, wave - 40), 0.82) * 35);
+    const goldBonus = getGoldAmount(8 + getWaveRewardBonus());
 
     score += waveBonus;
     coins += goldBonus;
@@ -3452,6 +4214,7 @@ function completeWave() {
 function enterBuildPhase(completedWave, goldBonus = 0) {
     buildPhaseActive = true;
     buildPhaseEndsAt = performance.now() + BUILD_PHASE_DURATION;
+    pausedBuildPhaseRemainingMs = 0;
     gameRunning = false;
     waveInProgress = false;
     isRepeatingWave = false;
@@ -3466,6 +4229,7 @@ function enterBuildPhase(completedWave, goldBonus = 0) {
 
 function getBuildPhaseRemainingMs() {
     if (!buildPhaseActive) return 0;
+    if (isPaused && pausedBuildPhaseRemainingMs > 0) return pausedBuildPhaseRemainingMs;
     if (!Number.isFinite(buildPhaseEndsAt) || buildPhaseEndsAt <= 0) {
         buildPhaseEndsAt = performance.now() + BUILD_PHASE_DURATION;
     }
@@ -3478,6 +4242,7 @@ function beginNextWaveFromBuildPhase(source = "timer") {
     buildPhaseStartingWave = true;
     buildPhaseActive = false;
     buildPhaseEndsAt = 0;
+    pausedBuildPhaseRemainingMs = 0;
     isPaused = false;
     gameRunning = false;
     waveInProgress = false;
@@ -3495,6 +4260,10 @@ function skipBuildPhase() {
 
 function updateBuildPhase() {
     if (!buildPhaseActive) return;
+    if (isPaused) {
+        updateBuildPhaseUI();
+        return;
+    }
 
     const remainingMs = getBuildPhaseRemainingMs();
     if (remainingMs <= 0) {
@@ -3559,18 +4328,19 @@ function renderLeaderboard(scores = []) {
             const dateText = entry.date ? new Date(entry.date).toLocaleDateString("es-AR") : "";
             const name = String(entry.name || "Jugador").slice(0, 18);
             const scoreValue = formatLeaderboardNumber(entry.score);
+            const isBeginner = Boolean(entry.beginner || entry.beginnerCommandUsed);
 
             li.innerHTML = `
                 <div class="leaderboardEntry">
                     <div>
-                        <div class="leaderboardName"></div>
+                        <div class="leaderboardName"><span class="leaderboardNameText"></span>${isBeginner ? ' <span class="leaderboardBeginnerTag">(beginner)</span>' : ''}</div>
                         <div class="leaderboardMeta">${waveText}${dateText ? " · " + dateText : ""}</div>
                     </div>
                     <div class="leaderboardScore">${scoreValue}</div>
                 </div>
             `;
 
-            li.querySelector(".leaderboardName").textContent = name;
+            li.querySelector(".leaderboardNameText").textContent = name;
             list.appendChild(li);
         });
     });
@@ -3625,7 +4395,9 @@ async function submitLeaderboardScore() {
             name: getLeaderboardPlayerName(),
             score: Math.max(0, Math.floor(score)),
             wave: Math.max(1, Math.floor(wave || 1)),
-            version: "0.7.5.1"
+            version: "0.7.6.0",
+            beginner: Boolean(beginnerCommandUsed),
+            beginnerCommandUsed: Boolean(beginnerCommandUsed)
         };
 
         const response = await fetch("/api/leaderboard", {
@@ -3973,8 +4745,15 @@ function drawBarricade() {
         if (!b.active || b.hp <= 0) return;
         const dims = getBarricadeDimensions(b.orientation || "horizontal");
         const rect = getEntityRect({ ...b, isBuildBarricade: true });
+        ctx.globalAlpha = b.isOpen ? 0.28 : 1;
         ctx.fillStyle = b.color;
         ctx.fillRect(rect.left, rect.top, dims.width, dims.height);
+        ctx.globalAlpha = 1;
+        if (b.kind === "door") {
+            ctx.fillStyle = b.isOpen ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.35)";
+            ctx.font = "bold 12px Arial";
+            ctx.fillText(b.isOpen ? "ABIERTA" : "PUERTA", rect.left + 6, rect.top + dims.height / 2 + 4);
+        }
         ctx.strokeStyle = isStructureSelected("barricade", b.id) ? "#ffe28a" : "rgba(0,0,0,0.7)";
         ctx.lineWidth = isStructureSelected("barricade", b.id) ? 4 : 2;
         ctx.strokeRect(rect.left, rect.top, dims.width, dims.height);
@@ -4013,6 +4792,25 @@ function drawBuildPreview() {
         ctx.fillStyle = "white";
         ctx.font = "bold 14px Arial";
         ctx.fillText("Click coloca · R rota · Click derecho/Esc cancela", point.x - 150, point.y - dims.height / 2 - 12);
+    }
+
+    if (pendingTrapPlacement) {
+        const point = getSnappedBuildPoint();
+        const def = trapDefinitions[pendingTrapPlacement.typeKey];
+        const valid = isTrapPositionValid(point.x, point.y);
+        const radius = def ? def.radius : TRAP_COLLISION_RADIUS;
+        ctx.fillStyle = valid ? "rgba(115,255,159,0.35)" : "rgba(255,80,80,0.35)";
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = valid ? "rgba(115,255,159,0.95)" : "rgba(255,80,80,0.95)";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = "white";
+        ctx.font = "bold 14px Arial";
+        ctx.fillText(`${def ? def.name : "Trampa"} · click coloca · Esc/click derecho cancela`, point.x - 160, point.y - radius - 12);
     }
 }
 
@@ -4177,7 +4975,24 @@ function drawTowerPlacementTiles() {
     ctx.fillStyle = "white";
     ctx.font = "bold 15px Arial";
     const actionText = movingTower ? "Elegí dónde mover la torreta" : "Elegí dónde colocar la torreta";
-    ctx.fillText(`${actionText} · Click derecho/Esc cancela`, camera.x + 125, camera.y + 34);
+    ctx.fillText(`${actionText} · R rota · Click derecho/Esc cancela`, camera.x + 125, camera.y + 34);
+
+    const rotation = movingTower ? (movingTower.rotation || 0) : towerBuildRotation;
+    const dir = getDirectionVector(rotation);
+    ctx.strokeStyle = "rgba(255,226,138,0.9)";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(point.x, point.y);
+    ctx.lineTo(point.x + dir.x * 45, point.y + dir.y * 45);
+    ctx.stroke();
+    if (def && def.type === "spear") {
+        ctx.strokeStyle = "rgba(255,226,138,0.35)";
+        ctx.lineWidth = def.laneWidth || 38;
+        ctx.beginPath();
+        ctx.moveTo(point.x, point.y);
+        ctx.lineTo(point.x + dir.x * (def.range || 155), point.y + dir.y * (def.range || 155));
+        ctx.stroke();
+    }
 }
 
 function drawTowers() {
@@ -4190,8 +5005,33 @@ function drawTowers() {
             ctx.strokeRect(tower.x - 24, tower.y - 24, 48, 48);
         }
 
+        ensureTowerEconomy(tower);
         ctx.fillStyle = tower.color;
         ctx.fillRect(tower.x - 18, tower.y - 18, 36, 36);
+
+        if (tower.type === "spear") {
+            const dir = getDirectionVector(tower.rotation || 0);
+            ctx.strokeStyle = "rgba(255,226,138,0.8)";
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(tower.x, tower.y);
+            ctx.lineTo(tower.x + dir.x * 30, tower.y + dir.y * 30);
+            ctx.stroke();
+        }
+
+        if (tower.type === "blade") {
+            ctx.strokeStyle = "rgba(255,255,255,0.65)";
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(tower.x, tower.y, 23, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+
+        const hpPct = Math.max(0, Math.min(1, (tower.hp || tower.maxHp || 1) / Math.max(1, tower.maxHp || 1)));
+        ctx.fillStyle = "rgba(0,0,0,0.72)";
+        ctx.fillRect(tower.x - 20, tower.y + 23, 40, 5);
+        ctx.fillStyle = hpPct > 0.45 ? "#73ff9f" : hpPct > 0.22 ? "#ffe28a" : "#ff5d5d";
+        ctx.fillRect(tower.x - 20, tower.y + 23, 40 * hpPct, 5);
 
         ctx.fillStyle = tower.type === "buffer" ? "white" : "black";
         ctx.font = "bold 14px Arial";
@@ -4251,6 +5091,38 @@ function drawSlowZones() {
     });
 }
 
+function drawTitanShards() {
+    (titanShards || []).forEach(shard => {
+        ctx.fillStyle = "rgba(182,77,255,0.85)";
+        ctx.beginPath();
+        ctx.moveTo(shard.x, shard.y - 16);
+        ctx.lineTo(shard.x + 15, shard.y + 12);
+        ctx.lineTo(shard.x - 15, shard.y + 12);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,0.85)";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    });
+}
+
+function drawTraps() {
+    (traps || []).forEach(trap => {
+        ctx.fillStyle = trap.type === "snare" ? "rgba(155,231,255,0.55)" : "rgba(255,107,107,0.55)";
+        ctx.beginPath();
+        ctx.arc(trap.x, trap.y, trap.radius || TRAP_COLLISION_RADIUS, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = trap.color || "white";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(trap.x, trap.y, (trap.radius || TRAP_COLLISION_RADIUS) + 3, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = "white";
+        ctx.font = "bold 12px Arial";
+        ctx.fillText(trap.type === "snare" ? "A" : "S", trap.x - 4, trap.y + 4);
+    });
+}
+
 function drawEnemies() {
     enemies.forEach(enemy => {
         let radius = enemy.radius;
@@ -4267,15 +5139,19 @@ function drawEnemies() {
         ctx.arc(enemy.x, enemy.y, radius, 0, Math.PI * 2);
         ctx.fill();
 
-        if (enemy.isBoss) {
-            ctx.fillStyle = "white";
-            ctx.font = "16px Arial";
-            ctx.fillText("BOSS", enemy.x - 22, enemy.y + 5);
-        } else if (enemy.special) {
-            const icons = { healer: "+", exploder: "!", teleporter: "*", summoner: "S", slowImmune: "I", frenzy: "F", tsunamiImmune: "T", splitter: "2", invisible: "?", doombringer: "X" };
-            ctx.fillStyle = (enemy.special === "slowImmune" || enemy.special === "tsunamiImmune") ? "black" : "white";
-            ctx.font = enemy.isMini ? "10px Arial" : "bold 13px Arial";
-            ctx.fillText(icons[enemy.special] || "?", enemy.x - 4, enemy.y + 5);
+        if (enemy.special === "healer") {
+            ctx.strokeStyle = "rgba(115,255,159,0.35)";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(enemy.x, enemy.y, Math.min(enemy.healRadius || 0, 90), 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        if (enemy.special === "doombringer") {
+            ctx.strokeStyle = enemy.titanVariant === "burn" ? "#7a1bff" : enemy.titanVariant === "split" ? "#b64dff" : "#ffffff";
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(enemy.x, enemy.y, enemy.radius + 7, 0, Math.PI * 2);
+            ctx.stroke();
         }
 
         if (enemy.isAttacking) {
@@ -4718,11 +5594,12 @@ function getBarricadeActionState(kind = "standard") {
 function updateBarricadeButtonState(button, kind, costKey) {
     if (!button) return;
     const cost = getBarricadeBaseCost(kind);
+    const locked = wave < BARRICADE_UNLOCK_WAVE;
     setShopButtonAffordability(
         button,
         cost,
-        Boolean(pendingBarricadePlacement),
-        pendingBarricadePlacement ? "Ya estás colocando una barricada." : "Construir una barricada libre. Para mejorar/reparar/vender: clickeala en el mapa."
+        locked || Boolean(pendingBarricadePlacement),
+        locked ? `Disponible desde wave ${BARRICADE_UNLOCK_WAVE}` : (pendingBarricadePlacement ? "Ya estás colocando una barricada." : "Construir una barricada libre. Para mejorar/reparar/vender: clickeala en el mapa.")
     );
 }
 
@@ -4787,6 +5664,8 @@ function updateHud(force = false) {
     updateBarricadeButtonState(buyRegenBarricadeBtn, "regen", "regenBarricade");
     updateBarricadeButtonState(buyExplosiveBarricadeBtn, "explosive", "explosiveBarricade");
     updateBarricadeButtonState(buyThornsBarricadeBtn, "thorns", "thornsBarricade");
+    updateBarricadeButtonState(buyDoorBarricadeBtn, "door", "doorBarricade");
+    if (doorBarricadeCostText) doorBarricadeCostText.textContent = formatMoney(getBarricadeBaseCost("door"));
 
     barricadeTierText.textContent = getBarricadeStatusText();
     updateBarricadeSlotChoiceUI();
@@ -4842,11 +5721,15 @@ function updateTowerShopVisibility() {
         const btn = document.getElementById(`buyTower${index + 1}Btn`);
         const price = costs[def.key] ?? def.cost;
         if (btn) {
-            const extraDisabled = !!pendingTowerPurchase || full;
-            const extraTitle = full ? "Límite de slots de torre alcanzado. Comprá un slot extra." : pendingTowerPurchase ? "Ya estás colocando una torre" : "";
+            const extraDisabled = !!pendingTowerPurchase || full || !buildPhaseActive;
+            const extraTitle = !buildPhaseActive ? "Solo podés construir durante los 30s entre oleadas." : full ? "Límite de slots de torre alcanzado. Comprá un slot extra." : pendingTowerPurchase ? "Ya estás colocando una torre" : "";
             setShopButtonAffordability(btn, price, extraDisabled, extraTitle);
         }
     });
+    if (buyTrapSnareBtn) setShopButtonAffordability(buyTrapSnareBtn, costs.trapSnare ?? trapDefinitions.snare.cost, !buildPhaseActive || !!pendingTrapPlacement, !buildPhaseActive ? "Solo durante los 30s entre oleadas." : "");
+    if (buyTrapBleedBtn) setShopButtonAffordability(buyTrapBleedBtn, costs.trapBleed ?? trapDefinitions.bleed.cost, !buildPhaseActive || !!pendingTrapPlacement, !buildPhaseActive ? "Solo durante los 30s entre oleadas." : "");
+    if (trapSnareCostText) trapSnareCostText.textContent = formatMoney(costs.trapSnare ?? trapDefinitions.snare.cost);
+    if (trapBleedCostText) trapBleedCostText.textContent = formatMoney(costs.trapBleed ?? trapDefinitions.bleed.cost);
 
     if (repeatWaveBtn) {
         const repeats = getRepeatCountForCurrentWave();
@@ -4954,6 +5837,16 @@ function updateAbilityBar() {
 function drawWorldGrid() {
     ctx.fillStyle = "#263426";
     ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+    const bossRect = getBossSpawnRect(0);
+    // Piso de spawn de jefes: asfalto gris sólido, no perímetro brillante.
+    ctx.fillStyle = "#3a3d3d";
+    ctx.fillRect(bossRect.left, bossRect.top, bossRect.right - bossRect.left, bossRect.bottom - bossRect.top);
+    ctx.fillStyle = "rgba(255,255,255,0.035)";
+    for (let i = 0; i < 18; i++) {
+        const px = bossRect.left + ((i * 47) % (bossRect.right - bossRect.left));
+        const py = bossRect.top + ((i * 31) % (bossRect.bottom - bossRect.top));
+        ctx.fillRect(px, py, 2, 2);
+    }
     ctx.strokeStyle = "rgba(255,255,255,0.035)";
     ctx.lineWidth = 1;
     for (let x = 0; x <= WORLD_WIDTH; x += 100) {
@@ -4965,10 +5858,13 @@ function drawWorldGrid() {
 }
 
 function drawMinimap() {
-    const w = 170;
-    const h = 112;
+    const scale = visualSettings.minimapScale || 0.82;
+    const w = Math.round(150 * scale);
+    const h = Math.round(w * (WORLD_HEIGHT / WORLD_WIDTH));
     const x = GAME_WIDTH - w - 14;
-    const y = GAME_HEIGHT - h - 14;
+    // Va justo arriba del inventario/barra inferior para que no se pisen.
+    const bottomOffset = getBottomUiGameHeight();
+    const y = Math.max(54, GAME_HEIGHT - h - bottomOffset - 12);
     ctx.save();
     ctx.setTransform(canvas.width / GAME_WIDTH, 0, 0, canvas.height / GAME_HEIGHT, 0, 0);
     ctx.fillStyle = "rgba(0,0,0,0.72)";
@@ -4977,6 +5873,9 @@ function drawMinimap() {
     ctx.strokeRect(x, y, w, h);
     const sx = w / WORLD_WIDTH;
     const sy = h / WORLD_HEIGHT;
+    const bz = getBossSpawnRect(0);
+    ctx.fillStyle = "rgba(150,150,150,0.55)";
+    ctx.fillRect(x + bz.left * sx, y + bz.top * sy, (bz.right - bz.left) * sx, (bz.bottom - bz.top) * sy);
     const dot = (wx, wy, color, r = 2) => {
         ctx.fillStyle = color;
         ctx.beginPath();
@@ -4986,6 +5885,8 @@ function drawMinimap() {
     if (player) dot(player.x, player.y, "#66d9ff", 4);
     enemies.forEach(e => dot(e.x, e.y, e.isBoss ? "#ff55ff" : "#ff3333", e.isBoss ? 3.8 : 2));
     towers.forEach(t => dot(t.x, t.y, "#ffffff", 1.7));
+    (traps || []).forEach(trap => dot(trap.x, trap.y, trap.type === "snare" ? "#9be7ff" : "#ff6b6b", 1.4));
+    (titanShards || []).forEach(shard => dot(shard.x, shard.y, "#b64dff", 2.2));
     barricades.forEach(b => { if (b.active && b.hp > 0) dot(b.x, b.y, "#aaaaaa", 1.6); });
     ctx.strokeStyle = "rgba(115,255,159,0.7)";
     ctx.strokeRect(x + camera.x * sx, y + camera.y * sy, GAME_WIDTH * sx, GAME_HEIGHT * sy);
@@ -5003,6 +5904,7 @@ function draw() {
     drawPath();
     drawBase();
     drawBarricade();
+    drawTraps();
     drawPlayer();
     drawTowerPlacementTiles();
     drawTowers();
@@ -5209,9 +6111,17 @@ function runConsoleCommand(rawCommand) {
     }
 
     if (command === "beginner") {
-        coins += 500;
-        appendConsoleLog(`Comando activado: +${formatMoney(500)} monedas.`);
+        if (beginnerCommandUsed) {
+            appendConsoleLog("Beginner ya fue activado en esta run. No se puede usar dos veces.");
+            showCenterMessage("BEGINNER YA USADO", 900);
+            return;
+        }
+        beginnerCommandUsed = true;
+        coins = Math.min(Number.MAX_SAFE_INTEGER, coins + 1000);
+        appendConsoleLog(`Comando beginner activado: +${formatMoney(1000)} monedas. Esta run quedará marcada como beginner en el leaderboard.`);
+        showCenterMessage("BEGINNER +1K", 900);
         updateHud();
+        autoSaveRun(true);
         return;
     }
 
@@ -5237,6 +6147,35 @@ function runConsoleCommand(rawCommand) {
         appendConsoleLog(`Comando activado: +${formatMoney(safeAmount)} monedas.`);
 
         updateHud();
+        return;
+    }
+
+    if (command === "endwave") {
+        if (buildPhaseActive) {
+            appendConsoleLog("Ya estás en descanso entre oleadas.");
+            showCenterMessage("DESCANSO ACTIVO", 800);
+            return;
+        }
+
+        if (!waveInProgress) {
+            appendConsoleLog("No hay una oleada activa para terminar.");
+            return;
+        }
+
+        disqualifyRunFromLeaderboard("endwave");
+        enemiesSpawned = enemiesToSpawn;
+        enemies = [];
+        projectiles = [];
+        bossProjectiles = [];
+        slowZones = [];
+        poisonZones = [];
+        fireZones = [];
+        effects = [];
+        damageTexts = [];
+        appendConsoleLog("Comando endwave activado: oleada completada y descanso de 30s iniciado. Esta run no entra al leaderboard normal.");
+        showCenterMessage("END WAVE", 800);
+        completeWave();
+        updateHud(true);
         return;
     }
 
@@ -5366,7 +6305,7 @@ function jumpToWave(targetWave) {
 
 
 function isInBuildPlacementMode() {
-    return Boolean(pendingBarricadePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null);
+    return Boolean(pendingBarricadePlacement || pendingTrapPlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null);
 }
 
 
@@ -5434,8 +6373,12 @@ function handleStructureClickSelection(event) {
     const b = findBarricadeAtWorldPoint(mousePosition.x, mousePosition.y);
     if (b) {
         ensureBarricadeEconomy(b);
+        if (b.kind === "door" && !(event.ctrlKey || event.metaKey)) {
+            b.isOpen = !b.isOpen;
+            showCenterMessage(b.isOpen ? "Puerta abierta" : "Puerta cerrada", 650);
+        }
         selectStructure("barricade", b, event.ctrlKey || event.metaKey);
-        showCenterMessage(event.ctrlKey || event.metaKey ? `Seleccionadas barricadas ${getBarricadeKindLabel(b.kind)}` : `Barricada ${getBarricadeKindLabel(b.kind)} seleccionada`, 650);
+        showCenterMessage(event.ctrlKey || event.metaKey ? `Seleccionadas barricadas ${getBarricadeKindLabel(b.kind)}` : `${getBarricadeKindLabel(b.kind)} seleccionada`, 650);
         return true;
     }
     return false;
@@ -5443,15 +6386,19 @@ function handleStructureClickSelection(event) {
 
 function getTowerUpgradePreview(tower) {
     if (!tower) return "";
-    if (tower.type === "buffer") return `Nivel ${tower.level || 1} · buff ${Math.round((tower.buffDamage || 0) * 100)}% daño / ${Math.round((tower.buffSpeed || 0) * 100)}% vel.`;
-    return `Nivel ${tower.level || 1} · daño ${formatCompactNumber(tower.damage || 0, 2)} · rango ${Math.round(tower.range || 0)} · delay ${Math.round(tower.fireDelay || 0)}ms`;
+    ensureTowerEconomy(tower);
+    const hp = `HP ${Math.ceil(tower.hp || 0)}/${Math.ceil(tower.maxHp || 0)}`;
+    if (tower.type === "buffer") return `Nivel ${tower.level || 1} · ${hp} · buff ${Math.round((tower.buffDamage || 0) * 100)}% daño / ${Math.round((tower.buffSpeed || 0) * 100)}% vel.`;
+    if (tower.type === "blade") return `Nivel ${tower.level || 1} · ${hp} · daño/tick ${formatCompactNumber(tower.damage || 0, 2)} · área ${Math.round(tower.range || 0)} · tick ${Math.round(tower.fireDelay || 0)}ms`;
+    if (tower.type === "spear") return `Nivel ${tower.level || 1} · ${hp} · mira ${getRotationLabel(tower.rotation || 0)} · daño ${formatCompactNumber(tower.damage || 0, 2)} · alcance ${Math.round(tower.range || 0)}`;
+    return `Nivel ${tower.level || 1} · ${hp} · daño ${formatCompactNumber(tower.damage || 0, 2)} · rango ${Math.round(tower.range || 0)} · delay ${Math.round(tower.fireDelay || 0)}ms`;
 }
 
 function getBarricadeInfoText(b) {
     ensureBarricadeEconomy(b);
     const hp = `${Math.ceil(b.hp || 0)}/${Math.ceil(b.maxHp || 0)}`;
     const level = b.kind === "standard" ? `Tier ${Math.max(0, (b.tier || 0) + 1)} · +${b.level || 0}` : `Nivel ${Math.max(1, (b.level || 0) + 1)}`;
-    return `${getBarricadeKindLabel(b.kind)} · ${level} · HP ${hp}`;
+    return `${getBarricadeKindLabel(b.kind)}${b.kind === "door" ? (b.isOpen ? " abierta" : " cerrada") : ""} · ${level} · HP ${hp}`;
 }
 
 function updateStructurePanel() {
@@ -5472,11 +6419,15 @@ function updateStructurePanel() {
         const first = selected[0];
         const upgradeTotal = selected.reduce((sum, t) => sum + (Number(t.upgradeCost) || 0), 0);
         const sellTotal = selected.reduce((sum, t) => sum + Math.floor((Number(t.spent) || 0) * TOWER_SELL_REFUND), 0);
+        const damaged = selected.filter(t => t.hp < t.maxHp);
+        const repairTotal = damaged.reduce((sum, t) => sum + getTowerRepairCost(t), 0);
         structurePanelTitle.textContent = multiple ? `${selected.length} torretas ${first.name}` : first.name;
         structurePanelInfo.innerHTML = `${multiple ? "Selección múltiple" : getTowerUpgradePreview(first)}<br><small>Ctrl+click selecciona todas las torres iguales.</small>`;
         structurePanelActions.innerHTML = `
             <button type="button" data-structure-action="upgrade" ${coins < upgradeTotal ? "disabled" : ""}>Mejorar ${multiple ? "todas" : ""} (${formatMoney(upgradeTotal)})</button>
+            <button type="button" data-structure-action="repair" ${damaged.length === 0 || coins < repairTotal ? "disabled" : ""}>Reparar ${multiple ? "dañadas" : ""} (${formatMoney(repairTotal)})</button>
             ${!multiple ? `<button type="button" data-structure-action="move">Mover</button>` : ""}
+            <button type="button" data-structure-action="rotate">Rotar ${multiple ? "todas" : ""}</button>
             <button type="button" data-structure-action="sell" class="dangerMiniButton">Vender ${multiple ? "todas" : ""} (${formatMoney(sellTotal)})</button>
         `;
         return;
@@ -5495,6 +6446,28 @@ function updateStructurePanel() {
         <button type="button" data-structure-action="repair" ${damaged.length === 0 || coins < repairTotal ? "disabled" : ""}>Reparar ${multiple ? "dañadas" : ""} (${formatMoney(repairTotal)})</button>
         <button type="button" data-structure-action="sell" class="dangerMiniButton">Vender ${multiple ? "todas" : ""} (${formatMoney(sellTotal)})</button>
     `;
+}
+
+function getTowerRepairCost(tower) {
+    ensureTowerEconomy(tower);
+    if (!tower || tower.hp >= tower.maxHp) return 0;
+    const missingRatio = Math.max(0, Math.min(1, (tower.maxHp - tower.hp) / Math.max(1, tower.maxHp)));
+    return Math.max(1, Math.ceil((Number(tower.cost) || 80) * TOWER_REPAIR_COST_FACTOR * missingRatio));
+}
+
+function repairTowerSelected() {
+    const selected = getSelectedStructures().filter(t => selectedStructureType === "tower" && t.hp < t.maxHp);
+    if (!selected.length) return;
+    const total = selected.reduce((sum, t) => sum + getTowerRepairCost(t), 0);
+    if (coins < total) { showCenterMessage(`Faltan ${formatMissingMoney(total - coins)} monedas`, 850); updateStructurePanel(); return; }
+    coins -= total;
+    selected.forEach(t => {
+        const repairCost = getTowerRepairCost(t);
+        t.spent = (Number(t.spent) || 0) + repairCost;
+        t.hp = t.maxHp;
+    });
+    showCenterMessage(selected.length > 1 ? `${selected.length} torretas reparadas` : "Torre reparada", 800);
+    updateHud(true); updateStructurePanel(); autoSaveRun(true);
 }
 
 function getBarricadeRepairCost(b) {
@@ -5578,7 +6551,10 @@ function handleStructurePanelAction(action) {
         if (selectedStructureType === "tower") upgradeTowerSelected();
         else upgradeBarricadeSelected();
     }
-    if (action === "repair") repairBarricadeSelected();
+    if (action === "repair") {
+        if (selectedStructureType === "tower") repairTowerSelected();
+        else repairBarricadeSelected();
+    }
     if (action === "sell") {
         if (selectedStructureType === "tower") sellTowerSelected();
         else sellBarricadeSelected();
@@ -5587,13 +6563,22 @@ function handleStructurePanelAction(action) {
         const selected = getSelectedStructures();
         if (selectedStructureType === "tower" && selected.length === 1) beginTowerMove(towers.indexOf(selected[0]));
     }
+    if (action === "rotate") {
+        const selected = getSelectedStructures();
+        if (selectedStructureType === "tower" && selected.length) {
+            selected.forEach(rotateTowerObject);
+            showCenterMessage(selected.length > 1 ? `${selected.length} torres rotadas` : `Torre hacia ${getRotationLabel(selected[0].rotation || 0)}`, 700);
+            updateHud(true); updateStructurePanel(); autoSaveRun(true);
+        }
+    }
 }
 
 function getCurrentBuildModeLabel() {
     if (pendingBarricadePlacement) return "Colocando barricadas · R rota";
+    if (pendingTrapPlacement) return "Colocando trampas";
     if (pendingTowerPurchase) {
         const def = getTowerDefinition(pendingTowerPurchase.defKey);
-        return `Colocando ${def ? def.name : "torre"}`;
+        return `Colocando ${def ? def.name : "torre"} · R rota`;
     }
     if (pendingTowerMoveIndex !== null) return "Moviendo torre";
     return "";
@@ -5633,7 +6618,17 @@ function handleCanvasPlacementPointer(event) {
         return;
     }
 
-    if (pendingBarricadePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null) {
+    if (pendingTrapPlacement) {
+        event.preventDefault();
+        if (event.button === 2) {
+            cancelTrapPlacement(false);
+            return;
+        }
+        finishTrapPlacement();
+        return;
+    }
+
+    if (pendingBarricadePlacement || pendingTrapPlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null) {
         event.preventDefault();
         if (event.button === 2) {
             cancelTowerPlacement(false);
@@ -5664,9 +6659,10 @@ canvas.addEventListener("pointerdown", event => {
 });
 
 canvas.addEventListener("contextmenu", event => {
-    if (pendingBarricadePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null) {
+    if (pendingBarricadePlacement || pendingTrapPlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null) {
         event.preventDefault();
         cancelBarricadePlacement(false);
+        cancelTrapPlacement(false);
         cancelTowerPlacement(false);
         cancelTowerMove(false);
     }
@@ -5675,6 +6671,38 @@ canvas.addEventListener("contextmenu", event => {
 window.addEventListener("mouseup", () => {
     isMouseDown = false;
 });
+
+
+function handleShopTabHotkeys(event) {
+    if (!shop || shop.classList.contains("hidden")) return false;
+
+    const isConstruction = shop.classList.contains("constructionMode");
+    const shopMap = {
+        Digit1: "stats",
+        Digit2: "consumables",
+        Digit3: "abilities",
+        Digit4: "abilities"
+    };
+    const constructionMap = {
+        Digit1: "barricades",
+        Digit2: "towers",
+        Digit3: "traps",
+        Digit4: "traps"
+    };
+
+    if (event.code === "KeyX") {
+        closeShop();
+        showCenterMessage("Panel cerrado", 500);
+        autoSaveRun(true);
+        return true;
+    }
+
+    const sectionId = (isConstruction ? constructionMap : shopMap)[event.code];
+    if (!sectionId) return false;
+
+    setShopSection(sectionId);
+    return true;
+}
 
 window.addEventListener("keydown", event => {
     const tagName = event.target && event.target.tagName ? event.target.tagName.toLowerCase() : "";
@@ -5696,6 +6724,11 @@ window.addEventListener("keydown", event => {
         return;
     }
 
+    if (!event.ctrlKey && handleShopTabHotkeys(event)) {
+        event.preventDefault();
+        return;
+    }
+
     if (event.code === "ShiftLeft" || event.code === "ShiftRight") isShiftDown = true;
 
     if (event.code === "Escape") {
@@ -5706,9 +6739,33 @@ window.addEventListener("keydown", event => {
             return;
         }
 
+        if (pendingTrapPlacement) {
+            cancelTrapPlacement(false);
+            return;
+        }
+
         if (pendingTowerPurchase || pendingTowerMoveIndex !== null) {
             cancelTowerPlacement(false);
             cancelTowerMove(false);
+            return;
+        }
+
+        if (shop && !shop.classList.contains("hidden")) {
+            closeShop();
+            return;
+        }
+
+        if (selectedStructureIds && selectedStructureIds.length) {
+            clearStructureSelection();
+            return;
+        }
+
+        if (buildPhaseActive) {
+            if (isPaused || isElementVisible(pausePanel)) {
+                resumeGame();
+            } else {
+                pauseGame();
+            }
             return;
         }
 
@@ -5727,10 +6784,41 @@ window.addEventListener("keydown", event => {
         return;
     }
 
-    if (event.code === "KeyR" && pendingBarricadePlacement) {
+    if (event.ctrlKey && /^Digit[1-5]$/.test(event.code)) {
         event.preventDefault();
-        barricadeBuildOrientation = barricadeBuildOrientation === "horizontal" ? "vertical" : "horizontal";
-        showCenterMessage(`Barricada ${barricadeBuildOrientation === "horizontal" ? "horizontal" : "vertical"}`, 550);
+        const slotIndex = Number(event.code.replace("Digit", "")) - 1;
+        useInventorySlot(slotIndex);
+        return;
+    }
+
+    if (event.code === "KeyC" && !event.repeat) {
+        event.preventDefault();
+        toggleConstruction("towers");
+        syncMusicState();
+        autoSaveRun(true);
+        return;
+    }
+
+    if (event.code === "KeyT" && !event.repeat) {
+        event.preventDefault();
+        toggleShop("stats");
+        syncMusicState();
+        autoSaveRun(true);
+        return;
+    }
+
+    if (event.code === "KeyR" && (pendingBarricadePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null)) {
+        event.preventDefault();
+        if (pendingBarricadePlacement) {
+            barricadeBuildOrientation = barricadeBuildOrientation === "horizontal" ? "vertical" : "horizontal";
+            showCenterMessage(`Barricada ${barricadeBuildOrientation === "horizontal" ? "horizontal" : "vertical"}`, 550);
+        } else if (pendingTowerMoveIndex !== null) {
+            rotateTowerObject(towers[pendingTowerMoveIndex]);
+            showCenterMessage(`Torre hacia ${getRotationLabel(towers[pendingTowerMoveIndex]?.rotation || 0)}`, 550);
+        } else {
+            towerBuildRotation = (towerBuildRotation + TOWER_ROTATION_STEP) % (Math.PI * 2);
+            showCenterMessage(`Torre hacia ${getRotationLabel(towerBuildRotation)}`, 550);
+        }
         return;
     }
 
@@ -5838,6 +6926,7 @@ if (consoleInput) consoleInput.addEventListener("keydown", event => {
 function openShop(sectionId = "stats") {
     if (!shop || !hasActiveRun) return;
     cancelBarricadePlacement(false);
+    cancelTrapPlacement(false);
     cancelTowerPlacement(false);
     waveSummaryPanel.classList.add("hidden");
     pausePanel.classList.add("hidden");
@@ -5859,6 +6948,7 @@ function openShop(sectionId = "stats") {
 function openConstruction(sectionId = "towers") {
     if (!shop || !hasActiveRun) return;
     cancelBarricadePlacement(false);
+    cancelTrapPlacement(false);
     cancelTowerPlacement(false);
     waveSummaryPanel.classList.add("hidden");
     pausePanel.classList.add("hidden");
@@ -5941,6 +7031,7 @@ if (skipBuildPhaseBtn) skipBuildPhaseBtn.addEventListener("click", () => {
 
 if (cancelBuildBtn) cancelBuildBtn.addEventListener("click", () => {
     cancelBarricadePlacement(false);
+    cancelTrapPlacement(false);
     cancelTowerPlacement(false);
     cancelTowerMove(false);
     showCenterMessage("Construcción cancelada", 650);
@@ -5954,11 +7045,18 @@ if (closeShopBtn) closeShopBtn.addEventListener("click", () => {
 });
 
 if (closeStructurePanelBtn) closeStructurePanelBtn.addEventListener("click", () => clearStructureSelection());
-if (structurePanelActions) structurePanelActions.addEventListener("click", event => {
+let lastStructurePanelPointerActionAt = 0;
+function handleStructurePanelActionEvent(event) {
     const button = event.target.closest("button[data-structure-action]");
-    if (!button) return;
+    if (!button || button.disabled) return;
     event.preventDefault();
+    lastStructurePanelPointerActionAt = performance.now();
     handleStructurePanelAction(button.dataset.structureAction);
+}
+if (structurePanelActions) structurePanelActions.addEventListener("pointerdown", handleStructurePanelActionEvent);
+if (structurePanelActions) structurePanelActions.addEventListener("click", event => {
+    if (performance.now() - lastStructurePanelPointerActionAt < 350) { event.preventDefault(); return; }
+    handleStructurePanelActionEvent(event);
 });
 
 newRunBtn.addEventListener("click", () => {
@@ -6030,6 +7128,7 @@ upgradeBarricadeBtn.addEventListener("click", () => buyOrUpgradeBarricade("stand
 buyRegenBarricadeBtn?.addEventListener("click", () => buyOrUpgradeBarricade("regen"));
 buyExplosiveBarricadeBtn?.addEventListener("click", () => buyOrUpgradeBarricade("explosive"));
 buyThornsBarricadeBtn?.addEventListener("click", () => buyOrUpgradeBarricade("thorns"));
+buyDoorBarricadeBtn?.addEventListener("click", () => buyOrUpgradeBarricade("door"));
 
 function getBarricadeUpgradeTarget(kind) {
     const activeBarricades = (barricades || []).filter(b => b.active && b.hp > 0 && b.kind === kind);
@@ -6038,6 +7137,11 @@ function getBarricadeUpgradeTarget(kind) {
 }
 
 function beginBarricadePlacement(kind = "standard", costKey = "upgradeBarricade") {
+    if (!canStartBuildPlacement("construir barricadas")) return;
+    if (wave < BARRICADE_UNLOCK_WAVE) {
+        showCenterMessage(`Barricadas disponibles desde wave ${BARRICADE_UNLOCK_WAVE}`, 1000);
+        return;
+    }
     if (pendingBarricadePlacement) return;
     const price = getBarricadeBaseCost(kind);
     if (coins < price) {
@@ -6047,6 +7151,7 @@ function beginBarricadePlacement(kind = "standard", costKey = "upgradeBarricade"
     clearStructureSelection();
     pendingBarricadePlacement = { kind, costKey, price };
     pendingTowerPurchase = null;
+    pendingTrapPlacement = null;
     closeShop();
     waveSummaryPanel.classList.add("hidden");
     showCenterMessage("Colocá barricadas · R rota · seguí colocando hasta quedarte sin monedas", 1400);
@@ -6103,7 +7208,7 @@ function finishBarricadePlacement() {
 }
 
 function buyOrUpgradeBarricade(kind = "standard") {
-    const costKey = kind === "regen" ? "regenBarricade" : kind === "explosive" ? "explosiveBarricade" : kind === "thorns" ? "thornsBarricade" : "upgradeBarricade";
+    const costKey = kind === "door" ? "doorBarricade" : kind === "regen" ? "regenBarricade" : kind === "explosive" ? "explosiveBarricade" : kind === "thorns" ? "thornsBarricade" : "upgradeBarricade";
     beginBarricadePlacement(kind, costKey);
 }
 
@@ -6136,19 +7241,21 @@ function upgradeBarricadeInstance(target, kind, resetKind = false) {
 
     const tier = barricadeTiers[Math.max(0, target.tier)];
     const level = Math.max(0, target.level || 0);
-    const baseHp = kind === "regen" ? 38 : kind === "explosive" ? 45 : kind === "thorns" ? 34 : 55;
-    const tierHp = kind === "standard" ? Math.max(0, target.tier) * 32 : 0;
-    const levelHp = level * (kind === "standard" ? 38 : kind === "regen" ? 24 : kind === "explosive" ? 28 : 22);
+    const baseHp = kind === "door" ? 17 : kind === "regen" ? 42 : kind === "explosive" ? 48 : kind === "thorns" ? 40 : 58;
+    const tierHp = kind === "standard" ? Math.max(0, target.tier) * 28 : 0;
+    const levelHp = level * (kind === "door" ? 9 : kind === "standard" ? 30 : kind === "regen" ? 21 : kind === "explosive" ? 24 : 20);
 
-    target.color = kind === "regen" ? "#8a5cff" : kind === "explosive" ? "#d9792b" : kind === "thorns" ? "#9c6b35" : tier.color;
+    target.color = kind === "door" ? "#6a4a2a" : kind === "regen" ? "#8a5cff" : kind === "explosive" ? "#d9792b" : kind === "thorns" ? "#9c6b35" : tier.color;
     target.maxHp = baseHp + tierHp + levelHp;
     target.hp = target.maxHp;
-    target.regenPerSecond = kind === "regen" ? 1.15 + level * 0.28 : 0;
+    target.regenPerSecond = kind === "regen" ? 0.9 + level * 0.22 : 0;
     target.explosive = kind === "explosive";
     target.thorns = kind === "thorns";
+    target.isDoor = kind === "door";
+    target.isOpen = kind === "door" ? Boolean(target.isOpen) : false;
     target.lastRegenTime = getGameTime();
 
-    const kindLabel = kind === "regen" ? "regenerativa" : kind === "explosive" ? "explosiva" : kind === "thorns" ? "con espinas" : "estándar";
+    const kindLabel = kind === "door" ? "puerta" : kind === "regen" ? "regenerativa" : kind === "explosive" ? "explosiva" : kind === "thorns" ? "con espinas" : "estándar";
     const tierLabel = kind === "standard" ? ` ${tier.name}` : "";
     const levelLabel = level > 0 ? ` +${level}` : "";
     showCenterMessage(`Barricada ${kindLabel}${tierLabel}${levelLabel}`, 850);
@@ -6181,6 +7288,8 @@ towerDefinitions.forEach((def, index) => {
     const btn = document.getElementById(`buyTower${index + 1}Btn`);
     btn?.addEventListener("click", () => buyTower(def.key));
 });
+buyTrapSnareBtn?.addEventListener("click", () => beginTrapPlacement("snare"));
+buyTrapBleedBtn?.addEventListener("click", () => beginTrapPlacement("bleed"));
 
 function handleTowerSlotActionClick(event) {
     const button = event.target.closest("button[data-tower-action]");
@@ -6238,6 +7347,63 @@ function buyTowerSlot() {
     autoSaveRun(true);
 }
 
+
+function beginTrapPlacement(typeKey) {
+    if (!canStartBuildPlacement("colocar trampas")) return;
+    const def = trapDefinitions[typeKey];
+    if (!def) return;
+    const price = costs[def.key] ?? def.cost;
+    if (coins < price) {
+        showCenterMessage(`Faltan ${formatMissingMoney(price - coins)} monedas`, 850);
+        return;
+    }
+    clearStructureSelection();
+    pendingTrapPlacement = { typeKey, price };
+    pendingTowerPurchase = null;
+    pendingBarricadePlacement = null;
+    closeShop();
+    showCenterMessage(`Colocá ${def.name} · seguí colocando o cancelá`, 1000);
+    updateBuildCancelUI();
+    updateHud(true);
+}
+
+function cancelTrapPlacement(showShopAgain = false) {
+    if (!pendingTrapPlacement) return;
+    pendingTrapPlacement = null;
+    updateBuildCancelUI();
+    if (showShopAgain && hasActiveRun) openConstruction("traps");
+    updateHud(true);
+}
+
+function finishTrapPlacement() {
+    if (!pendingTrapPlacement) return;
+    const def = trapDefinitions[pendingTrapPlacement.typeKey];
+    if (!def) { cancelTrapPlacement(false); return; }
+    const point = getSnappedBuildPoint();
+    if (!isTrapPositionValid(point.x, point.y)) {
+        showCenterMessage("No se puede poner la trampa ahí", 750);
+        return;
+    }
+    const price = costs[def.key] ?? def.cost;
+    if (coins < price) {
+        showCenterMessage("Monedas insuficientes", 800);
+        cancelTrapPlacement(false);
+        return;
+    }
+    coins -= price;
+    traps.push(createTrap(pendingTrapPlacement.typeKey, point.x, point.y));
+    if (coins < price) {
+        pendingTrapPlacement = null;
+        showCenterMessage("Trampa colocada · sin monedas para otra", 850);
+    } else {
+        pendingTrapPlacement = { typeKey: def.key === "trapSnare" ? "snare" : "bleed", price };
+        showCenterMessage("Trampa colocada · seguí colocando o cancelá", 850);
+    }
+    updateBuildCancelUI();
+    updateHud(true);
+    autoSaveRun(true);
+}
+
 function buyTower(defKey) {
     beginTowerPlacement(defKey);
 }
@@ -6255,6 +7421,8 @@ function upgradeTower(index, silent = false) {
 
     coins -= tower.upgradeCost;
     tower.spent = (Number(tower.spent) || 0) + tower.upgradeCost;
+    ensureTowerEconomy(tower);
+    const oldMaxHp = Number(tower.maxHp) || getTowerBaseMaxHp(tower);
     tower.level = (Number(tower.level) || 1) + 1;
 
     if (tower.type === "basic") {
@@ -6264,9 +7432,9 @@ function upgradeTower(index, silent = false) {
     }
 
     if (tower.type === "rapid") {
-        tower.damage += 0.24;
-        tower.range += 8;
-        tower.fireDelay = Math.max(190, tower.fireDelay - 24);
+        tower.damage += 0.18;
+        tower.range += 6;
+        tower.fireDelay = Math.max(175, tower.fireDelay - 18);
     }
 
     if (tower.type === "pierce") {
@@ -6312,11 +7480,28 @@ function upgradeTower(index, silent = false) {
         tower.fireDelay = Math.max(520, tower.fireDelay - 45);
     }
 
+    if (tower.type === "blade") {
+        tower.damage += 0.22;
+        tower.range += 5;
+        tower.fireDelay = Math.max(360, tower.fireDelay - 35);
+    }
+
+    if (tower.type === "spear") {
+        tower.damage += 0.58;
+        tower.range += 9;
+        tower.laneWidth = (tower.laneWidth || 38) + 1.5;
+        tower.fireDelay = Math.max(560, tower.fireDelay - 45);
+    }
+
     if (tower.type === "buffer") {
         tower.range += 18;
         tower.buffDamage += 0.025;
         tower.buffSpeed += 0.018;
     }
+
+    const hpGain = tower.type === "blade" ? 18 : tower.type === "spear" ? 11 : tower.type === "ballista" ? 12 : 8;
+    tower.maxHp = Math.max(oldMaxHp + hpGain, Number(tower.maxHp) || 0);
+    tower.hp = Math.min(tower.maxHp, (Number(tower.hp) || oldMaxHp) + hpGain);
 
     tower.upgradeCost = scaleTowerUpgradeCost(tower.upgradeCost);
     if (!silent) {
@@ -6348,8 +7533,12 @@ if (buyEclipseBtn) buyEclipseBtn.addEventListener("click", () => buyAbility("ecl
 
 function pauseGame() {
     if (!gameStarted || !hasActiveRun) return;
-    if (!waveInProgress) return;
+    if (!waveInProgress && !buildPhaseActive) return;
     if (isPaused && isElementVisible(pausePanel)) return;
+
+    if (buildPhaseActive) {
+        pausedBuildPhaseRemainingMs = getBuildPhaseRemainingMs();
+    }
 
     isPaused = true;
     gameRunning = false;
@@ -6364,6 +7553,11 @@ function pauseGame() {
 
 function resumeGame() {
     if (!gameStarted || !hasActiveRun) return;
+
+    if (buildPhaseActive && pausedBuildPhaseRemainingMs > 0) {
+        buildPhaseEndsAt = performance.now() + pausedBuildPhaseRemainingMs;
+        pausedBuildPhaseRemainingMs = 0;
+    }
 
     isPaused = false;
     lastFrameTime = performance.now();
@@ -6504,6 +7698,11 @@ menuSfxVolume.addEventListener("input", () => {
 
 pauseSfxVolume.addEventListener("input", () => {
     updateSfxVolume(pauseSfxVolume.value);
+});
+
+[menuMinimapSize, pauseMinimapSize].forEach(input => {
+    if (!input) return;
+    input.addEventListener("input", () => updateMinimapScale(input.value));
 });
 
 repeatWaveBtn.addEventListener("click", () => {
