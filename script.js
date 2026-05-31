@@ -557,6 +557,7 @@ const FIRST_TOWER_SLOT_COST = 850;
 const TOWER_SLOT_COST_MULTIPLIER = 1.58;
 const TOWER_SELL_REFUND = 0.7;
 const REPEAT_LIMIT_PER_WAVE = 3;
+const BOSS_BARRICADE_DAMAGE_MULTIPLIER = 1.2;
 let repeatCountsByWave = {};
 let isRepeatingWave = false;
 let currentGoldMultiplier = 1;
@@ -903,10 +904,13 @@ function damageBarricade(b, amount, sourceEnemy = null) {
         return;
     }
 
-    b.hp -= amount;
+    const isBossDamage = !!(sourceEnemy && (sourceEnemy.isBoss || sourceEnemy.isBossProjectile));
+    const finalAmount = isBossDamage ? amount * BOSS_BARRICADE_DAMAGE_MULTIPLIER : amount;
 
-    if (b.thorns && sourceEnemy) {
-        const reflected = Math.max(1, amount * 0.5);
+    b.hp -= finalAmount;
+
+    if (b.thorns && sourceEnemy && !sourceEnemy.isBossProjectile) {
+        const reflected = Math.max(1, finalAmount * 0.5);
         damageEnemy(sourceEnemy, reflected, false, "#ff9f55", "thorns");
     }
 
@@ -2246,8 +2250,21 @@ function fireBossProjectile(x, y, targetX, targetY, options = {}) {
         radius: options.radius ?? 8,
         damage: options.damage ?? Math.max(2, Math.ceil(2 + wave * 0.12)),
         color: options.color ?? "#ffb36b",
-        life: options.life ?? 4200
+        life: options.life ?? 4200,
+        isBossProjectile: true
     });
+}
+
+function getBossProjectileBarricadeHit(projectile) {
+    const activeBarricades = getActiveBarricades()
+        .slice()
+        .sort((a, b) => projectile.dx <= 0 ? b.x - a.x : a.x - b.x);
+
+    return activeBarricades.find(b => (
+        Math.abs(projectile.x - b.x) <= projectile.radius + 12 &&
+        projectile.y >= 45 - projectile.radius &&
+        projectile.y <= GAME_HEIGHT - 45 + projectile.radius
+    ));
 }
 
 function updateBossSpecials(now, defenseLineX) {
@@ -2306,7 +2323,7 @@ function updateBossSpecials(now, defenseLineX) {
                 bossProjectiles.push({
                     x: enemy.x, y: enemy.y,
                     dx: Math.cos(angle), dy: Math.sin(angle),
-                    speed: 3.2, radius: 7, damage: 4, color: "#73ff9f", life: 3900
+                    speed: 3.2, radius: 7, damage: 4, color: "#73ff9f", life: 3900, isBossProjectile: true
                 });
             }
             for (let i = 0; i < 6; i++) {
@@ -2314,7 +2331,7 @@ function updateBossSpecials(now, defenseLineX) {
                 bossProjectiles.push({
                     x: enemy.x, y: enemy.y,
                     dx: Math.cos(angle), dy: Math.sin(angle),
-                    speed: 2.35, radius: 6, damage: 3, color: "#b8ff73", life: 4300
+                    speed: 2.35, radius: 6, damage: 3, color: "#b8ff73", life: 4300, isBossProjectile: true
                 });
             }
             enemy.spiralAngle += 0.62;
@@ -2330,6 +2347,21 @@ function updateBossProjectiles() {
         p.life -= 16.666 * frameScale;
 
         if (p.x < -40 || p.x > GAME_WIDTH + 40 || p.y < -40 || p.y > GAME_HEIGHT + 40 || p.life <= 0) {
+            bossProjectiles.splice(i, 1);
+            continue;
+        }
+
+        const hitBarricade = getBossProjectileBarricadeHit(p);
+        if (hitBarricade) {
+            if (player && player.shieldCharges > 0) {
+                player.shieldCharges--;
+                createImpactParticles(hitBarricade.x, p.y, "#9be7ff");
+                showCenterMessage("¡Proyectil bloqueado!", 550);
+            } else {
+                damageBarricade(hitBarricade, p.damage, p);
+                createImpactParticles(hitBarricade.x, p.y, p.color);
+                addDamageText(hitBarricade.x + 20, p.y - 18, p.damage * BOSS_BARRICADE_DAMAGE_MULTIPLIER, false, "#ffb36b");
+            }
             bossProjectiles.splice(i, 1);
             continue;
         }
