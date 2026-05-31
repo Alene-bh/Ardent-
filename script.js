@@ -792,6 +792,7 @@ let isRepeatingWave = false;
 let currentGoldMultiplier = 1;
 let doomSpawnedThisWave = false;
 let lastDoomWave = -999;
+let titanRewardedWaves = {};
 
 const TOWER_TILE_SIZE = 50;
 const TOWER_TILE_HALF = TOWER_TILE_SIZE / 2;
@@ -2225,6 +2226,7 @@ function createDefaultState() {
     currentGoldMultiplier = 1;
     doomSpawnedThisWave = false;
     lastDoomWave = -999;
+    titanRewardedWaves = {};
     selectedBarricadeSlotIndex = 0;
     baseCore = null;
     basePlaced = false;
@@ -2407,6 +2409,7 @@ function buildSavePayload() {
         currentGoldMultiplier,
         doomSpawnedThisWave,
         lastDoomWave,
+        titanRewardedWaves,
         selectedBarricadeSlotIndex,
         baseCore,
         basePlaced,
@@ -2525,6 +2528,7 @@ function restoreSavedRun() {
         if (isRepeatingWave) currentGoldMultiplier = REPEAT_GOLD_MULTIPLIER;
         doomSpawnedThisWave = Boolean(data.doomSpawnedThisWave);
         lastDoomWave = Number.isFinite(Number(data.lastDoomWave)) ? Number(data.lastDoomWave) : -999;
+        titanRewardedWaves = data.titanRewardedWaves && typeof data.titanRewardedWaves === "object" ? data.titanRewardedWaves : {};
         selectedBarricadeSlotIndex = Number.isInteger(data.selectedBarricadeSlotIndex) ? Math.max(0, Math.min(1, data.selectedBarricadeSlotIndex)) : 0;
         baseCore = null;
         basePlaced = false;
@@ -2909,7 +2913,8 @@ function createEnemyFromType(type, options = {}) {
         isMini: Boolean(options.isMini),
         summonedById: options.summonedById || null,
         summonBatchId: options.summonBatchId || null,
-        healerFollowTargetId: null
+        healerFollowTargetId: null,
+        spawnWave: options.spawnWave ?? wave
     };
 
     if (enemy.special === "doombringer") {
@@ -2937,11 +2942,15 @@ function createEnemyFromType(type, options = {}) {
 
 function shouldSpawnDoomEnemy() {
     if (doomSpawnedThisWave) return false;
+    if (isRepeatingWave) return false;
     if (wave < 30) return false;
-    // Nunca aparece en dos oleadas consecutivas. Desde late-game se vuelve
-    // más probable, pero sigue siendo una amenaza rara y especial.
-    if (lastDoomWave === wave - 1) return false;
-    return Math.random() < Math.min(0.22, 0.018 + Math.pow(wave - 30, 0.55) * 0.006);
+    // Titán Negro: evento raro, no consecutivo y con descanso real entre apariciones.
+    // Así no puede aparecer en 30/31 ni encadenarse demasiado seguido en late.
+    const minGap = 6;
+    if (wave - lastDoomWave < minGap) return false;
+
+    const chance = Math.min(0.075, 0.018 + Math.max(0, wave - 30) * 0.00055);
+    return Math.random() < chance;
 }
 
 function spawnEnemy() {
@@ -3961,9 +3970,26 @@ function updateTraps() {
 }
 
 
-function dropTitanShard(x, y) {
+function tryDropTitanShard(enemy) {
+    if (!enemy || enemy.special !== "doombringer") return false;
+    const rewardWave = Math.max(1, Math.floor(Number(enemy.spawnWave) || Number(wave) || 1));
+
+    // Las copias del Titán Trino no dan recompensa: la variante completa entrega solo 1 mejora.
+    if (enemy.titanCopy) return false;
+
+    // Repetir una oleada con Titán no permite farmear mejoras.
+    if (isRepeatingWave) return false;
+    if (titanRewardedWaves && titanRewardedWaves[rewardWave]) return false;
+
+    titanRewardedWaves = titanRewardedWaves || {};
+    titanRewardedWaves[rewardWave] = true;
+    dropTitanShard(enemy.x, enemy.y, rewardWave);
+    return true;
+}
+
+function dropTitanShard(x, y, rewardWave = wave) {
     titanShards = titanShards || [];
-    titanShards.push({ id: Date.now() + Math.random(), x, y, radius: TITAN_SHARD_RADIUS, color: "#b64dff" });
+    titanShards.push({ id: Date.now() + Math.random(), x, y, rewardWave, radius: TITAN_SHARD_RADIUS, color: "#b64dff" });
     showCenterMessage("¡Fragmento del Titán!", 1200);
 }
 
@@ -4338,7 +4364,7 @@ function killEnemy(index) {
     }
 
     if (enemy.special === "doombringer") {
-        dropTitanShard(enemy.x, enemy.y);
+        tryDropTitanShard(enemy);
     }
 
     enemies.splice(index, 1);
@@ -5939,6 +5965,69 @@ function drawTraps() {
     });
 }
 
+function drawTitanShards() {
+    if (!titanShards || !titanShards.length) return;
+    const now = getGameTime();
+
+    titanShards.forEach(shard => {
+        if (!shard) return;
+        const radius = shard.radius || TITAN_SHARD_RADIUS;
+        const pulse = Math.sin(now * 0.006 + (shard.id || 0)) * 0.5 + 0.5;
+        const glow = radius + 8 + pulse * 8;
+        const bob = Math.sin(now * 0.004 + (shard.id || 0)) * 3;
+        const x = shard.x;
+        const y = shard.y + bob;
+
+        ctx.save();
+
+        // Aura grande para que no se pierda entre enemigos/torres.
+        ctx.globalAlpha = 0.32 + pulse * 0.22;
+        ctx.fillStyle = "#b64dff";
+        ctx.beginPath();
+        ctx.arc(x, y, glow, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.globalAlpha = 1;
+        ctx.shadowColor = "#d58cff";
+        ctx.shadowBlur = 18 + pulse * 10;
+
+        // Cristal violeta visible en el mundo.
+        ctx.fillStyle = "#9b35ff";
+        ctx.beginPath();
+        ctx.moveTo(x, y - radius - 4);
+        ctx.lineTo(x + radius * 0.78, y - radius * 0.08);
+        ctx.lineTo(x + radius * 0.52, y + radius + 5);
+        ctx.lineTo(x - radius * 0.52, y + radius + 5);
+        ctx.lineTo(x - radius * 0.78, y - radius * 0.08);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.strokeStyle = "#f0d4ff";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Brillo interno tipo gema.
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = "rgba(255,255,255,0.78)";
+        ctx.beginPath();
+        ctx.moveTo(x - radius * 0.18, y - radius * 0.58);
+        ctx.lineTo(x + radius * 0.12, y - radius * 0.18);
+        ctx.lineTo(x - radius * 0.08, y + radius * 0.18);
+        ctx.lineTo(x - radius * 0.36, y - radius * 0.12);
+        ctx.closePath();
+        ctx.fill();
+
+        // Indicador sutil de recogible.
+        ctx.fillStyle = "rgba(255,255,255,0.92)";
+        ctx.font = "bold 10px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText("FRAGMENTO", x, y - radius - 13);
+        ctx.textAlign = "left";
+
+        ctx.restore();
+    });
+}
+
 function drawEnemies() {
     enemies.forEach(enemy => {
         let radius = enemy.radius;
@@ -6566,7 +6655,7 @@ function updateTowerShopVisibility() {
         repeatWaveBtn.textContent = repeats >= REPEAT_LIMIT_PER_WAVE
             ? `Repetir ${targetWave}: límite`
             : `Repetir ${targetWave} (${repeats}/${REPEAT_LIMIT_PER_WAVE})`;
-        repeatWaveBtn.title = "Repite la misma oleada: enemigos +20% y 60% del oro de enemigos/bonus. Las minas pagan normal. Máximo 3 repeticiones por oleada.";
+        repeatWaveBtn.title = "Repite la misma oleada: enemigos +20% y 60% del oro de enemigos/bonus. Las minas pagan normal. El Titán Negro no da mejoras en repeat.";
     }
 
     updateAutoRepeatWaveButton();
@@ -6738,6 +6827,7 @@ function draw() {
     drawBarricade();
     drawMines();
     drawTraps();
+    drawTitanShards();
     drawPlayer();
     drawTowerPlacementTiles();
     drawTowers();
