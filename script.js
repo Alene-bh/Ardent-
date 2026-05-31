@@ -511,6 +511,7 @@ const tower9CostText = document.getElementById("tower9CostText");
 const tower10CostText = document.getElementById("tower10CostText");
 const tower11CostText = document.getElementById("tower11CostText");
 const tower12CostText = document.getElementById("tower12CostText");
+const tower13CostText = document.getElementById("tower13CostText");
 const trapSnareCostText = document.getElementById("trapSnareCostText");
 const trapBleedCostText = document.getElementById("trapBleedCostText");
 const mineGoldCostText = document.getElementById("mineGoldCostText");
@@ -840,6 +841,7 @@ function getTowerBaseMaxHp(t) {
     if (!t) return 36;
     if (t.type === "blade") return 60;
     if (t.type === "spear") return 44;
+    if (t.type === "laser") return 52;
     if (t.type === "rapid") return 22;
     if (t.type === "ballista") return 48;
     if (t.type === "buffer") return 34;
@@ -852,7 +854,7 @@ function ensureTowerEconomy(t) {
     if (!t) return t;
     t.spent = Number(t.spent) || Number(t.cost) || 0;
     t.upgradeCost = Number(t.upgradeCost) || Math.floor((Number(t.cost) || 100) * 1.35);
-    const fallbackMaxHp = getTowerBaseMaxHp(t) + Math.max(0, (Number(t.level) || 1) - 1) * (t.type === "blade" ? 8 : t.type === "spear" ? 7 : t.type === "ballista" ? 7 : 5);
+    const fallbackMaxHp = getTowerBaseMaxHp(t) + Math.max(0, (Number(t.level) || 1) - 1) * (t.type === "blade" ? 8 : t.type === "spear" ? 7 : t.type === "laser" ? 8 : t.type === "ballista" ? 7 : 5);
     if (!Number.isFinite(Number(t.maxHp)) || Number(t.maxHp) <= 0) {
         t.maxHp = fallbackMaxHp;
     } else if (Number(t.maxHp) > fallbackMaxHp * 1.35) {
@@ -1005,7 +1007,8 @@ const towerDefinitions = [
     { key: "tower9", name: "Buffer", type: "buffer", cost: 620, upgradeCost: 600, damage: 0, range: 180, fireDelay: 999999, color: "#b78cff", label: "+", buffDamage: 0.10, buffSpeed: 0.10 },
     { key: "tower10", name: "Lucky Block", type: "lucky", cost: 240, upgradeCost: 0, damage: 0, range: 0, fireDelay: 999999, color: "#ffe28a", label: "?" },
     { key: "tower11", name: "Cuchilla", type: "blade", cost: 90, upgradeCost: 120, damage: 0.55, range: 62, fireDelay: 620, color: "#d9d9d9", label: "C", maxHp: 60 },
-    { key: "tower12", name: "Lancera", type: "spear", cost: 135, upgradeCost: 165, damage: 1.05, range: 310, fireDelay: 1650, color: "#d7b06a", label: "L", maxHp: 44, laneWidth: 38 }
+    { key: "tower12", name: "Lancera", type: "spear", cost: 135, upgradeCost: 165, damage: 1.05, range: 310, fireDelay: 1650, color: "#d7b06a", label: "L", maxHp: 44, laneWidth: 38 },
+    { key: "tower13", name: "Láser", type: "laser", cost: 1450, upgradeCost: 950, damage: 14, range: 360, fireDelay: 120, color: "#ff4fd8", label: "⚡", maxHp: 52, beamWidth: 5 }
 ];
 
 const enemyTypes = [
@@ -2210,6 +2213,7 @@ function createDefaultState() {
         tower10: 240,
         tower11: 90,
         tower12: 135,
+        tower13: 1450,
         trapSnare: 55,
         trapBleed: 75,
         mineGold: FIRST_MINE_COST
@@ -2444,6 +2448,7 @@ function restoreSavedRun() {
         costs = data.costs || costs;
         if (!Number.isFinite(Number(costs.tower11))) costs.tower11 = 90;
         if (!Number.isFinite(Number(costs.tower12))) costs.tower12 = 135;
+        if (!Number.isFinite(Number(costs.tower13))) costs.tower13 = 1450;
         if (!Number.isFinite(Number(costs.doorBarricade))) costs.doorBarricade = getBarricadeBaseCost("door");
         if (!Number.isFinite(Number(costs.trapSnare))) costs.trapSnare = trapDefinitions.snare.cost;
         if (!Number.isFinite(Number(costs.trapBleed))) costs.trapBleed = trapDefinitions.bleed.cost;
@@ -3208,6 +3213,49 @@ function updateSpearTower(tower) {
     }
 }
 
+
+function updateLaserTower(tower) {
+    const now = getGameTime();
+    const range = tower.range || 0;
+    let target = tower.laserTarget;
+
+    if (!target || target.hp <= 0 || target.untargetable || Math.hypot(target.x - tower.x, target.y - tower.y) > range + (target.radius || 0)) {
+        target = findClosestEnemy(tower.x, tower.y, range);
+        tower.laserTarget = target;
+    }
+
+    if (!target) {
+        tower.laserCharge = Math.max(0, (tower.laserCharge || 0) - 0.08 * frameScale);
+        return;
+    }
+
+    const tickDelay = Math.max(55, tower.fireDelay || 120);
+    if (!tower.lastShotTime) tower.lastShotTime = now - tickDelay;
+    const elapsed = Math.max(0, now - tower.lastShotTime);
+
+    if (elapsed >= tickDelay) {
+        const ticks = Math.min(4, Math.floor(elapsed / tickDelay));
+        const damagePerSecond = getTowerDamage(tower);
+        const tickDamage = damagePerSecond * (tickDelay / 1000) * ticks;
+        tower.lastShotTime += tickDelay * ticks;
+        target.hp -= tickDamage;
+        target.hitFlash = 1;
+        tower.laserCharge = Math.min(1, (tower.laserCharge || 0) + 0.16 * ticks);
+
+        if (now - (tower.lastLaserTextAt || 0) >= 360) {
+            tower.lastLaserTextAt = now;
+            addDamageText(target.x, target.y - (target.radius || 12), damagePerSecond * 0.36, false, tower.color);
+            playHitSound();
+        }
+
+        if (target.hp <= 0) {
+            const idx = enemies.indexOf(target);
+            tower.laserTarget = null;
+            if (idx >= 0) killEnemy(idx);
+        }
+    }
+}
+
 function updateTowers() {
     applyTowerBuffs();
 
@@ -3217,6 +3265,11 @@ function updateTowers() {
 
         if (tower.type === "spear") {
             updateSpearTower(tower);
+            return;
+        }
+
+        if (tower.type === "laser") {
+            updateLaserTower(tower);
             return;
         }
 
@@ -5145,6 +5198,7 @@ function findClosestEnemy(x, y, maxDistance = Infinity, ignored = []) {
 
     enemies.forEach(enemy => {
         if (ignored.includes(enemy)) return;
+        if (enemy.untargetable || enemy.hp <= 0) return;
 
         const distance = Math.hypot(enemy.x - x, enemy.y - y);
 
@@ -5355,7 +5409,30 @@ function drawPlayer() {
             ctx.fillText(player.name, player.x - textWidth / 2, player.y - 31);
         }
     }
+
+    drawPlayerMiniHealthBar();
 }
+
+function drawPlayerMiniHealthBar() {
+    if (!player) return;
+    const width = 46;
+    const height = 5;
+    const x = player.x - width / 2;
+    const y = player.y - 25;
+    const pct = Math.max(0, Math.min(1, player.hp / Math.max(1, player.maxHp)));
+
+    ctx.fillStyle = "rgba(0,0,0,0.75)";
+    ctx.fillRect(x, y, width, height);
+    const grad = ctx.createLinearGradient(x, y, x + width, y);
+    grad.addColorStop(0, "#ff2f68");
+    grad.addColorStop(1, "#ff8bd1");
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, y, width * pct, height);
+    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, width, height);
+}
+
 
 function drawAlphaTesterName(name, x, y) {
     ctx.save();
@@ -5557,6 +5634,42 @@ function drawTowers() {
             ctx.lineTo(tipX - dir.x * headLength - perpX * headWidth, tipY - dir.y * headLength - perpY * headWidth);
             ctx.closePath();
             ctx.fill();
+        }
+
+        if (tower.type === "laser") {
+            const target = tower.laserTarget;
+            const charge = Math.max(0.25, Math.min(1, tower.laserCharge || 0.35));
+            ctx.strokeStyle = "rgba(255,79,216,0.55)";
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(tower.x, tower.y, 22 + charge * 4, 0, Math.PI * 2);
+            ctx.stroke();
+
+            ctx.fillStyle = "rgba(255,235,252,0.9)";
+            ctx.beginPath();
+            ctx.arc(tower.x, tower.y, 7 + charge * 2, 0, Math.PI * 2);
+            ctx.fill();
+
+            if (target && target.hp > 0) {
+                ctx.strokeStyle = "rgba(255,79,216,0.24)";
+                ctx.lineWidth = Math.max(10, (tower.beamWidth || 5) * 2.2);
+                ctx.beginPath();
+                ctx.moveTo(tower.x, tower.y);
+                ctx.lineTo(target.x, target.y);
+                ctx.stroke();
+
+                ctx.strokeStyle = "rgba(255,245,255,0.95)";
+                ctx.lineWidth = tower.beamWidth || 5;
+                ctx.beginPath();
+                ctx.moveTo(tower.x, tower.y);
+                ctx.lineTo(target.x, target.y);
+                ctx.stroke();
+
+                ctx.fillStyle = "rgba(255,79,216,0.8)";
+                ctx.beginPath();
+                ctx.arc(target.x, target.y, 7 + charge * 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
         }
 
         if (tower.type === "blade") {
@@ -6210,7 +6323,12 @@ function updateHud(force = false) {
     lastHudUpdateAt = hudNow;
 
     waveText.textContent = wave;
+    const hpPct = Math.max(0, Math.min(1, player.hp / Math.max(1, player.maxHp)));
     hpText.textContent = `${Math.round(player.hp)}/${player.maxHp}${player.shieldCharges > 0 ? ` 🛡${player.shieldCharges}` : ""}`;
+    const hpBarFill = document.getElementById("hpBarFill");
+    const hpHudBox = document.getElementById("hpHudBox");
+    if (hpBarFill) hpBarFill.style.width = `${hpPct * 100}%`;
+    if (hpHudBox) hpHudBox.title = `Vida: ${Math.round(player.hp)}/${player.maxHp}${player.shieldCharges > 0 ? ` · Escudos: ${player.shieldCharges}` : ""}`;
     barricadeText.textContent = `Muros ${Math.round(getTotalBarricadeHp())}/${Math.round(getTotalBarricadeMaxHp())}`;
     coinsText.textContent = formatMoney(coins);
     scoreText.textContent = formatCompactNumber(score);
@@ -7013,6 +7131,7 @@ function getTowerUpgradePreview(tower) {
     if (tower.type === "buffer") return `Nivel ${tower.level || 1} · ${hp} · buff ${Math.round((tower.buffDamage || 0) * 100)}% daño / ${Math.round((tower.buffSpeed || 0) * 100)}% vel.`;
     if (tower.type === "blade") return `Nivel ${tower.level || 1} · ${hp} · daño/tick ${formatCompactNumber(tower.damage || 0, 2)} · área ${Math.round(tower.range || 0)} · tick ${Math.round(tower.fireDelay || 0)}ms`;
     if (tower.type === "spear") return `Nivel ${tower.level || 1} · ${hp} · mira ${getRotationLabel(tower.rotation || 0)} · daño ${formatCompactNumber(tower.damage || 0, 2)} · alcance ${Math.round(tower.range || 0)}`;
+    if (tower.type === "laser") return `Nivel ${tower.level || 1} · ${hp} · DPS ${formatCompactNumber(tower.damage || 0, 2)} · alcance ${Math.round(tower.range || 0)} · objetivo único`;
     return `Nivel ${tower.level || 1} · ${hp} · daño ${formatCompactNumber(tower.damage || 0, 2)} · rango ${Math.round(tower.range || 0)} · delay ${Math.round(tower.fireDelay || 0)}ms`;
 }
 
@@ -8242,13 +8361,20 @@ function upgradeTower(index, silent = false) {
         tower.fireDelay = Math.max(1050, tower.fireDelay - 30);
     }
 
+    if (tower.type === "laser") {
+        tower.damage += 4.5;
+        tower.range += 14;
+        tower.beamWidth = Math.min(9, (tower.beamWidth || 5) + 0.35);
+        tower.fireDelay = Math.max(80, tower.fireDelay - 4);
+    }
+
     if (tower.type === "buffer") {
         tower.range += 18;
         tower.buffDamage += 0.025;
         tower.buffSpeed += 0.018;
     }
 
-    const hpGain = tower.type === "blade" ? 8 : tower.type === "spear" ? 7 : tower.type === "ballista" ? 7 : 5;
+    const hpGain = tower.type === "blade" ? 8 : tower.type === "spear" ? 7 : tower.type === "laser" ? 8 : tower.type === "ballista" ? 7 : 5;
     tower.maxHp = Math.max(oldMaxHp + hpGain, Number(tower.maxHp) || 0);
     tower.hp = Math.min(tower.maxHp, (Number(tower.hp) || oldMaxHp) + hpGain);
 
