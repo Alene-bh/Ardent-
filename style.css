@@ -1045,3 +1045,36 @@ h1 {
 .towerSlotUpgradeButton:hover {
     background: linear-gradient(135deg, #6042b5, #3a8a6b) !important;
 }
+
+.barricadeSlotChoice {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    background: #202020;
+    border: 1px solid #444;
+    border-radius: 10px;
+    padding: 10px;
+    color: #ddd;
+}
+
+.barricadeSlotChoice span {
+    color: #ffe28a;
+    font-weight: bold;
+}
+
+.barricadeSlotChoiceButton {
+    width: auto !important;
+    min-height: 36px !important;
+    padding: 8px 12px !important;
+    background: #303030;
+    border: 1px solid #666;
+}
+
+.barricadeSlotChoiceButton.active {
+    background: #2eaf5d;
+    border-color: #73ff9f;
+    box-shadow: 0 0 10px rgba(115, 255, 159, 0.35);
+}
