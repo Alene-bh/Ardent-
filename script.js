@@ -16,6 +16,10 @@ const BARRICADE_THICKNESS = 24;
 const BASE_RADIUS = 34;
 const PLAYER_SURVIVAL_SPEED = 1.75;
 const ENEMY_SURVIVAL_SPEED_MULTIPLIER = 0.72;
+const BUILD_PHASE_DURATION = 30000;
+let buildPhaseActive = false;
+let buildPhaseEndsAt = 0;
+let buildPhaseStartingWave = false;
 let camera = { x: 0, y: 0 };
 let baseCore = null;
 let basePlaced = false;
@@ -292,6 +296,7 @@ const openShopBtn = document.getElementById("openShopBtn");
 const openShopHudBtn = document.getElementById("openShopHudBtn");
 const closeShopBtn = document.getElementById("closeShopBtn");
 const constructionBtn = document.getElementById("constructionBtn");
+const skipBuildPhaseBtn = document.getElementById("skipBuildPhaseBtn");
 const cancelBuildBtn = document.getElementById("cancelBuildBtn");
 const structurePanel = document.getElementById("structurePanel");
 const structurePanelTitle = document.getElementById("structurePanelTitle");
@@ -713,11 +718,27 @@ function isBuildRectInsideWorld(rect) {
     return rect.left >= 0 && rect.right <= WORLD_WIDTH && rect.top >= 0 && rect.bottom <= WORLD_HEIGHT;
 }
 
+
+function circleIntersectsRect(cx, cy, radius, rect, padding = 0) {
+    const closestX = Math.max(rect.left - padding, Math.min(rect.right + padding, cx));
+    const closestY = Math.max(rect.top - padding, Math.min(rect.bottom + padding, cy));
+    return Math.hypot(cx - closestX, cy - closestY) <= radius;
+}
+
+function buildRectOverlapsEnemy(rect, padding = 10) {
+    return (enemies || []).some(enemy => enemy.hp > 0 && circleIntersectsRect(enemy.x, enemy.y, (enemy.radius || 12) + padding, rect, 0));
+}
+
+function buildCircleOverlapsEnemy(x, y, radius, padding = 10) {
+    return (enemies || []).some(enemy => enemy.hp > 0 && Math.hypot(enemy.x - x, enemy.y - y) < (enemy.radius || 12) + radius + padding);
+}
+
 function isTowerPositionOccupied(x, y, ignoredTower = null) {
     const towerRect = getEntityRect({ x, y, radius: TOWER_COLLISION_RADIUS });
     if (!isBuildRectInsideWorld(towerRect)) return true;
     if (baseCore && Math.hypot(x - baseCore.x, y - baseCore.y) < BASE_RADIUS + TOWER_COLLISION_RADIUS + 18) return true;
     if (player && Math.hypot(x - player.x, y - player.y) < 38) return true;
+    if (buildCircleOverlapsEnemy(x, y, TOWER_COLLISION_RADIUS, 10)) return true;
     if ((towers || []).some(t => t !== ignoredTower && rectsOverlap(towerRect, getEntityRect({ x: t.x, y: t.y, radius: TOWER_COLLISION_RADIUS }), 6))) return true;
     if ((barricades || []).some(b => b.active && b.hp > 0 && rectsOverlap(towerRect, getEntityRect({ ...b, isBuildBarricade: true }), 6))) return true;
     return false;
@@ -728,6 +749,7 @@ function isBarricadePositionValid(x, y, orientation = barricadeBuildOrientation,
     if (!isBuildRectInsideWorld(rect)) return false;
     if (baseCore && rectsOverlap(rect, getEntityRect({ x: baseCore.x, y: baseCore.y, radius: BASE_RADIUS }), 10)) return false;
     if (player && rectsOverlap(rect, getEntityRect({ x: player.x, y: player.y, radius: 22 }), 8)) return false;
+    if (buildRectOverlapsEnemy(rect, 10)) return false;
     if ((towers || []).some(t => rectsOverlap(rect, getEntityRect({ x: t.x, y: t.y, radius: TOWER_COLLISION_RADIUS }), 6))) return false;
     if ((barricades || []).some(b => b !== ignoredBarricade && b.active && b.hp > 0 && rectsOverlap(rect, getEntityRect({ ...b, isBuildBarricade: true }), 4))) return false;
     return true;
@@ -1538,6 +1560,8 @@ function createDefaultState() {
     speedIndex = 0;
     autoMode = false;
     autoRepeatWaveMode = false;
+    buildPhaseActive = false;
+    buildPhaseEndsAt = 0;
 
     if (speedBtn) speedBtn.textContent = "Velocidad x1";
 
@@ -1710,6 +1734,8 @@ function buildSavePayload() {
         speedIndex,
         autoMode,
         autoRepeatWaveMode: false,
+        buildPhaseActive,
+        buildPhaseRemainingMs: buildPhaseActive ? Math.max(0, buildPhaseEndsAt - performance.now()) : 0,
         waveInProgress,
         gameRunning: Boolean(gameRunning && waveInProgress),
         enemiesToSpawn,
@@ -1742,7 +1768,7 @@ function buildSavePayload() {
         inventory,
         inventoryCooldownUntil,
         waveStats,
-        uiMode: waveInProgress ? "wave" : (!shop.classList.contains("hidden") ? "shop" : (!waveSummaryPanel.classList.contains("hidden") ? "summary" : "shop"))
+        uiMode: waveInProgress ? "wave" : (buildPhaseActive ? "build" : (!shop.classList.contains("hidden") ? "shop" : (!waveSummaryPanel.classList.contains("hidden") ? "summary" : "shop")))
     };
 }
 
@@ -1818,8 +1844,10 @@ function restoreSavedRun() {
         speedIndex = Number(data.speedIndex) || 0;
         autoMode = Boolean(data.autoMode);
         autoRepeatWaveMode = false;
-        waveInProgress = Boolean(data.waveInProgress);
-        gameRunning = Boolean(data.gameRunning && data.waveInProgress);
+        buildPhaseActive = Boolean(data.buildPhaseActive);
+        buildPhaseEndsAt = buildPhaseActive ? performance.now() + Math.max(1000, Math.min(BUILD_PHASE_DURATION, Number(data.buildPhaseRemainingMs) || BUILD_PHASE_DURATION)) : 0;
+        waveInProgress = buildPhaseActive ? false : Boolean(data.waveInProgress);
+        gameRunning = Boolean(!buildPhaseActive && data.gameRunning && data.waveInProgress);
         enemiesToSpawn = Number(data.enemiesToSpawn) || 0;
         enemiesSpawned = Number(data.enemiesSpawned) || 0;
         spawnInterval = Number(data.spawnInterval) || 900;
@@ -1894,9 +1922,14 @@ function restoreSavedRun() {
 
         if (!waveInProgress) {
             gameRunning = false;
-            if (data.uiMode === "summary") {
+            if (buildPhaseActive) {
+                shop.classList.add("hidden");
+                waveSummaryPanel.classList.add("hidden");
+                const remainingSeconds = Math.max(1, Math.ceil(getBuildPhaseRemainingMs() / 1000));
+                showCenterMessage(`${remainingSeconds} segundos antes de la próxima oleada`, 900);
+            } else if (data.uiMode === "summary") {
                 showWaveSummary();
-            } else {
+            } else if (data.uiMode === "shop") {
                 shop.classList.remove("hidden");
                 setShopSection("stats");
             }
@@ -1977,8 +2010,14 @@ function startGame() {
 }
 
 function startWave() {
+    buildPhaseActive = false;
+    buildPhaseEndsAt = 0;
+    updateBuildPhaseUI();
     cancelTowerPlacement(false);
     cancelBarricadePlacement(false);
+    if (structurePanel) structurePanel.classList.add("hidden");
+    selectedStructureIds = [];
+    selectedStructureType = null;
     waveInProgress = true;
     gameRunning = true;
 
@@ -2392,7 +2431,7 @@ function clampPlayerToPlayableArea() {
 }
 
 function updatePlayerMovement() {
-    if (!gameRunning || isPaused || !player || !waveInProgress) return;
+    if (isPaused || !player || (!waveInProgress && !buildPhaseActive)) return;
 
     let dx = 0;
     let dy = 0;
@@ -2695,6 +2734,75 @@ function updateBossProjectiles() {
     }
 }
 
+function resolveEnemyCollisions() {
+    if (!enemies || enemies.length < 2) return;
+
+    const cellSize = 54;
+    const grid = new Map();
+
+    enemies.forEach((enemy, index) => {
+        if (!enemy || enemy.hp <= 0) return;
+        const cx = Math.floor(enemy.x / cellSize);
+        const cy = Math.floor(enemy.y / cellSize);
+        const key = `${cx},${cy}`;
+        if (!grid.has(key)) grid.set(key, []);
+        grid.get(key).push(index);
+    });
+
+    const checked = new Set();
+    enemies.forEach((a, i) => {
+        if (!a || a.hp <= 0) return;
+        const cx = Math.floor(a.x / cellSize);
+        const cy = Math.floor(a.y / cellSize);
+
+        for (let gx = cx - 1; gx <= cx + 1; gx++) {
+            for (let gy = cy - 1; gy <= cy + 1; gy++) {
+                const bucket = grid.get(`${gx},${gy}`);
+                if (!bucket) continue;
+
+                bucket.forEach(j => {
+                    if (j <= i) return;
+                    const key = `${i}:${j}`;
+                    if (checked.has(key)) return;
+                    checked.add(key);
+
+                    const b = enemies[j];
+                    if (!b || b.hp <= 0) return;
+                    const minDist = (a.radius || 12) + (b.radius || 12) + 3;
+                    let dx = b.x - a.x;
+                    let dy = b.y - a.y;
+                    let dist = Math.hypot(dx, dy);
+                    if (dist >= minDist) return;
+
+                    if (dist < 0.001) {
+                        const angle = ((i * 73 + j * 41) % 360) * Math.PI / 180;
+                        dx = Math.cos(angle);
+                        dy = Math.sin(angle);
+                        dist = 1;
+                    }
+
+                    const overlap = (minDist - dist) * 0.5;
+                    const nx = dx / dist;
+                    const ny = dy / dist;
+                    const aMass = a.isBoss ? 2.6 : 1;
+                    const bMass = b.isBoss ? 2.6 : 1;
+                    const totalMass = aMass + bMass;
+
+                    a.x -= nx * overlap * (bMass / totalMass) * 1.4;
+                    a.y -= ny * overlap * (bMass / totalMass) * 1.4;
+                    b.x += nx * overlap * (aMass / totalMass) * 1.4;
+                    b.y += ny * overlap * (aMass / totalMass) * 1.4;
+
+                    a.x = clampWorldX(a.x, (a.radius || 12) + 3);
+                    a.y = clampWorldY(a.y, (a.radius || 12) + 3);
+                    b.x = clampWorldX(b.x, (b.radius || 12) + 3);
+                    b.y = clampWorldY(b.y, (b.radius || 12) + 3);
+                });
+            }
+        }
+    });
+}
+
 function updateEnemies() {
     const now = getGameTime();
     const defenseLineX = getDefenseLineX();
@@ -2824,6 +2932,8 @@ function updateEnemies() {
             if (ended) return;
         }
     }
+
+    resolveEnemyCollisions();
 }
 
 function updateProjectiles() {
@@ -3323,6 +3433,7 @@ function completeWave() {
     waveInProgress = false;
     gameRunning = false;
 
+    const completedWave = wave;
     const waveBonus = wave * 20;
     const goldBonus = getGoldAmount(8 + Math.floor(wave * 1.5));
 
@@ -3333,30 +3444,74 @@ function completeWave() {
     waveStats.gold += goldBonus;
     waveStats.bonus = waveBonus;
 
+    waveSummaryPanel.classList.add("hidden");
     autoSaveRun(true);
+    enterBuildPhase(completedWave, goldBonus);
+}
 
+function enterBuildPhase(completedWave, goldBonus = 0) {
+    buildPhaseActive = true;
+    buildPhaseEndsAt = performance.now() + BUILD_PHASE_DURATION;
+    gameRunning = false;
+    waveInProgress = false;
+    isRepeatingWave = false;
+    currentGoldMultiplier = 1;
+    wave = completedWave + 1;
+    resetWaveStats();
+    closeShop();
+    updateBuildPhaseUI();
+    showCenterMessage(`Wave ${completedWave} completada · +${formatMoney(goldBonus)} oro · 30 segundos antes de la próxima oleada`, 1900);
+    autoSaveRun(true);
+}
 
-    if (autoMode) {
-        showCenterMessage(`Wave ${wave} completada`, 700);
+function getBuildPhaseRemainingMs() {
+    if (!buildPhaseActive) return 0;
+    if (!Number.isFinite(buildPhaseEndsAt) || buildPhaseEndsAt <= 0) {
+        buildPhaseEndsAt = performance.now() + BUILD_PHASE_DURATION;
+    }
+    return Math.max(0, buildPhaseEndsAt - performance.now());
+}
 
-        setTimeout(() => {
-            if (!autoMode) {
-                showWaveSummary();
-                return;
-            }
+function beginNextWaveFromBuildPhase(source = "timer") {
+    if (!buildPhaseActive || buildPhaseStartingWave) return;
 
-            if (!hasActiveRun) return;
+    buildPhaseStartingWave = true;
+    buildPhaseActive = false;
+    buildPhaseEndsAt = 0;
+    isPaused = false;
+    gameRunning = false;
+    waveInProgress = false;
 
-            wave++;
-            isRepeatingWave = false;
-            currentGoldMultiplier = 1;
-            startWave();
-        }, 900);
+    updateBuildPhaseUI();
+    showCenterMessage(`Oleada ${wave}`, 900);
+    startWave();
+    buildPhaseStartingWave = false;
+    autoSaveRun(true);
+}
 
+function skipBuildPhase() {
+    beginNextWaveFromBuildPhase("skip");
+}
+
+function updateBuildPhase() {
+    if (!buildPhaseActive) return;
+
+    const remainingMs = getBuildPhaseRemainingMs();
+    if (remainingMs <= 0) {
+        beginNextWaveFromBuildPhase("timer");
         return;
     }
 
-    showWaveSummary();
+    updateBuildPhaseUI();
+}
+
+function updateBuildPhaseUI() {
+    if (!skipBuildPhaseBtn) return;
+    skipBuildPhaseBtn.classList.toggle("hidden", !buildPhaseActive);
+    if (buildPhaseActive) {
+        const remaining = Math.max(1, Math.ceil(getBuildPhaseRemainingMs() / 1000));
+        skipBuildPhaseBtn.textContent = `Próxima oleada en ${remaining}s · Saltar`;
+    }
 }
 
 function showWaveSummary() {
@@ -4656,6 +4811,7 @@ function updateHud(force = false) {
     updateAbilityBar();
     updateBossBar();
     updateBuildCancelUI();
+    updateBuildPhaseUI();
     updateStructurePanel();
 
     // Los controles casi nunca cambian durante una oleada. Evitamos recorrer
@@ -4873,8 +5029,13 @@ function gameLoop() {
     frameScale = Math.max(1, Math.min(delta / 16.666, 2.5));
 
     recoverFrozenWaveState("loop");
+    updateBuildPhase();
 
-    if (gameStarted && gameRunning && waveInProgress && !isPaused && !document.hidden) {
+    const managementModeActive = isManagementModeActive();
+    const waveActive = gameRunning && waveInProgress && !isPaused && !managementModeActive;
+    const buildIntermissionActive = buildPhaseActive && !isPaused && !isElementVisible(shop) && !isElementVisible(consolePanel) && !isElementVisible(waveSummaryPanel) && !isElementVisible(gameOverScreen);
+
+    if (gameStarted && !document.hidden && (waveActive || buildIntermissionActive)) {
         gameTime += delta * gameSpeed;
     }
 
@@ -4885,7 +5046,7 @@ function gameLoop() {
 
     const now = getGameTime();
 
-    if (gameRunning && waveInProgress && !isPaused) {
+    if (waveActive) {
         if (enemiesSpawned < enemiesToSpawn && now - lastSpawnTime > spawnInterval) {
             spawnEnemy();
             lastSpawnTime = now;
@@ -4903,6 +5064,11 @@ function gameLoop() {
         updateEclipseEffects();
         updateSlowZones();
         checkWaveComplete();
+    } else if (buildIntermissionActive) {
+        // Intermedio activo: no aparecen enemigos, pero el jugador puede moverse
+        // y construir mientras corre el contador hacia la próxima oleada.
+        updatePlayerMovement();
+        regenerateBarricades();
     }
 
     updateVisualEffects();
@@ -4940,12 +5106,19 @@ function isElementVisible(element) {
     return !!element && !element.classList.contains("hidden");
 }
 
-function isWaveBlockingPanelOpen() {
+function isManagementModeActive() {
     return (
         isElementVisible(shop) ||
+        isElementVisible(structurePanel) ||
+        isElementVisible(consolePanel) ||
         isElementVisible(waveSummaryPanel) ||
-        isElementVisible(gameOverScreen)
+        isElementVisible(gameOverScreen) ||
+        isInBuildPlacementMode()
     );
+}
+
+function isWaveBlockingPanelOpen() {
+    return isManagementModeActive();
 }
 
 function recoverFrozenWaveState(reason = "auto") {
@@ -5760,6 +5933,10 @@ if (constructionBtn) constructionBtn.addEventListener("click", () => {
     toggleConstruction("towers");
     syncMusicState();
     autoSaveRun(true);
+});
+
+if (skipBuildPhaseBtn) skipBuildPhaseBtn.addEventListener("click", () => {
+    skipBuildPhase();
 });
 
 if (cancelBuildBtn) cancelBuildBtn.addEventListener("click", () => {
