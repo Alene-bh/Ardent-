@@ -474,6 +474,18 @@ let playerName = localStorage.getItem("ardentPlayerName") || "Jugador";
 let alphaTesterName = localStorage.getItem("ardentAlphaTesterName") || "";
 let developerName = localStorage.getItem("ardentDeveloperName") || "";
 
+const SAVE_KEY = "ardentTowerDefenseSavedRunV3";
+const SAVE_VERSION = 3;
+const AUTO_SAVE_INTERVAL = 1500;
+const HUD_REFRESH_INTERVAL = 120;
+const MAX_DAMAGE_TEXTS = 80;
+const MAX_PARTICLES = 260;
+const MAX_EFFECTS = 80;
+let lastAutoSaveAt = 0;
+let lastHudUpdateAt = 0;
+let towerSlotsRenderSignature = "";
+let savedRunAvailable = false;
+
 const alphaTesterCommands = {
     aza: "Aza",
     saki: "Saki",
@@ -1052,7 +1064,8 @@ function finishTowerMove(tile) {
     pendingTowerMoveIndex = null;
     if (!waveInProgress && hasActiveRun) shop.classList.remove("hidden");
     showCenterMessage(`${tower.name} movida`, 750);
-    updateHud();
+    updateHud(true);
+    autoSaveRun(true);
 }
 
 function finishTowerPlacement(tile) {
@@ -1094,7 +1107,8 @@ function finishTowerPlacement(tile) {
     towers.push(tower);
     pendingTowerPurchase = null;
     if (!waveInProgress && hasActiveRun) shop.classList.remove("hidden");
-    updateHud();
+    updateHud(true);
+    autoSaveRun(true);
 }
 
 function getLateGameGoldMultiplier() {
@@ -1323,6 +1337,225 @@ function resetWaveStats() {
     };
 }
 
+function getSerializableProjectile(projectile) {
+    if (!projectile) return projectile;
+    const copy = { ...projectile };
+    copy.sourceTowerId = projectile.sourceTower ? projectile.sourceTower.id : projectile.sourceTowerId || null;
+    copy.sourceTower = null;
+    copy.hitEnemies = [];
+    return copy;
+}
+
+function getSerializableZone(zone) {
+    if (!zone) return zone;
+    const copy = { ...zone };
+    copy.sourceTowerId = zone.sourceTower ? zone.sourceTower.id : zone.sourceTowerId || null;
+    copy.sourceTower = null;
+    return copy;
+}
+
+function buildSavePayload() {
+    if (!hasActiveRun || !player) return null;
+
+    return {
+        version: SAVE_VERSION,
+        savedAt: Date.now(),
+        wave,
+        coins,
+        score,
+        gameTime,
+        gameSpeed,
+        speedIndex,
+        autoMode,
+        autoRepeatWaveMode,
+        waveInProgress,
+        gameRunning: Boolean(gameRunning && waveInProgress),
+        enemiesToSpawn,
+        enemiesSpawned,
+        spawnInterval,
+        lastSpawnTime,
+        repeatCountsByWave,
+        isRepeatingWave,
+        currentGoldMultiplier,
+        doomSpawnedThisWave,
+        lastDoomWave,
+        player,
+        barricades,
+        towers,
+        abilities,
+        costs,
+        enemies,
+        projectiles: (projectiles || []).map(getSerializableProjectile),
+        bossProjectiles,
+        slowZones: (slowZones || []).map(getSerializableZone),
+        poisonZones: (poisonZones || []).map(getSerializableZone),
+        fireZones,
+        damageTexts,
+        particles,
+        effects,
+        waveStats,
+        uiMode: waveInProgress ? "wave" : (!shop.classList.contains("hidden") ? "shop" : (!waveSummaryPanel.classList.contains("hidden") ? "summary" : "shop"))
+    };
+}
+
+function saveRunNow() {
+    try {
+        const payload = buildSavePayload();
+        if (!payload) return;
+        localStorage.setItem(SAVE_KEY, JSON.stringify(payload));
+        savedRunAvailable = true;
+        updateStartButtonSavedState();
+    } catch (error) {
+        console.log("Save error:", error);
+    }
+}
+
+function autoSaveRun(force = false) {
+    if (!hasActiveRun || !player) return;
+    const now = performance.now();
+    if (!force && now - lastAutoSaveAt < AUTO_SAVE_INTERVAL) return;
+    lastAutoSaveAt = now;
+    saveRunNow();
+}
+
+function clearSavedRun() {
+    localStorage.removeItem(SAVE_KEY);
+    savedRunAvailable = false;
+    updateStartButtonSavedState();
+}
+
+function hasSavedRun() {
+    try {
+        return Boolean(localStorage.getItem(SAVE_KEY));
+    } catch (error) {
+        return false;
+    }
+}
+
+function relinkSavedReferences() {
+    const towerById = new Map((towers || []).map(tower => [tower.id, tower]));
+
+    (projectiles || []).forEach(projectile => {
+        projectile.hitEnemies = Array.isArray(projectile.hitEnemies) ? projectile.hitEnemies : [];
+        projectile.sourceTower = projectile.sourceTowerId ? towerById.get(projectile.sourceTowerId) || null : null;
+    });
+
+    (slowZones || []).forEach(zone => {
+        zone.sourceTower = zone.sourceTowerId ? towerById.get(zone.sourceTowerId) || null : null;
+    });
+
+    (poisonZones || []).forEach(zone => {
+        zone.sourceTower = zone.sourceTowerId ? towerById.get(zone.sourceTowerId) || null : null;
+    });
+}
+
+function restoreSavedRun() {
+    try {
+        const raw = localStorage.getItem(SAVE_KEY);
+        if (!raw) return false;
+
+        const data = JSON.parse(raw);
+        if (!data || data.version !== SAVE_VERSION || !data.player || !Array.isArray(data.towers)) {
+            clearSavedRun();
+            return false;
+        }
+
+        wave = Number(data.wave) || 1;
+        coins = Number(data.coins) || 0;
+        score = Number(data.score) || 0;
+        gameTime = Number(data.gameTime) || 0;
+        gameSpeed = Number(data.gameSpeed) || 1;
+        speedIndex = Number(data.speedIndex) || 0;
+        autoMode = Boolean(data.autoMode);
+        autoRepeatWaveMode = Boolean(data.autoRepeatWaveMode);
+        waveInProgress = Boolean(data.waveInProgress);
+        gameRunning = Boolean(data.gameRunning && data.waveInProgress);
+        enemiesToSpawn = Number(data.enemiesToSpawn) || 0;
+        enemiesSpawned = Number(data.enemiesSpawned) || 0;
+        spawnInterval = Number(data.spawnInterval) || 900;
+        lastSpawnTime = Number(data.lastSpawnTime) || getGameTime();
+        repeatCountsByWave = data.repeatCountsByWave || {};
+        isRepeatingWave = Boolean(data.isRepeatingWave);
+        currentGoldMultiplier = Number(data.currentGoldMultiplier) || 1;
+        doomSpawnedThisWave = Boolean(data.doomSpawnedThisWave);
+        lastDoomWave = Number.isFinite(Number(data.lastDoomWave)) ? Number(data.lastDoomWave) : -999;
+
+        player = data.player;
+        player.name = developerName || alphaTesterName || playerName;
+        player.alphaTester = Boolean(alphaTesterName);
+        player.developer = Boolean(developerName);
+
+        barricades = Array.isArray(data.barricades) ? data.barricades : [createBarricadeSlot("Inicio", 120), createBarricadeSlot("Avanzada", ADVANCED_BARRICADE_X)];
+        barricade = barricades[0];
+        towers = Array.isArray(data.towers) ? data.towers : [];
+        updateTowerSlotIndexes();
+
+        abilities = data.abilities || abilities;
+        costs = data.costs || costs;
+        applyControlsToAbilities();
+
+        enemies = Array.isArray(data.enemies) ? data.enemies : [];
+        projectiles = Array.isArray(data.projectiles) ? data.projectiles : [];
+        bossProjectiles = Array.isArray(data.bossProjectiles) ? data.bossProjectiles : [];
+        slowZones = Array.isArray(data.slowZones) ? data.slowZones : [];
+        poisonZones = Array.isArray(data.poisonZones) ? data.poisonZones : [];
+        fireZones = Array.isArray(data.fireZones) ? data.fireZones : [];
+        damageTexts = Array.isArray(data.damageTexts) ? data.damageTexts : [];
+        particles = Array.isArray(data.particles) ? data.particles : [];
+        effects = Array.isArray(data.effects) ? data.effects : [];
+        waveStats = data.waveStats || { kills: 0, gold: 0, score: 0, bonus: 0 };
+
+        relinkSavedReferences();
+
+        hasActiveRun = true;
+        isPaused = false;
+        pendingTowerPurchase = null;
+        pendingTowerMoveIndex = null;
+        towerSlotsRenderSignature = "";
+        lastFrameTime = performance.now();
+        frameScale = 1;
+
+        if (speedBtn) speedBtn.textContent = `Velocidad x${gameSpeed}`;
+        if (autoModeBtn) {
+            autoModeBtn.textContent = autoMode ? "Auto ON" : "Auto OFF";
+            autoModeBtn.classList.toggle("autoActive", autoMode);
+        }
+        if (autoRepeatWaveBtn) {
+            autoRepeatWaveBtn.classList.toggle("autoActive", autoRepeatWaveMode);
+        }
+
+        shop.classList.add("hidden");
+        waveSummaryPanel.classList.add("hidden");
+        gameOverScreen.classList.add("hidden");
+        pausePanel.classList.add("hidden");
+
+        if (!waveInProgress) {
+            gameRunning = false;
+            if (data.uiMode === "summary") {
+                showWaveSummary();
+            } else {
+                shop.classList.remove("hidden");
+                setShopSection("stats");
+            }
+        }
+
+        updateHud(true);
+        return true;
+    } catch (error) {
+        console.log("Load save error:", error);
+        clearSavedRun();
+        return false;
+    }
+}
+
+function updateStartButtonSavedState() {
+    savedRunAvailable = hasSavedRun();
+    if (startGameBtn && !gameStarted) {
+        startGameBtn.textContent = savedRunAvailable ? "Continuar partida" : "Jugar";
+        startGameBtn.title = savedRunAvailable ? "Hay una partida guardada en este navegador." : "";
+    }
+}
+
 function startGame() {
     if (playerNameInput) {
         const typedName = playerNameInput.value.trim();
@@ -1337,11 +1570,15 @@ function startGame() {
 
     menu.classList.add("hidden");
     gameArea.classList.remove("hidden");
+    resizeCanvasForDisplay();
 
     if (!hasActiveRun) {
-        createDefaultState();
-        hasActiveRun = true;
-        startWave();
+        const restored = restoreSavedRun();
+        if (!restored) {
+            createDefaultState();
+            hasActiveRun = true;
+            startWave();
+        }
     } else {
         isPaused = false;
         pausePanel.classList.add("hidden");
@@ -1397,7 +1634,8 @@ function startWave() {
     lastFrameTime = performance.now();
     frameScale = 1;
     syncMusicState();
-    updateHud();
+    updateHud(true);
+    autoSaveRun(true);
 }
 
 function getEnemiesAmountForWave() {
@@ -1756,14 +1994,17 @@ function updateTowers() {
         if (!tower.owned || tower.type === "buffer") return;
 
         let closestEnemy = null;
-        let closestDistance = Infinity;
+        let closestDistanceSq = Infinity;
+        const rangeSq = tower.range * tower.range;
 
         enemies.forEach(enemy => {
             if (enemy.untargetable) return;
-            const distance = Math.hypot(enemy.x - tower.x, enemy.y - tower.y);
+            const dx = enemy.x - tower.x;
+            const dy = enemy.y - tower.y;
+            const distanceSq = dx * dx + dy * dy;
 
-            if (distance < closestDistance && distance <= tower.range) {
-                closestDistance = distance;
+            if (distanceSq < closestDistanceSq && distanceSq <= rangeSq) {
+                closestDistanceSq = distanceSq;
                 closestEnemy = enemy;
             }
         });
@@ -2461,9 +2702,15 @@ function addDamageText(x, y, amount, isCrit = false, textColor = null) {
         color: textColor || (isCrit ? "#ffe28a" : "white"),
         size: isCrit ? 22 : 15
     });
+
+    if (damageTexts.length > MAX_DAMAGE_TEXTS) {
+        damageTexts.splice(0, damageTexts.length - MAX_DAMAGE_TEXTS);
+    }
 }
 
 function createImpactParticles(x, y, color) {
+    if (particles.length > MAX_PARTICLES) return;
+
     for (let i = 0; i < 5; i++) {
         particles.push({
             x,
@@ -2499,6 +2746,9 @@ function createDeathExplosion(x, y, color, count) {
         life: 26,
         color
     });
+
+    if (particles.length > MAX_PARTICLES) particles.splice(0, particles.length - MAX_PARTICLES);
+    if (effects.length > MAX_EFFECTS) effects.splice(0, effects.length - MAX_EFFECTS);
 }
 
 function updateVisualEffects() {
@@ -2579,6 +2829,8 @@ function completeWave() {
     waveStats.gold += goldBonus;
     waveStats.bonus = waveBonus;
 
+    autoSaveRun(true);
+
     if (autoRepeatWaveMode) {
         const repeats = getRepeatCountForCurrentWave();
 
@@ -2643,6 +2895,7 @@ function showWaveSummary() {
     summaryBonusText.textContent = waveStats.bonus;
 
     waveSummaryPanel.classList.remove("hidden");
+    autoSaveRun(true);
 }
 
 function getLeaderboardPlayerName() {
@@ -2757,6 +3010,7 @@ async function submitLeaderboardScore() {
 }
 
 function endRun() {
+    clearSavedRun();
     stopMusicAndReset();
     hasActiveRun = false;
     isPaused = false;
@@ -3596,7 +3850,11 @@ function updateBarricadeButtonState(button, kind, costKey) {
     );
 }
 
-function updateHud() {
+function updateHud(force = false) {
+    const hudNow = performance.now();
+    if (!force && gameRunning && waveInProgress && hudNow - lastHudUpdateAt < HUD_REFRESH_INTERVAL) return;
+    lastHudUpdateAt = hudNow;
+
     waveText.textContent = wave;
     hpText.textContent = `${Math.round(player.hp)}/${player.maxHp}${player.shieldCharges > 0 ? ` 🛡${player.shieldCharges}` : ""}`;
     barricadeText.textContent = `${Math.round(getTotalBarricadeHp())}/${Math.round(getTotalBarricadeMaxHp())}`;
@@ -3672,7 +3930,12 @@ function updateHud() {
     updateAbilityShopVisibility();
     updateAbilityBar();
     updateBossBar();
-    updateControlsUI();
+
+    // Los controles casi nunca cambian durante una oleada. Evitamos recorrer
+    // botones del DOM en cada frame para ganar fluidez en PCs chicas.
+    if (force || !gameRunning || !waveInProgress) {
+        updateControlsUI();
+    }
 }
 
 function updateTowerShopVisibility() {
@@ -3711,6 +3974,24 @@ function updateTowerShopVisibility() {
 
 function renderTowerSlotsPanel() {
     if (!towerSlotsPanel) return;
+
+    const signature = JSON.stringify({
+        coins,
+        towers: (towers || []).map(tower => ({
+            id: tower.id,
+            name: tower.name,
+            level: tower.level,
+            x: Math.round(tower.x),
+            y: Math.round(tower.y),
+            spent: Math.round(tower.spent || 0),
+            upgradeCost: tower.upgradeCost,
+            buffDamage: tower.buffDamage,
+            buffSpeed: tower.buffSpeed
+        }))
+    });
+
+    if (signature === towerSlotsRenderSignature) return;
+    towerSlotsRenderSignature = signature;
 
     if (towers.length === 0) {
         towerSlotsPanel.innerHTML = `<p class="towerSlotEmpty">No hay torres colocadas. Comprá una torre y elegí un tile verde en el mapa.</p>`;
@@ -3837,6 +4118,7 @@ function gameLoop() {
 
     updateVisualEffects();
     updateHud();
+    autoSaveRun();
     draw();
 
     requestAnimationFrame(gameLoop);
@@ -4021,6 +4303,7 @@ function killAllEnemiesFromConsole() {
 }
 
 function resetRunFromConsole() {
+    clearSavedRun();
     stopMusicAndReset();
     createDefaultState();
 
@@ -4192,6 +4475,12 @@ resetControlsButtons.forEach(button => {
 
 updateControlsUI();
 
+window.addEventListener("beforeunload", () => {
+    autoSaveRun(true);
+});
+
+updateStartButtonSavedState();
+
 startGameBtn.addEventListener("click", startGame);
 
 if (refreshLeaderboardBtn) refreshLeaderboardBtn.addEventListener("click", loadLeaderboard);
@@ -4235,9 +4524,11 @@ openShopBtn.addEventListener("click", () => {
     shop.classList.remove("hidden");
     setShopSection("stats");
     syncMusicState();
+    autoSaveRun(true);
 });
 
 newRunBtn.addEventListener("click", () => {
+    clearSavedRun();
     createDefaultState();
     hasActiveRun = true;
     startWave();
@@ -4553,7 +4844,8 @@ function upgradeTower(index) {
     }
 
     tower.upgradeCost = scaleTowerUpgradeCost(tower.upgradeCost);
-    updateHud();
+    updateHud(true);
+    autoSaveRun(true);
 }
 
 function sellTower(index) {
@@ -4563,7 +4855,8 @@ function sellTower(index) {
     coins += refund;
     towers.splice(index, 1);
     updateTowerSlotIndexes();
-    updateHud();
+    updateHud(true);
+    autoSaveRun(true);
 }
 
 buyBombBtn.addEventListener("click", () => buyAbility("bomb"));
@@ -4618,6 +4911,7 @@ function backToMainMenuWithoutLosingProgress() {
 }
 
 function restartRunFromPause() {
+    clearSavedRun();
     stopMusicAndReset();
 
     createDefaultState();
@@ -4640,7 +4934,8 @@ function buyAbility(id) {
     if (coins >= ability.cost) {
         coins -= ability.cost;
         ability.owned = true;
-        updateHud();
+        updateHud(true);
+        autoSaveRun(true);
     }
 }
 
