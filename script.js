@@ -86,7 +86,12 @@ const sounds = {
 sounds.music.loop = true;
 
 // Sprites del jugador: poné tus PNG en assets/sprites.
-// Soporta sprite sheets horizontales: cada frame se calcula como alto x alto.
+// Este pack usa sprite sheets en GRILLA de 32x32 por frame.
+// Ejemplos de tus archivos:
+// idle.png  64x96  -> 2 columnas x 3 filas
+// walk.png  128x96 -> 4 columnas x 3 filas
+// hurt.png  64x96  -> 2 columnas x 3 filas
+// death.png 96x96  -> 3 columnas x 3 filas
 const playerSpritePaths = {
     idle: "assets/sprites/idle.png",
     walk: "assets/sprites/walk.png",
@@ -94,7 +99,8 @@ const playerSpritePaths = {
     death: "assets/sprites/death.png"
 };
 
-const PLAYER_SPRITE_DRAW_SIZE = 58;
+const PLAYER_SPRITE_TILE_SIZE = 32;
+const PLAYER_SPRITE_DRAW_SIZE = 72;
 const playerSprites = {};
 
 function loadPlayerSprites() {
@@ -107,10 +113,14 @@ function loadPlayerSprites() {
 
 function getSpriteFrameData(img) {
     if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) return null;
-    const frameHeight = img.naturalHeight;
-    const frameWidth = frameHeight;
-    const frameCount = Math.max(1, Math.floor(img.naturalWidth / frameWidth));
-    return { frameWidth, frameHeight, frameCount };
+
+    const frameWidth = PLAYER_SPRITE_TILE_SIZE;
+    const frameHeight = PLAYER_SPRITE_TILE_SIZE;
+    const columns = Math.max(1, Math.floor(img.naturalWidth / frameWidth));
+    const rows = Math.max(1, Math.floor(img.naturalHeight / frameHeight));
+    const frameCount = Math.max(1, columns * rows);
+
+    return { frameWidth, frameHeight, columns, rows, frameCount };
 }
 
 function getPlayerSpriteAnimation() {
@@ -128,15 +138,15 @@ function drawPlayerSprite() {
     let img = playerSprites[animation];
     let frameData = getSpriteFrameData(img);
 
-    // Fallback elegante: si falta hurt/death/walk, usa idle. Si no hay sprites, vuelve al dibujo viejo.
+    // Fallback: si falta hurt/death/walk, usa idle. Si no hay sprites, vuelve al dibujo viejo.
     if (!frameData && animation !== "idle") {
         img = playerSprites.idle;
         frameData = getSpriteFrameData(img);
     }
     if (!frameData) return false;
 
-    const { frameWidth, frameHeight, frameCount } = frameData;
-    const fpsByAnimation = { idle: 5, walk: 10, hurt: 8, death: 7 };
+    const { frameWidth, frameHeight, columns, frameCount } = frameData;
+    const fpsByAnimation = { idle: 5, walk: 10, hurt: 9, death: 7 };
     const fps = fpsByAnimation[animation] || 8;
     let frameIndex = 0;
 
@@ -147,7 +157,8 @@ function drawPlayerSprite() {
         frameIndex = Math.floor(getGameTime() / (1000 / fps)) % frameCount;
     }
 
-    const sx = frameIndex * frameWidth;
+    const sx = (frameIndex % columns) * frameWidth;
+    const sy = Math.floor(frameIndex / columns) * frameHeight;
     const drawSize = PLAYER_SPRITE_DRAW_SIZE;
     const aimX = Number.isFinite(player.aimX) ? player.aimX : player.x + (player.lastMoveX || 1);
     const shouldFlip = aimX < player.x;
@@ -156,7 +167,17 @@ function drawPlayerSprite() {
     ctx.translate(player.x, player.y);
     if (shouldFlip) ctx.scale(-1, 1);
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(img, sx, 0, frameWidth, frameHeight, -drawSize / 2, -drawSize / 2, drawSize, drawSize);
+    ctx.drawImage(
+        img,
+        sx,
+        sy,
+        frameWidth,
+        frameHeight,
+        -drawSize / 2,
+        -drawSize / 2,
+        drawSize,
+        drawSize
+    );
     ctx.restore();
     return true;
 }
