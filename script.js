@@ -592,7 +592,7 @@ const towerDefinitions = [
     { key: "tower3", name: "Perforante", type: "pierce", cost: 160, upgradeCost: 180, damage: 3, range: 250, fireDelay: 1200, color: "#ffdf6b", label: "P" },
     { key: "tower4", name: "Hielo", type: "slow", cost: 220, upgradeCost: 240, damage: 0, range: 260, fireDelay: 2600, color: "#9be7ff", label: "H", slowAmount: 0.45, slowDuration: 1600, areaRadius: 58 },
     { key: "tower5", name: "Doble", type: "double", cost: 260, upgradeCost: 300, damage: 1, range: 235, fireDelay: 1050, color: "#ff8bd1", label: "D" },
-    { key: "tower6", name: "Veneno", type: "poison", cost: 310, upgradeCost: 350, damage: 5, range: 250, fireDelay: 2400, color: "#8cff4a", label: "V", areaRadius: 62, poisonDuration: 3300, tickDelay: 550 },
+    { key: "tower6", name: "Veneno", type: "poison", cost: 310, upgradeCost: 350, damage: 2.2, range: 240, fireDelay: 3000, color: "#8cff4a", label: "V", areaRadius: 52, poisonDuration: 2800, tickDelay: 700 },
     { key: "tower7", name: "Ballesta", type: "ballista", cost: 360, upgradeCost: 420, damage: 14, range: 320, fireDelay: 2850, color: "#c58b4b", label: "X" },
     { key: "tower8", name: "Sanguijuela", type: "siphon", cost: 420, upgradeCost: 460, damage: 1, drainAmount: 2.8, range: 245, fireDelay: 850, color: "#b81444", label: "S" },
     { key: "tower9", name: "Buffer", type: "buffer", cost: 620, upgradeCost: 600, damage: 0, range: 180, fireDelay: 999999, color: "#b78cff", label: "+", buffDamage: 0.16, buffSpeed: 0.12 },
@@ -776,14 +776,14 @@ const specialEnemyTypes = [
     {
         name: "Titán Negro",
         color: "#050505",
-        hp: 95,
-        speed: 0.16,
-        reward: 70,
-        score: 180,
+        hp: 140,
+        speed: 0.22,
+        reward: 90,
+        score: 240,
         damageToDefense: 999,
         attackDelay: 99999,
         special: "doombringer",
-        unlockWave: 22,
+        unlockWave: 30,
         rare: true
     }
 ];
@@ -1203,6 +1203,8 @@ function createDefaultState() {
     repeatCountsByWave = {};
     isRepeatingWave = false;
     currentGoldMultiplier = 1;
+    doomSpawnedThisWave = false;
+    lastDoomWave = -999;
 
     barricades = [
         createBarricadeSlot("Inicio", 120),
@@ -1487,9 +1489,11 @@ function createEnemyFromType(type, options = {}) {
 
 function shouldSpawnDoomEnemy() {
     if (doomSpawnedThisWave) return false;
-    if (wave < 22) return false;
+    if (wave < 30) return false;
+    // Nunca aparece en dos oleadas consecutivas. Desde late-game se vuelve
+    // más probable, pero sigue siendo una amenaza rara y especial.
     if (lastDoomWave === wave - 1) return false;
-    return Math.random() < Math.min(0.08, 0.025 + wave * 0.0012);
+    return Math.random() < Math.min(0.12, 0.018 + (wave - 30) * 0.0025);
 }
 
 function spawnEnemy() {
@@ -3535,6 +3539,31 @@ function getBarricadeStatusText() {
     }).join(" · ");
 }
 
+
+function setShopButtonAffordability(button, cost, extraDisabled = false, extraTitle = "") {
+    if (!button) return;
+
+    const numericCost = Number(cost) || 0;
+    const cantAfford = numericCost > coins;
+
+    button.disabled = Boolean(extraDisabled) || cantAfford;
+    button.classList.toggle("cantAfford", cantAfford);
+
+    if (cantAfford) {
+        button.title = `Faltan ${numericCost - coins} monedas`;
+    } else {
+        button.title = extraTitle || "";
+    }
+}
+
+function markShopButtonAffordability(button, cost) {
+    if (!button) return;
+    const numericCost = Number(cost) || 0;
+    const cantAfford = numericCost > coins;
+    button.classList.toggle("cantAfford", cantAfford);
+    if (cantAfford) button.title = `Faltan ${numericCost - coins} monedas`;
+}
+
 function hasDamagedPlayerHp() {
     return player && player.hp < player.maxHp;
 }
@@ -3556,12 +3585,15 @@ function updateBarricadeButtonState(button, kind, costKey) {
 
     const state = getBarricadeActionState(kind);
     const cost = costs[costKey] || 0;
-    button.disabled = coins < cost || !state.canBuyOrUpgrade;
-
     const actionText = state.hasSameKind ? "Mejorar" : state.hasBrokenSlot ? "Comprar" : "Bloqueada";
-    button.title = state.canBuyOrUpgrade
-        ? `${actionText} barricada`
-        : "Ya tenés 2 barricadas activas. Para cambiar a este tipo, primero se tiene que romper una.";
+    setShopButtonAffordability(
+        button,
+        cost,
+        !state.canBuyOrUpgrade,
+        state.canBuyOrUpgrade
+            ? `${actionText} barricada`
+            : "Ya tenés 2 barricadas activas. Para cambiar a este tipo, primero se tiene que romper una."
+    );
 }
 
 function updateHud() {
@@ -3581,6 +3613,11 @@ function updateHud() {
     maxHpCostText.textContent = costs.maxHp;
     critCostText.textContent = costs.crit;
 
+    setShopButtonAffordability(upgradeDamageBtn, costs.damage);
+    setShopButtonAffordability(upgradeFireRateBtn, costs.fireRate);
+    setShopButtonAffordability(upgradeMaxHpBtn, costs.maxHp);
+    setShopButtonAffordability(upgradeCritBtn, costs.crit);
+
     smallPotionCostText.textContent = costs.smallPotion;
     mediumPotionCostText.textContent = costs.mediumPotion;
     largePotionCostText.textContent = costs.largePotion;
@@ -3590,16 +3627,14 @@ function updateHud() {
     if (lifeStealPotionCostText) lifeStealPotionCostText.textContent = costs.lifeStealPotion;
 
     const needsHealing = hasDamagedPlayerHp();
-    buySmallPotionBtn.disabled = coins < costs.smallPotion || !needsHealing;
-    buyMediumPotionBtn.disabled = coins < costs.mediumPotion || !needsHealing;
-    buyLargePotionBtn.disabled = coins < costs.largePotion || !needsHealing;
-    buySmallPotionBtn.title = needsHealing ? "" : "No podés comprar pociones de vida si tenés la vida llena.";
-    buyMediumPotionBtn.title = needsHealing ? "" : "No podés comprar pociones de vida si tenés la vida llena.";
-    buyLargePotionBtn.title = needsHealing ? "" : "No podés comprar pociones de vida si tenés la vida llena.";
-    if (buyShieldPotionBtn) buyShieldPotionBtn.disabled = coins < costs.shieldPotion;
-    if (buyAttackSpeedPotionBtn) buyAttackSpeedPotionBtn.disabled = coins < costs.attackSpeedPotion;
-    if (buyDoubleShotPotionBtn) buyDoubleShotPotionBtn.disabled = coins < costs.doubleShotPotion;
-    if (buyLifeStealPotionBtn) buyLifeStealPotionBtn.disabled = coins < costs.lifeStealPotion;
+    const fullLifeTitle = "No podés comprar pociones de vida si tenés la vida llena.";
+    setShopButtonAffordability(buySmallPotionBtn, costs.smallPotion, !needsHealing, needsHealing ? "" : fullLifeTitle);
+    setShopButtonAffordability(buyMediumPotionBtn, costs.mediumPotion, !needsHealing, needsHealing ? "" : fullLifeTitle);
+    setShopButtonAffordability(buyLargePotionBtn, costs.largePotion, !needsHealing, needsHealing ? "" : fullLifeTitle);
+    setShopButtonAffordability(buyShieldPotionBtn, costs.shieldPotion);
+    setShopButtonAffordability(buyAttackSpeedPotionBtn, costs.attackSpeedPotion);
+    setShopButtonAffordability(buyDoubleShotPotionBtn, costs.doubleShotPotion);
+    setShopButtonAffordability(buyLifeStealPotionBtn, costs.lifeStealPotion);
 
     repairBarricadeCostText.textContent = costs.repairBarricade;
     upgradeBarricadeCostText.textContent = costs.upgradeBarricade;
@@ -3608,8 +3643,12 @@ function updateHud() {
     if (thornsBarricadeCostText) thornsBarricadeCostText.textContent = costs.thornsBarricade;
 
     const hasDamagedBarricade = (barricades || []).some(b => b.active && b.hp > 0 && b.hp < b.maxHp);
-    repairBarricadeBtn.disabled = coins < costs.repairBarricade || !hasDamagedBarricade;
-    repairBarricadeBtn.title = hasDamagedBarricade ? "" : "No hay barricadas dañadas para reparar.";
+    setShopButtonAffordability(
+        repairBarricadeBtn,
+        costs.repairBarricade,
+        !hasDamagedBarricade,
+        hasDamagedBarricade ? "" : "No hay barricadas dañadas para reparar."
+    );
     updateBarricadeButtonState(upgradeBarricadeBtn, "standard", "upgradeBarricade");
     updateBarricadeButtonState(buyRegenBarricadeBtn, "regen", "regenBarricade");
     updateBarricadeButtonState(buyExplosiveBarricadeBtn, "explosive", "explosiveBarricade");
@@ -3642,7 +3681,12 @@ function updateTowerShopVisibility() {
 
     towerDefinitions.forEach((def, index) => {
         const btn = document.getElementById(`buyTower${index + 1}Btn`);
-        if (btn) btn.disabled = !!pendingTowerPurchase || full || coins < (costs[def.key] ?? def.cost);
+        const price = costs[def.key] ?? def.cost;
+        if (btn) {
+            const extraDisabled = !!pendingTowerPurchase || full;
+            const extraTitle = full ? "Límite de torres alcanzado" : pendingTowerPurchase ? "Ya estás colocando una torre" : "";
+            setShopButtonAffordability(btn, price, extraDisabled, extraTitle);
+        }
     });
 
     if (repeatWaveBtn) {
@@ -3680,7 +3724,7 @@ function renderTowerSlotsPanel() {
             <div class="towerSlotCard">
                 <strong>Slot ${index + 1}: ${tower.name}</strong><br>
                 <small>Nivel ${tower.level} · Pos: ${Math.round(tower.x)},${Math.round(tower.y)} · Gastado: ${Math.round(tower.spent || 0)} · Venta: ${refund}</small>${buffText}<br>
-                <button type="button" data-tower-action="upgrade" data-index="${index}" ${coins < tower.upgradeCost ? "disabled" : ""}>Mejorar (${tower.upgradeCost})</button>
+                <button type="button" data-tower-action="upgrade" data-index="${index}" class="${coins < tower.upgradeCost ? "cantAfford" : ""}" title="${coins < tower.upgradeCost ? `Faltan ${tower.upgradeCost - coins} monedas` : ""}" ${coins < tower.upgradeCost ? "disabled" : ""}>Mejorar (${tower.upgradeCost})</button>
                 <button type="button" data-tower-action="move" data-index="${index}">Mover</button>
                 <button type="button" data-tower-action="sell" data-index="${index}" class="dangerMiniButton">Vender (${refund})</button>
             </div>`;
@@ -3688,12 +3732,12 @@ function renderTowerSlotsPanel() {
 }
 
 function updateAbilityShopVisibility() {
-    buyBombBtn.disabled = abilities.bomb.owned;
-    buyFreezeBtn.disabled = abilities.freeze.owned;
-    buyTsunamiBtn.disabled = abilities.tsunami.owned;
-    buyLightningBtn.disabled = abilities.lightning.owned;
-    buyMeteorBtn.disabled = abilities.meteor.owned;
-    if (buyEclipseBtn) buyEclipseBtn.disabled = abilities.eclipse.owned;
+    setShopButtonAffordability(buyBombBtn, abilities.bomb.cost, abilities.bomb.owned, abilities.bomb.owned ? "Ya compraste esta habilidad" : "");
+    setShopButtonAffordability(buyFreezeBtn, abilities.freeze.cost, abilities.freeze.owned, abilities.freeze.owned ? "Ya compraste esta habilidad" : "");
+    setShopButtonAffordability(buyTsunamiBtn, abilities.tsunami.cost, abilities.tsunami.owned, abilities.tsunami.owned ? "Ya compraste esta habilidad" : "");
+    setShopButtonAffordability(buyLightningBtn, abilities.lightning.cost, abilities.lightning.owned, abilities.lightning.owned ? "Ya compraste esta habilidad" : "");
+    setShopButtonAffordability(buyMeteorBtn, abilities.meteor.cost, abilities.meteor.owned, abilities.meteor.owned ? "Ya compraste esta habilidad" : "");
+    setShopButtonAffordability(buyEclipseBtn, abilities.eclipse.cost, abilities.eclipse.owned, abilities.eclipse.owned ? "Ya compraste esta habilidad" : "");
 
     if (abilities.bomb.owned) buyBombBtn.innerHTML = `Bomba comprada<br><small>${abilities.bomb.key} para usar</small>`;
     if (abilities.freeze.owned) buyFreezeBtn.innerHTML = `Congelar comprado<br><small>${abilities.freeze.key} para usar</small>`;
@@ -4487,11 +4531,13 @@ function upgradeTower(index) {
     }
 
     if (tower.type === "poison") {
-        tower.damage += 2.2;
-        tower.range += 12;
-        tower.areaRadius += 5;
-        tower.poisonDuration += 350;
-        tower.fireDelay = Math.max(1450, tower.fireDelay - 105);
+        // Nerf de balance: el veneno mantiene utilidad en área, pero deja de
+        // escalar como condición ganadora automática con 2-3 torres nivel 3.
+        tower.damage += 0.75;
+        tower.range += 8;
+        tower.areaRadius += 2;
+        tower.poisonDuration += 150;
+        tower.fireDelay = Math.max(2400, tower.fireDelay - 80);
     }
 
     if (tower.type === "siphon") {
