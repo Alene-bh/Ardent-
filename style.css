@@ -149,6 +149,32 @@ button:disabled {
     font-weight: bold;
 }
 
+
+.coinsHudBox {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    min-width: 86px !important;
+    color: #ffd84a;
+    font-weight: bold;
+}
+
+.coinHudIcon {
+    width: 18px;
+    height: 18px;
+    object-fit: contain;
+    image-rendering: pixelated;
+    flex: 0 0 auto;
+}
+
+.coinsHudText {
+    color: #ffd84a;
+    font-weight: 900;
+    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.85), 0 0 8px rgba(255, 216, 74, 0.35);
+    letter-spacing: 0.3px;
+}
+
 #abilityBar {
     display: flex;
     gap: 5px;
