@@ -200,7 +200,238 @@ function drawPlayerSprite() {
     return true;
 }
 
+
 loadPlayerSprites();
+
+// Sprite base para enemigos comunes/especiales.
+// Usamos una sola spritesheet y la teñimos por código con el color original
+// que ya tenía cada enemigo cuando era círculo. Bosses y Titán Negro quedan aparte.
+const enemySpritePath = "assets/sprites/enemies/devil_guy_spritesheet.png";
+const ENEMY_SPRITE_TILE_SIZE = 32;
+const ENEMY_SPRITE_BASE_DRAW_SIZE = 54;
+const enemySpriteImage = new Image();
+enemySpriteImage.src = enemySpritePath;
+const tintedEnemySpriteCache = new Map();
+let enemySpriteSourceCanvas = null;
+let enemySpriteFrameDataCache = null;
+
+// Moneda del HUD y monedas voladoras al matar enemigos.
+// Poné el gif en: assets/sprites/coin.gif
+const coinSpritePath = "assets/sprites/coin.gif";
+const coinImage = new Image();
+coinImage.src = coinSpritePath;
+let coinImageAvailable = false;
+coinImage.onload = () => { coinImageAvailable = true; };
+coinImage.onerror = () => { coinImageAvailable = false; };
+let flyingCoins = [];
+
+function getCssColorRgb(color) {
+    const helper = getCssColorRgb.canvas || (getCssColorRgb.canvas = document.createElement("canvas"));
+    helper.width = helper.height = 1;
+    const hctx = helper.getContext("2d");
+    hctx.clearRect(0, 0, 1, 1);
+    hctx.fillStyle = "#ffffff";
+    hctx.fillStyle = color || "#ffffff";
+    hctx.fillRect(0, 0, 1, 1);
+    const data = hctx.getImageData(0, 0, 1, 1).data;
+    return { r: data[0], g: data[1], b: data[2], a: data[3] };
+}
+
+function getEnemySpriteFrameData() {
+    if (enemySpriteFrameDataCache) return enemySpriteFrameDataCache;
+    const img = enemySpriteImage;
+    if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) return null;
+
+    const frameWidth = ENEMY_SPRITE_TILE_SIZE;
+    const frameHeight = ENEMY_SPRITE_TILE_SIZE;
+    const columns = Math.max(1, Math.floor(img.naturalWidth / frameWidth));
+    const rows = Math.max(1, Math.floor(img.naturalHeight / frameHeight));
+    const frameCount = columns * rows;
+    const validFrames = [];
+
+    // Algunas sheets tienen celdas vacías. Las detectamos para que el enemigo
+    // no "desaparezca" durante un frame de animación.
+    const source = getEnemySpriteSourceCanvas();
+    if (source) {
+        const sctx = source.getContext("2d");
+        for (let index = 0; index < frameCount; index++) {
+            const sx = (index % columns) * frameWidth;
+            const sy = Math.floor(index / columns) * frameHeight;
+            const data = sctx.getImageData(sx, sy, frameWidth, frameHeight).data;
+            let opaquePixels = 0;
+            for (let i = 3; i < data.length; i += 4) {
+                if (data[i] > 16) opaquePixels++;
+            }
+            if (opaquePixels > 10) validFrames.push(index);
+        }
+    }
+
+    if (!validFrames.length) {
+        for (let i = 0; i < frameCount; i++) validFrames.push(i);
+    }
+
+    enemySpriteFrameDataCache = { frameWidth, frameHeight, columns, rows, frameCount, validFrames };
+    return enemySpriteFrameDataCache;
+}
+function getEnemySpriteSourceCanvas() {
+    if (enemySpriteSourceCanvas) return enemySpriteSourceCanvas;
+    if (!enemySpriteImage.complete || !enemySpriteImage.naturalWidth) return null;
+    const source = document.createElement("canvas");
+    source.width = enemySpriteImage.naturalWidth;
+    source.height = enemySpriteImage.naturalHeight;
+    const sctx = source.getContext("2d");
+    sctx.imageSmoothingEnabled = false;
+    sctx.drawImage(enemySpriteImage, 0, 0);
+    enemySpriteSourceCanvas = source;
+    return source;
+}
+
+function getTintedEnemySprite(color) {
+    const key = String(color || "#ffffff");
+    if (tintedEnemySpriteCache.has(key)) return tintedEnemySpriteCache.get(key);
+
+    const source = getEnemySpriteSourceCanvas();
+    if (!source) return null;
+
+    const target = getCssColorRgb(key);
+    const canvasCopy = document.createElement("canvas");
+    canvasCopy.width = source.width;
+    canvasCopy.height = source.height;
+    const cctx = canvasCopy.getContext("2d");
+    const imageData = source.getContext("2d").getImageData(0, 0, source.width, source.height);
+    const data = imageData.data;
+
+    for (let i = 0; i < data.length; i += 4) {
+        const a = data[i + 3];
+        if (a <= 8) continue;
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        const brightness = (r + g + b) / 3;
+        const looksLikeBody = r > 35 && r > g * 1.18 && r > b * 1.18;
+
+        // Conservamos ojos/sombras negras del sprite base. Solo cambiamos la piel roja.
+        if (looksLikeBody || brightness > 70) {
+            const shade = Math.max(0.35, Math.min(1, r / 215));
+            data[i] = Math.round(target.r * shade);
+            data[i + 1] = Math.round(target.g * shade);
+            data[i + 2] = Math.round(target.b * shade);
+        }
+    }
+
+    cctx.putImageData(imageData, 0, 0);
+    tintedEnemySpriteCache.set(key, canvasCopy);
+    return canvasCopy;
+}
+
+function drawEnemySprite(enemy, drawRadius) {
+    if (!enemy || enemy.isBoss || enemy.special === "doombringer") return false;
+    const frameData = getEnemySpriteFrameData();
+    if (!frameData) return false;
+
+    const sprite = enemy.hitFlash > 0 ? getTintedEnemySprite("#ffffff") : getTintedEnemySprite(enemy.color);
+    if (!sprite) return false;
+
+    const { frameWidth, frameHeight, columns, validFrames } = frameData;
+    const usableFrames = validFrames && validFrames.length ? validFrames : [0];
+    const fps = enemy.isMini ? 7 : 8;
+    const animIndex = Math.floor((getGameTime() * fps / 1000) + ((enemy.id || 0) % usableFrames.length)) % usableFrames.length;
+    const frameIndex = usableFrames[animIndex];
+    const sx = (frameIndex % columns) * frameWidth;
+    const sy = Math.floor(frameIndex / columns) * frameHeight;
+    const drawSize = Math.max(34, Math.min(82, (drawRadius || enemy.radius || 18) * 3.05));
+
+    const targetX = enemy.targetX ?? player?.x ?? enemy.x + 1;
+    const shouldFlip = targetX < enemy.x;
+
+    ctx.save();
+    ctx.translate(enemy.x, enemy.y);
+    if (shouldFlip) ctx.scale(-1, 1);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(sprite, sx, sy, frameWidth, frameHeight, -drawSize / 2, -drawSize / 2, drawSize, drawSize);
+    ctx.restore();
+    return true;
+}
+
+
+function getCoinHudTargetPoint() {
+    const stage = document.getElementById("playStage");
+    const coinBox = document.getElementById("coinsHudBox") || coinsText;
+    if (!stage || !coinBox) return { x: GAME_WIDTH - 120, y: 24 };
+
+    const stageRect = stage.getBoundingClientRect();
+    const coinRect = coinBox.getBoundingClientRect();
+    if (!stageRect.width || !stageRect.height) return { x: GAME_WIDTH - 120, y: 24 };
+
+    return {
+        x: ((coinRect.left + coinRect.width / 2 - stageRect.left) / stageRect.width) * GAME_WIDTH,
+        y: ((coinRect.top + coinRect.height / 2 - stageRect.top) / stageRect.height) * GAME_HEIGHT
+    };
+}
+
+function spawnFlyingCoin(worldX, worldY, amount = 0) {
+    if (!Number.isFinite(worldX) || !Number.isFinite(worldY)) return;
+    flyingCoins.push({
+        x: worldX - camera.x,
+        y: worldY - camera.y,
+        startX: worldX - camera.x,
+        startY: worldY - camera.y,
+        amount,
+        age: 0,
+        duration: 42,
+        wobble: Math.random() * Math.PI * 2
+    });
+
+    if (flyingCoins.length > 60) flyingCoins.splice(0, flyingCoins.length - 60);
+}
+
+function updateFlyingCoins() {
+    if (!flyingCoins.length) return;
+    const target = getCoinHudTargetPoint();
+    for (let i = flyingCoins.length - 1; i >= 0; i--) {
+        const coin = flyingCoins[i];
+        coin.age += frameScale;
+        const t = Math.max(0, Math.min(1, coin.age / coin.duration));
+        const eased = 1 - Math.pow(1 - t, 3);
+        const arc = Math.sin(t * Math.PI) * 42;
+        coin.x = coin.startX + (target.x - coin.startX) * eased + Math.sin(coin.wobble + t * 8) * 7 * (1 - t);
+        coin.y = coin.startY + (target.y - coin.startY) * eased - arc;
+        if (t >= 1) flyingCoins.splice(i, 1);
+    }
+}
+
+function drawCoinIcon(x, y, size = 18) {
+    ctx.save();
+    if (coinImageAvailable && coinImage.complete && coinImage.naturalWidth) {
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(coinImage, x - size / 2, y - size / 2, size, size);
+    } else {
+        ctx.fillStyle = "#ffd84a";
+        ctx.beginPath();
+        ctx.arc(x, y, size / 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "#a86600";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.fillStyle = "#7a4700";
+        ctx.font = `bold ${Math.max(10, size * 0.58)}px Arial`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("$", x, y + 1);
+    }
+    ctx.restore();
+}
+
+function drawFlyingCoins() {
+    if (!flyingCoins.length) return;
+    flyingCoins.forEach(coin => {
+        const t = Math.max(0, Math.min(1, coin.age / coin.duration));
+        const size = 14 + Math.sin(t * Math.PI) * 5;
+        ctx.globalAlpha = Math.max(0, Math.min(1, 1 - Math.max(0, t - 0.86) / 0.14));
+        drawCoinIcon(coin.x, coin.y, size);
+        ctx.globalAlpha = 1;
+    });
+}
 
 let soundEnabled = false;
 
@@ -4365,6 +4596,10 @@ function killEnemy(index) {
     waveStats.gold += goldReward;
     waveStats.score += enemy.scoreValue;
 
+    if (goldReward > 0 && !enemy.isBoss && enemy.special !== "doombringer") {
+        spawnFlyingCoin(enemy.x, enemy.y, goldReward);
+    }
+
     createDeathExplosion(enemy.x, enemy.y, enemy.color, enemy.isBoss ? 28 : 14);
 
     if (enemy.isBoss) {
@@ -6053,14 +6288,15 @@ function drawEnemies() {
 
         if (enemy.hitFlash > 0) {
             radius += 3;
-            ctx.fillStyle = "white";
-        } else {
-            ctx.fillStyle = enemy.color;
         }
 
-        ctx.beginPath();
-        ctx.arc(enemy.x, enemy.y, radius, 0, Math.PI * 2);
-        ctx.fill();
+        const spriteDrawn = drawEnemySprite(enemy, radius);
+        if (!spriteDrawn) {
+            ctx.fillStyle = enemy.hitFlash > 0 ? "white" : enemy.color;
+            ctx.beginPath();
+            ctx.arc(enemy.x, enemy.y, radius, 0, Math.PI * 2);
+            ctx.fill();
+        }
 
         if (enemy.special === "healer") {
             ctx.strokeStyle = "rgba(115,255,159,0.35)";
@@ -6856,6 +7092,7 @@ function draw() {
     drawVisualEffects();
     ctx.restore();
 
+    drawFlyingCoins();
     drawMinimap();
 }
 
@@ -6914,6 +7151,7 @@ function gameLoop() {
     }
 
     updateVisualEffects();
+    updateFlyingCoins();
     updateHud();
     autoSaveRun();
     draw();
