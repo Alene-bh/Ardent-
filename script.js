@@ -131,6 +131,19 @@ function getPlayerSpriteAnimation() {
     return "idle";
 }
 
+function getPlayerSpriteDirectionRow(rows = 1) {
+    if (!player || rows <= 1) return 0;
+    const lastX = Number(player.lastMoveX) || 0;
+    const lastY = Number(player.lastMoveY) || 0;
+
+    // Packs comunes 32x32: fila 0 = frente/abajo, fila 1 = costado, fila 2 = espalda/arriba.
+    // Usamos la última dirección de movimiento, no la mira, para que al quedarse quieto
+    // no parezca que el personaje gira solo mirando hacia todos lados.
+    if (Math.abs(lastX) > Math.abs(lastY) && rows >= 2) return 1;
+    if (lastY < -0.25 && rows >= 3) return 2;
+    return 0;
+}
+
 function drawPlayerSprite() {
     if (!player) return false;
 
@@ -145,8 +158,8 @@ function drawPlayerSprite() {
     }
     if (!frameData) return false;
 
-    const { frameWidth, frameHeight, columns, frameCount } = frameData;
-    const fpsByAnimation = { idle: 5, walk: 10, hurt: 9, death: 7 };
+    const { frameWidth, frameHeight, columns, rows, frameCount } = frameData;
+    const fpsByAnimation = { idle: 4, walk: 10, hurt: 9, death: 7 };
     const fps = fpsByAnimation[animation] || 8;
     let frameIndex = 0;
 
@@ -154,14 +167,19 @@ function drawPlayerSprite() {
         if (!player.deathStartedAt) player.deathStartedAt = getGameTime();
         frameIndex = Math.min(frameCount - 1, Math.floor((getGameTime() - player.deathStartedAt) / (1000 / fps)));
     } else {
-        frameIndex = Math.floor(getGameTime() / (1000 / fps)) % frameCount;
+        // Para idle/walk/hurt, no recorremos toda la grilla completa.
+        // Elegimos UNA fila de dirección y animamos solo sus columnas.
+        const row = getPlayerSpriteDirectionRow(rows);
+        const frameInRow = animation === "idle"
+            ? 0
+            : Math.floor(getGameTime() / (1000 / fps)) % Math.max(1, columns);
+        frameIndex = row * columns + frameInRow;
     }
 
     const sx = (frameIndex % columns) * frameWidth;
     const sy = Math.floor(frameIndex / columns) * frameHeight;
     const drawSize = PLAYER_SPRITE_DRAW_SIZE;
-    const aimX = Number.isFinite(player.aimX) ? player.aimX : player.x + (player.lastMoveX || 1);
-    const shouldFlip = aimX < player.x;
+    const shouldFlip = (Number(player.lastMoveX) || 0) < -0.15;
 
     ctx.save();
     ctx.translate(player.x, player.y);
