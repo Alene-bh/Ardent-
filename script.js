@@ -39,7 +39,14 @@ let buildPhaseActive = false;
 let buildPhaseEndsAt = 0;
 let pausedBuildPhaseRemainingMs = 0;
 let buildPhaseStartingWave = false;
-let camera = { x: 0, y: 0 };
+const CAMERA_MIN_ZOOM = 0.62;
+const CAMERA_MAX_ZOOM = 1.65;
+const CAMERA_ZOOM_STEP = 0.12;
+let camera = {
+    x: 0,
+    y: 0,
+    zoom: Math.max(CAMERA_MIN_ZOOM, Math.min(CAMERA_MAX_ZOOM, Number(localStorage.getItem("tdCameraZoom")) || 1))
+};
 let baseCore = null;
 let basePlaced = false;
 let pendingBasePlacement = false;
@@ -371,11 +378,12 @@ function getCoinHudTargetPoint() {
 
 function spawnFlyingCoin(worldX, worldY, amount = 0) {
     if (!Number.isFinite(worldX) || !Number.isFinite(worldY)) return;
+    const screenPoint = getWorldToScreenPoint(worldX, worldY);
     flyingCoins.push({
-        x: worldX - camera.x,
-        y: worldY - camera.y,
-        startX: worldX - camera.x,
-        startY: worldY - camera.y,
+        x: screenPoint.x,
+        y: screenPoint.y,
+        startX: screenPoint.x,
+        startY: screenPoint.y,
         amount,
         age: 0,
         duration: 42,
@@ -1868,10 +1876,56 @@ function damageBase(amount, x = baseCore ? baseCore.x : 0, y = baseCore ? baseCo
     return false;
 }
 
+function getCameraZoom() {
+    return Math.max(CAMERA_MIN_ZOOM, Math.min(CAMERA_MAX_ZOOM, Number(camera?.zoom) || 1));
+}
+
+function getCameraVisibleWidth() {
+    return GAME_WIDTH / getCameraZoom();
+}
+
+function getCameraVisibleHeight() {
+    return GAME_HEIGHT / getCameraZoom();
+}
+
+function clampCameraToWorld() {
+    const visibleWidth = getCameraVisibleWidth();
+    const visibleHeight = getCameraVisibleHeight();
+    camera.x = Math.max(0, Math.min(Math.max(0, WORLD_WIDTH - visibleWidth), camera.x));
+    camera.y = Math.max(0, Math.min(Math.max(0, WORLD_HEIGHT - visibleHeight), camera.y));
+}
+
+function setCameraZoom(nextZoom, anchorScreenX = GAME_WIDTH / 2, anchorScreenY = GAME_HEIGHT / 2) {
+    const oldZoom = getCameraZoom();
+    const zoom = Math.max(CAMERA_MIN_ZOOM, Math.min(CAMERA_MAX_ZOOM, Number(nextZoom) || oldZoom));
+    if (Math.abs(zoom - oldZoom) < 0.001) return;
+
+    // Mantiene el punto bajo el mouse lo más estable posible al cambiar zoom.
+    const worldAnchorX = camera.x + anchorScreenX / oldZoom;
+    const worldAnchorY = camera.y + anchorScreenY / oldZoom;
+    camera.zoom = zoom;
+    camera.x = worldAnchorX - anchorScreenX / zoom;
+    camera.y = worldAnchorY - anchorScreenY / zoom;
+    clampCameraToWorld();
+    localStorage.setItem("tdCameraZoom", String(camera.zoom));
+}
+
+function getWorldToScreenPoint(worldX, worldY) {
+    const zoom = getCameraZoom();
+    return {
+        x: (worldX - camera.x) * zoom,
+        y: (worldY - camera.y) * zoom
+    };
+}
+
 function updateCamera() {
     if (!player) return;
-    camera.x = Math.max(0, Math.min(WORLD_WIDTH - GAME_WIDTH, player.x - GAME_WIDTH / 2));
-    camera.y = Math.max(0, Math.min(WORLD_HEIGHT - GAME_HEIGHT, player.y - GAME_HEIGHT / 2));
+    camera.zoom = getCameraZoom();
+    const visibleWidth = getCameraVisibleWidth();
+    const visibleHeight = getCameraVisibleHeight();
+    camera.x = player.x - visibleWidth / 2;
+    camera.y = player.y - visibleHeight / 2;
+    clampCameraToWorld();
 }
 
 function getActiveBarricades() {
@@ -7157,7 +7211,7 @@ function drawMinimap() {
     (titanShards || []).forEach(shard => dot(shard.x, shard.y, "#b64dff", 2.2));
     barricades.forEach(b => { if (b.active && b.hp > 0) dot(b.x, b.y, "#aaaaaa", 1.6); });
     ctx.strokeStyle = "rgba(115,255,159,0.7)";
-    ctx.strokeRect(x + camera.x * sx, y + camera.y * sy, GAME_WIDTH * sx, GAME_HEIGHT * sy);
+    ctx.strokeRect(x + camera.x * sx, y + camera.y * sy, getCameraVisibleWidth() * sx, getCameraVisibleHeight() * sy);
     ctx.restore();
 }
 
@@ -7167,6 +7221,8 @@ function draw() {
     ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
 
     ctx.save();
+    const zoom = getCameraZoom();
+    ctx.scale(zoom, zoom);
     ctx.translate(-camera.x, -camera.y);
     drawWorldGrid();
     drawPath();
@@ -7876,19 +7932,37 @@ function updateBuildCancelUI() {
     if (active) cancelBuildBtn.textContent = `Cancelar · ${getCurrentBuildModeLabel()}`;
 }
 
-function updateMousePosition(event) {
+function getCanvasLogicalPoint(event) {
     const rect = canvas.getBoundingClientRect();
+    const scaleX = GAME_WIDTH / Math.max(1, rect.width);
+    const scaleY = GAME_HEIGHT / Math.max(1, rect.height);
+    return {
+        x: (event.clientX - rect.left) * scaleX,
+        y: (event.clientY - rect.top) * scaleY
+    };
+}
 
-    const scaleX = GAME_WIDTH / rect.width;
-    const scaleY = GAME_HEIGHT / rect.height;
-
-    mousePosition.x = camera.x + (event.clientX - rect.left) * scaleX;
-    mousePosition.y = camera.y + (event.clientY - rect.top) * scaleY;
+function updateMousePosition(event) {
+    const point = getCanvasLogicalPoint(event);
+    const zoom = getCameraZoom();
+    mousePosition.x = camera.x + point.x / zoom;
+    mousePosition.y = camera.y + point.y / zoom;
 }
 
 canvas.addEventListener("mousemove", event => {
     updateMousePosition(event);
 });
+
+canvas.addEventListener("wheel", event => {
+    if (!gameStarted) return;
+    event.preventDefault();
+    const point = getCanvasLogicalPoint(event);
+    const direction = event.deltaY > 0 ? -1 : 1;
+    const factor = 1 + CAMERA_ZOOM_STEP * direction;
+    setCameraZoom(getCameraZoom() * factor, point.x, point.y);
+    updateMousePosition(event);
+    showCenterMessage(`Zoom ${Math.round(getCameraZoom() * 100)}%`, 450);
+}, { passive: false });
 
 function handleCanvasPlacementPointer(event) {
     event.preventDefault();
