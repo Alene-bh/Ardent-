@@ -209,6 +209,7 @@
                         <button class="shopTabButton" data-shop-tab="barricades">Barricadas</button>
                         <button class="shopTabButton" data-shop-tab="towers">Torres</button>
                         <button class="shopTabButton" data-shop-tab="traps">Trampas</button>
+                        <button class="shopTabButton" data-shop-tab="mines">Minas</button>
                         <button class="shopTabButton" data-shop-tab="abilities">Habilidades</button>
                     </div>
 
@@ -429,6 +430,21 @@
                                 <small>1 uso · slow 0.5s + sangrado por 3s</small><br>
                                 <span id="trapBleedCostText">75</span> monedas
                             </button>
+                        </section>
+
+                        <section class="shopSection mineShop" data-shop-section="mines">
+                            <h3>Minas</h3>
+
+                            <button id="buyMineGoldBtn">
+                                Construir mina de eco<br>
+                                <small>No se mejora · genera oro al completar cada oleada</small><br>
+                                <span id="mineGoldCostText">220</span> monedas
+                            </button>
+
+                            <div class="mineInfoBox">
+                                <strong id="mineLimitText">0/5 minas · +0 c/u próxima oleada</strong>
+                                <small>Balance: costo escalonado, límite bajo y pago por oleada para evitar abuso en peleas largas.</small>
+                            </div>
                         </section>
 
                         <section class="shopSection abilitiesShop" data-shop-section="abilities">
