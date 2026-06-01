@@ -2247,3 +2247,49 @@ button:disabled {
     background: linear-gradient(90deg, transparent 0 18%, rgba(0,0,0,0.22) 18% 30%, transparent 30% 70%, rgba(0,0,0,0.22) 70% 82%, transparent 82% 100%);
     opacity: 0.9;
 }
+
+
+/* Safe character selector: only color buttons, no preview sprites/canvases. */
+#menu .characterSelection {
+    display: grid !important;
+    grid-template-columns: repeat(6, minmax(42px, 1fr)) !important;
+    gap: 8px !important;
+}
+
+#menu .characterSelection .characterOption {
+    min-height: 48px !important;
+    height: 48px !important;
+    padding: 6px !important;
+    overflow: hidden !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+
+#menu .characterSelection .characterOption canvas,
+#menu .characterSelection .characterAvatar,
+#menu .characterSelection .characterColorSwatch {
+    display: none !important;
+}
+
+#menu .characterSelection .characterColorOnly {
+    display: block !important;
+    width: 26px !important;
+    height: 26px !important;
+    border-radius: 50% !important;
+    background: var(--character-color) !important;
+    border: 3px solid rgba(255,255,255,0.65) !important;
+    box-shadow: 0 0 14px var(--character-color), inset 0 -5px 0 rgba(0,0,0,0.18) !important;
+    pointer-events: none !important;
+}
+
+#menu .characterSelection .characterOption.selected .characterColorOnly {
+    border-color: #ffe28a !important;
+    transform: scale(1.08);
+}
+
+@media (max-width: 560px) {
+    #menu .characterSelection {
+        grid-template-columns: repeat(3, minmax(42px, 1fr)) !important;
+    }
+}

@@ -245,9 +245,8 @@ function renderCharacterSelectionUI() {
     if (!characterSelection) return;
     const currentId = sanitizePlayerColorId(selectedPlayerColorId);
     characterSelection.innerHTML = PLAYER_COLOR_OPTIONS.map(option => `
-        <button type="button" class="characterOption${option.id === currentId ? " selected" : ""}" data-color-id="${option.id}" aria-label="Elegir personaje color ${option.id}" title="${option.id}">
-            <span class="characterAvatar" style="--avatar-color:${option.color}"></span>
-            <span class="characterColorSwatch" style="--swatch-color:${option.color}"></span>
+        <button type="button" class="characterOption${option.id === currentId ? " selected" : ""}" data-color-id="${option.id}" aria-label="Elegir personaje">
+            <span class="characterColorOnly" style="--character-color:${option.color}"></span>
         </button>
     `).join("");
 }
@@ -264,6 +263,7 @@ function drawAllCharacterPreviews() {
 function setSelectedPlayerColor(id, persist = true) {
     selectedPlayerColorId = sanitizePlayerColorId(id);
     if (persist) localStorage.setItem("ardentPlayerColor", selectedPlayerColorId);
+    if (player) player.colorId = selectedPlayerColorId;
     if (characterSelection) {
         characterSelection.querySelectorAll(".characterOption").forEach(button => {
             button.classList.toggle("selected", button.dataset.colorId === selectedPlayerColorId);
@@ -1259,11 +1259,6 @@ if (characterSelection) {
     });
 }
 
-setInterval(() => {
-    if (!characterSelection || menu.classList.contains("hidden")) return;
-    characterPreviewFrameTick = (characterPreviewFrameTick + 1) % 4;
-    drawAllCharacterPreviews();
-}, 140);
 
 const barricadeTiers = [
     { name: "Madera", color: "#8b5a2b", hpBonus: 25 },
@@ -3442,6 +3437,7 @@ function startGame() {
             startWave();
             showCenterMessage("¡SOBREVIVÍ!", 1200);
         } else {
+            if (player) player.colorId = sanitizePlayerColorId(selectedPlayerColorId);
             // Si la partida se guardó justo al pausar/cambiar de pantalla,
             // al continuar una oleada debe arrancar limpia: sin pausa y corriendo.
             isPaused = false;
