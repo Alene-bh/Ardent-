@@ -246,15 +246,17 @@ function renderCharacterSelectionUI() {
     const currentId = sanitizePlayerColorId(selectedPlayerColorId);
     characterSelection.innerHTML = PLAYER_COLOR_OPTIONS.map(option => `
         <button type="button" class="characterOption${option.id === currentId ? " selected" : ""}" data-color-id="${option.id}" aria-label="Elegir personaje color ${option.id}" title="${option.id}">
-            <canvas width="64" height="64" data-character-preview="${option.id}"></canvas>
+            <span class="characterAvatar" style="--avatar-color:${option.color}"></span>
+            <span class="characterColorSwatch" style="--swatch-color:${option.color}"></span>
         </button>
     `).join("");
-    drawAllCharacterPreviews();
 }
 
 function drawAllCharacterPreviews() {
     if (!characterSelection) return;
-    characterSelection.querySelectorAll("canvas[data-character-preview]").forEach(canvasEl => {
+    const canvases = characterSelection.querySelectorAll("canvas[data-character-preview]");
+    if (!canvases.length) return;
+    canvases.forEach(canvasEl => {
         drawCharacterPreviewCanvas(canvasEl, canvasEl.dataset.characterPreview);
     });
 }
@@ -267,7 +269,6 @@ function setSelectedPlayerColor(id, persist = true) {
             button.classList.toggle("selected", button.dataset.colorId === selectedPlayerColorId);
         });
     }
-    drawAllCharacterPreviews();
 }
 
 function getSpriteFrameData(img) {
