@@ -53,7 +53,9 @@ let pendingBasePlacement = false;
 let pendingBarricadePlacement = null;
 let pendingTrapPlacement = null;
 let pendingMinePlacement = null;
-let barricadeBuildOrientation = "horizontal";
+const BARRICADE_BUILD_ORIENTATIONS = ["horizontal", "vertical", "diagonalDown", "diagonalUp"];
+let barricadeBuildOrientationIndex = 0;
+let barricadeBuildOrientation = BARRICADE_BUILD_ORIENTATIONS[barricadeBuildOrientationIndex];
 let towerBuildRotation = 0;
 let canvasPixelRatio = 1;
 
@@ -1206,7 +1208,35 @@ function getSnappedBuildPoint(x = mousePosition.x, y = mousePosition.y) {
     };
 }
 
+
+function normalizeBarricadeBuildOrientation() {
+    const index = BARRICADE_BUILD_ORIENTATIONS.indexOf(barricadeBuildOrientation);
+    if (index >= 0) {
+        barricadeBuildOrientationIndex = index;
+        return barricadeBuildOrientation;
+    }
+
+    barricadeBuildOrientationIndex = 0;
+    barricadeBuildOrientation = BARRICADE_BUILD_ORIENTATIONS[0];
+    return barricadeBuildOrientation;
+}
+
+function getBarricadeOrientationLabel(orientation = barricadeBuildOrientation) {
+    if (orientation === "vertical") return "vertical";
+    if (orientation === "diagonalDown") return "diagonal ↘";
+    if (orientation === "diagonalUp") return "diagonal ↗";
+    return "horizontal";
+}
+
+function rotateBarricadeBuildOrientation() {
+    normalizeBarricadeBuildOrientation();
+    barricadeBuildOrientationIndex = (barricadeBuildOrientationIndex + 1) % BARRICADE_BUILD_ORIENTATIONS.length;
+    barricadeBuildOrientation = BARRICADE_BUILD_ORIENTATIONS[barricadeBuildOrientationIndex];
+    return barricadeBuildOrientation;
+}
+
 function getBarricadeDimensions(orientation = barricadeBuildOrientation) {
+    orientation = BARRICADE_BUILD_ORIENTATIONS.includes(orientation) ? orientation : "horizontal";
     const isDiagonal = orientation === "diagonalDown" || orientation === "diagonalUp";
     if (isDiagonal) {
         const bound = Math.abs(Math.cos(Math.PI / 4)) * BARRICADE_LENGTH + Math.abs(Math.sin(Math.PI / 4)) * BARRICADE_THICKNESS;
@@ -1218,6 +1248,7 @@ function getBarricadeDimensions(orientation = barricadeBuildOrientation) {
 }
 
 function getBarricadeAngle(orientation = "horizontal") {
+    orientation = BARRICADE_BUILD_ORIENTATIONS.includes(orientation) ? orientation : "horizontal";
     if (orientation === "vertical") return Math.PI / 2;
     if (orientation === "diagonalDown") return Math.PI / 4;
     if (orientation === "diagonalUp") return -Math.PI / 4;
@@ -8446,13 +8477,11 @@ window.addEventListener("keydown", event => {
         return;
     }
 
-    if (event.code === "KeyR" && (pendingBarricadePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null)) {
+    if (event.code === "KeyR" && !event.repeat && (pendingBarricadePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null)) {
         event.preventDefault();
         if (pendingBarricadePlacement) {
-            const orientations = ["horizontal", "vertical", "diagonalDown", "diagonalUp"];
-            barricadeBuildOrientation = orientations[(orientations.indexOf(barricadeBuildOrientation) + 1) % orientations.length];
-            const label = barricadeBuildOrientation === "horizontal" ? "horizontal" : barricadeBuildOrientation === "vertical" ? "vertical" : barricadeBuildOrientation === "diagonalDown" ? "diagonal ↘" : "diagonal ↗";
-            showCenterMessage(`Barricada ${label}`, 550);
+            const nextOrientation = rotateBarricadeBuildOrientation();
+            showCenterMessage(`Barricada ${getBarricadeOrientationLabel(nextOrientation)}`, 550);
         } else if (pendingTowerMoveIndex !== null) {
             rotateTowerObject(towers[pendingTowerMoveIndex]);
             showCenterMessage(`Torre hacia ${getRotationLabel(towers[pendingTowerMoveIndex]?.rotation || 0)}`, 550);
