@@ -89,6 +89,9 @@
 
                     <span>Habilidad 6 · Eclipse</span>
                     <button class="controlKeyButton" data-control="eclipse">6</button>
+
+                    <span>Habilidad 7 · Blink</span>
+                    <button class="controlKeyButton" data-control="blink">E</button>
                 </div>
 
                 <button class="resetControlsBtn">Restaurar controles</button>
@@ -118,7 +121,7 @@
                 <div id="hud" class="inGameHud">
                     <span>Wave: <strong id="waveText">1</strong></span>
                     <span id="hpHudBox" class="hpHudBox">
-                        <span class="hpHudBar"><span id="hpBarFill" class="hpHudFill"></span><strong id="hpText" class="hpHudText">20/20</strong></span>
+                        <span class="hpHudBars"><span class="hpHudBar"><span id="hpBarFill" class="hpHudFill"></span><strong id="hpText" class="hpHudText">20/20</strong></span><span class="staminaHudBar"><span id="staminaBarFill" class="staminaHudFill"></span></span></span>
                     </span>
                     <span>Barricada: <strong id="barricadeText">0/0</strong></span>
                     <span id="coinsHudBox" class="coinsHudBox"><img id="coinHudIcon" class="coinHudIcon" src="assets/sprites/coin.gif" alt="Monedas" onerror="this.style.display='none'"><strong id="coinsText" class="coinsHudText">0</strong></span>
@@ -155,6 +158,7 @@
                         <div class="abilitySlot locked" id="abilityLightningSlot">4 · Rayo</div>
                         <div class="abilitySlot locked" id="abilityMeteorSlot">5 · Meteorito</div>
                         <div class="abilitySlot locked" id="abilityEclipseSlot">6 · Eclipse</div>
+                        <div class="abilitySlot locked" id="abilityBlinkSlot">E · Blink</div>
                     </div>
 
                     <div id="inventoryBar">
@@ -493,6 +497,12 @@
                                 <small><span id="eclipseKeyText">6</span> · Zona oscura de daño y slow</small><br>
                                 <span id="eclipseCostText">2800</span> monedas
                             </button>
+
+                            <button id="buyBlinkBtn">
+                                Comprar Blink<br>
+                                <small><span id="blinkKeyText">E</span> · Dash corto que atraviesa paredes</small><br>
+                                <span id="blinkCostText">800</span> monedas
+                            </button>
                         </section>
                     </div>
 
@@ -607,7 +617,7 @@
             <div id="info">
                 <p>
                     Hecho por Alene <br>
-                    Movimiento: WASD · C construcción · T tienda · Ctrl+1-5 consumibles · Disparo: Click izquierdo / Spacebar
+                    Movimiento: WASD · Shift correr · E Blink · C construcción · T tienda · Ctrl+1-5 consumibles · Disparo: Click izquierdo / Spacebar
                 </p>
             </div>
         </div>
