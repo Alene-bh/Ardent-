@@ -108,8 +108,10 @@ button:disabled {
 .hpHudBox {
     min-width: 146px !important;
     display: inline-flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 2px;
     padding: 0 !important;
     background: transparent !important;
 }
@@ -147,6 +149,24 @@ button:disabled {
     text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.85);
     letter-spacing: 0.2px;
     font-weight: bold;
+}
+
+.staminaHudBar {
+    position: relative;
+    width: 124px;
+    height: 5px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.75);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.staminaHudFill {
+    display: block;
+    height: 100%;
+    width: 100%;
+    background: #4aa3ff;
+    transition: width 0.1s linear;
 }
 
 
@@ -1840,4 +1860,276 @@ textarea {
     display: block;
     margin-top: 6px;
     color: #d8c791;
+}
+
+.overlayCoinCounter,
+.constructionCoinCounter {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border: 1px solid rgba(255, 216, 74, 0.38);
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.38);
+    color: #ffd84a;
+    font-weight: 900;
+    box-shadow: 0 0 14px rgba(255, 216, 74, 0.12);
+}
+
+.overlayCoinCounter {
+    position: sticky;
+    top: 8px;
+    float: right;
+    z-index: 5;
+}
+
+.constructionCoinCounter {
+    grid-column: 1 / -1;
+    width: max-content;
+    justify-self: center;
+}
+
+.overlayCoinCounter img,
+.constructionCoinCounter img {
+    width: 18px;
+    height: 18px;
+    image-rendering: pixelated;
+}
+
+
+/* === UI refresh v2 === */
+body {
+    background:
+        radial-gradient(circle at 50% 18%, rgba(255,255,255,0.28), transparent 24%),
+        linear-gradient(180deg, #63c0f0 0%, #92d7fb 30%, #bcecff 52%, #5e9858 52%, #6f9d54 58%, #684d3f 58%, #3f2c2f 100%);
+    font-family: "Trebuchet MS", Arial, sans-serif;
+}
+
+#gameWrapper > h1 {
+    color: #fff7d1;
+    text-shadow: 0 2px 0 #6f4c28, 0 4px 0 rgba(0, 0, 0, 0.24), 0 0 14px rgba(0, 0, 0, 0.25);
+    letter-spacing: 0.8px;
+}
+
+#menu,
+.overlayPanel,
+.structurePanel,
+.leaderboardBox,
+.audioSettingsBox,
+.visualSettingsBox,
+.controlsSettingsBox,
+#inventoryBar,
+#hud {
+    border: 2px solid rgba(72, 42, 26, 0.88);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255,255,255,0.08);
+}
+
+#menu {
+    position: relative;
+    background: linear-gradient(180deg, rgba(39, 29, 24, 0.94), rgba(25, 18, 17, 0.95));
+    border-color: #6f4b2e;
+    border-radius: 18px;
+    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.32), inset 0 0 0 2px rgba(255, 214, 164, 0.08);
+    grid-template-columns: minmax(300px, 430px) minmax(360px, 1fr);
+    grid-template-areas:
+        "menuTitle leaderboard"
+        "menuDesc leaderboard"
+        "menuRecord leaderboard"
+        "menuName leaderboard"
+        "menuCharacter leaderboard"
+        "menuPlay leaderboard";
+}
+
+#menu::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 18px;
+    pointer-events: none;
+    background: linear-gradient(180deg, rgba(255,255,255,0.05), transparent 18%), radial-gradient(circle at top right, rgba(255,208,120,0.06), transparent 28%);
+}
+
+#menu h2 {
+    color: #ffe7b2;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    text-shadow: 0 2px 0 rgba(48, 27, 18, 0.95);
+}
+
+#menu > p:not(.recordText) {
+    color: #ead8c0;
+}
+
+#menu .recordText {
+    color: #ffd878 !important;
+}
+
+#menu .playerNameBox,
+#menu .characterSelectBox,
+#menu .menuLeaderboardBox,
+.audioSettingsBox,
+.visualSettingsBox,
+.controlsSettingsBox,
+.overlayPanel,
+.structurePanel,
+.leaderboardBox {
+    background: linear-gradient(180deg, rgba(31, 24, 20, 0.96), rgba(18, 14, 13, 0.96));
+    border-color: rgba(122, 84, 45, 0.88);
+}
+
+.characterSelectBox {
+    grid-area: menuCharacter;
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #6d4a31;
+    border-radius: 14px;
+    margin: 4px 0 0;
+    text-align: left;
+}
+
+.characterSelectBox > label {
+    display: block;
+    margin-bottom: 10px;
+    color: #ffe28a;
+    font-weight: bold;
+}
+
+.characterSelection {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.characterOption {
+    min-height: 78px;
+    padding: 6px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 216, 128, 0.18);
+    background: linear-gradient(180deg, rgba(18, 30, 37, 0.95), rgba(8, 16, 22, 0.95));
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04);
+}
+
+.characterOption canvas {
+    width: 100%;
+    height: 64px;
+    border-radius: 10px;
+    background: linear-gradient(180deg, rgba(113, 204, 246, 0.20), rgba(15, 37, 50, 0.10));
+    border: 1px solid rgba(255,255,255,0.05);
+}
+
+.characterOption.selected {
+    transform: translateY(-1px);
+    border-color: #ffe28a;
+    box-shadow: 0 0 0 2px rgba(255, 226, 138, 0.22), 0 8px 16px rgba(0, 0, 0, 0.26), inset 0 0 0 1px rgba(255,255,255,0.06);
+}
+
+#menu button,
+.shopTabButton,
+.shopSection button,
+#gameOverScreen button,
+#waveSummaryPanel button,
+.smallHudButton,
+.controlKeyButton,
+.resetControlsBtn,
+#startGameBtn,
+#closeStructurePanelBtn {
+    background: linear-gradient(180deg, #cfab7a 0%, #be9562 46%, #a57a49 47%, #c69a66 100%);
+    border: 2px solid #5c3c23;
+    border-radius: 10px;
+    color: #2c1609;
+    box-shadow: inset 0 2px 0 rgba(255, 240, 214, 0.45), inset 0 -2px 0 rgba(90, 54, 24, 0.38), 0 4px 0 rgba(65, 41, 24, 0.55);
+    font-weight: 900;
+    letter-spacing: 0.4px;
+}
+
+#menu button:hover,
+.shopTabButton:hover,
+.shopSection button:hover,
+#gameOverScreen button:hover,
+#waveSummaryPanel button:hover,
+.smallHudButton:hover,
+.controlKeyButton:hover,
+.resetControlsBtn:hover,
+#startGameBtn:hover,
+#closeStructurePanelBtn:hover {
+    background: linear-gradient(180deg, #dfbc8f 0%, #cfaa78 46%, #b28352 47%, #d3a770 100%);
+    color: #1c0f07;
+    box-shadow: inset 0 2px 0 rgba(255, 244, 222, 0.48), inset 0 -2px 0 rgba(90, 54, 24, 0.34), 0 5px 0 rgba(65, 41, 24, 0.5);
+}
+
+button:disabled {
+    background: linear-gradient(180deg, #80756e 0%, #6b6059 100%) !important;
+    color: rgba(255,255,255,0.66) !important;
+    border-color: #4c433e !important;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 2px 0 rgba(0,0,0,0.22) !important;
+}
+
+#startGameBtn {
+    color: #241006;
+    text-transform: uppercase;
+    text-shadow: 0 1px 0 rgba(255,255,255,0.35);
+}
+
+.smallHudButton,
+.shopTabButton,
+.controlKeyButton,
+.resetControlsBtn,
+#closeStructurePanelBtn {
+    font-size: 12px;
+}
+
+.shopTabButton.active {
+    background: linear-gradient(180deg, #ffe2a6 0%, #d4a86f 46%, #b17f45 47%, #d9ae73 100%);
+    border-color: #6a411f;
+    color: #2e1607;
+    box-shadow: 0 0 0 2px rgba(255, 219, 149, 0.18), 0 4px 0 rgba(65, 41, 24, 0.45), inset 0 1px 0 rgba(255,255,255,0.38);
+}
+
+.leaderboardHeader h3,
+.shopSection h3,
+.overlayPanel h2,
+.structurePanelHeader strong {
+    color: #ffe5a8;
+    text-shadow: 0 2px 0 rgba(0,0,0,0.32);
+}
+
+.leaderboardList li {
+    background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03));
+    border: 1px solid rgba(255, 226, 138, 0.16);
+}
+
+#hud {
+    background: linear-gradient(180deg, rgba(32, 25, 22, 0.96), rgba(18, 13, 12, 0.96));
+    color: #fff6d4;
+}
+
+.structurePanel {
+    background: linear-gradient(180deg, rgba(31, 24, 20, 0.98), rgba(18, 14, 13, 0.98));
+}
+
+.overlayCoinCounter,
+.constructionCoinCounter,
+.coinsHudBox {
+    background: linear-gradient(180deg, rgba(46, 30, 12, 0.88), rgba(27, 18, 10, 0.92));
+    border-color: rgba(255, 216, 74, 0.45);
+}
+
+@media (max-width: 860px) {
+    #menu {
+        grid-template-areas:
+            "menuTitle"
+            "menuDesc"
+            "menuRecord"
+            "menuName"
+            "menuCharacter"
+            "menuPlay"
+            "leaderboard";
+    }
+}
+
+@media (max-width: 560px) {
+    .characterSelection {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 }

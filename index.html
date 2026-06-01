@@ -99,6 +99,11 @@
                 <input id="playerNameInput" type="text" maxlength="18" placeholder="Tu nombre" autocomplete="off">
             </div>
 
+            <div class="characterSelectBox">
+                <label for="characterSelection">Elegí tu personaje</label>
+                <div id="characterSelection" class="characterSelection" aria-label="Elegí tu personaje"></div>
+            </div>
+
             <button id="startGameBtn">Jugar</button>
 
             <div class="leaderboardBox menuLeaderboardBox">
@@ -118,7 +123,7 @@
                 <div id="hud" class="inGameHud">
                     <span>Wave: <strong id="waveText">1</strong></span>
                     <span id="hpHudBox" class="hpHudBox">
-                        <span class="hpHudBar"><span id="hpBarFill" class="hpHudFill"></span><strong id="hpText" class="hpHudText">20/20</strong></span>
+                        <span class="hpHudBar"><span id="hpBarFill" class="hpHudFill"></span><strong id="hpText" class="hpHudText">20/20</strong></span><span class="staminaHudBar"><span id="staminaBarFill" class="staminaHudFill"></span></span>
                     </span>
                     <span>Barricada: <strong id="barricadeText">0/0</strong></span>
                     <span id="coinsHudBox" class="coinsHudBox"><img id="coinHudIcon" class="coinHudIcon" src="assets/sprites/coin.gif" alt="Monedas" onerror="this.style.display='none'"><strong id="coinsText" class="coinsHudText">0</strong></span>
@@ -155,6 +160,7 @@
                         <div class="abilitySlot locked" id="abilityLightningSlot">4 · Rayo</div>
                         <div class="abilitySlot locked" id="abilityMeteorSlot">5 · Meteorito</div>
                         <div class="abilitySlot locked" id="abilityEclipseSlot">6 · Eclipse</div>
+                        <div class="abilitySlot locked" id="abilityBlinkSlot">E · Blink</div>
                     </div>
 
                     <div id="inventoryBar">
@@ -203,6 +209,7 @@
 
                 <div id="shop" class="overlayPanel hidden">
                     <button id="closeShopBtn" class="shopCloseButton" type="button">Cerrar</button>
+                    <div class="overlayCoinCounter"><img src="assets/sprites/coin.gif" alt="" onerror="this.style.display='none'"><strong id="shopCoinCounterText">0</strong></div>
                     <h2 id="shopTitle">Tienda</h2>
 
                     <div class="shopTabs">
@@ -294,7 +301,7 @@
                             <h3>Barricadas</h3>
 
                             <div class="barricadeSlotChoice">
-                                <span>Construcción libre: tocá una barricada, elegí posición con el mouse y usá <strong>R</strong> para rotar.</span>
+                                <span>Construcción libre: tocá una barricada, elegí posición con el mouse y usá <strong>R</strong> para rotar (horizontal, vertical y diagonales).</span>
                             </div>
 
                             <button id="repairBarricadeBtn">
@@ -457,6 +464,7 @@
 
                         <section class="shopSection abilitiesShop" data-shop-section="abilities">
                             <h3>Habilidades</h3>
+                            <div class="constructionCoinCounter"><img src="assets/sprites/coin.gif" alt="" onerror="this.style.display='none'"><strong id="constructionCoinCounterText">0</strong></div>
 
                             <button id="buyBombBtn">
                                 Comprar Bomba<br>
@@ -492,6 +500,12 @@
                                 Comprar Eclipse<br>
                                 <small><span id="eclipseKeyText">6</span> · Zona oscura de daño y slow</small><br>
                                 <span id="eclipseCostText">2800</span> monedas
+                            </button>
+
+                            <button id="buyBlinkBtn">
+                                Comprar Blink<br>
+                                <small><span id="blinkKeyText">E</span> · Dash corto atraviesa paredes</small><br>
+                                <span id="blinkCostText">800</span> monedas
                             </button>
                         </section>
                     </div>

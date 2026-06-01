@@ -14,7 +14,13 @@ const TOWER_COLLISION_RADIUS = 26;
 const BARRICADE_LENGTH = 110;
 const BARRICADE_THICKNESS = 24;
 const BASE_RADIUS = 34;
-const PLAYER_SURVIVAL_SPEED = 1.75;
+const PLAYER_SURVIVAL_SPEED = 1.52;
+const PLAYER_SPRINT_MULTIPLIER = 1.72;
+const PLAYER_MAX_STAMINA = 100;
+const PLAYER_STAMINA_DRAIN_PER_SECOND = 38;
+const PLAYER_STAMINA_REGEN_PER_SECOND = 24;
+const PLAYER_MIN_STAMINA_TO_SPRINT = 8;
+const BLINK_DISTANCE = 155;
 const ENEMY_SURVIVAL_SPEED_MULTIPLIER = 0.72;
 const BUILD_PHASE_DURATION = 120000;
 const BOSS_SPAWN_ZONE = {
@@ -109,6 +115,17 @@ const playerSpritePaths = {
 const PLAYER_SPRITE_TILE_SIZE = 32;
 const PLAYER_SPRITE_DRAW_SIZE = 72;
 const playerSprites = {};
+const PLAYER_COLOR_OPTIONS = [
+    { id: "ember", color: "#ff9a6a" },
+    { id: "rose", color: "#ff78b5" },
+    { id: "azure", color: "#6fd7ff" },
+    { id: "jade", color: "#7dffaf" },
+    { id: "sun", color: "#ffd86f" },
+    { id: "violet", color: "#bc93ff" }
+];
+const playerSpriteSourceCanvases = new WeakMap();
+const tintedPlayerSpriteCache = new Map();
+let characterPreviewFrameTick = 0;
 
 function loadPlayerSprites() {
     Object.entries(playerSpritePaths).forEach(([key, src]) => {
@@ -118,7 +135,143 @@ function loadPlayerSprites() {
     });
 }
 
+function getPlayerColorOption(id) {
+    return PLAYER_COLOR_OPTIONS.find(option => option.id === id) || PLAYER_COLOR_OPTIONS[0];
+}
+
+function sanitizePlayerColorId(id) {
+    return getPlayerColorOption(id).id;
+}
+
+function getPlayerSelectedColor() {
+    return getPlayerColorOption((player && player.colorId) || selectedPlayerColorId);
+}
+
+function getPlayerSpriteSourceCanvas(img) {
+    if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) return null;
+    if (playerSpriteSourceCanvases.has(img)) return playerSpriteSourceCanvases.get(img);
+    const source = document.createElement("canvas");
+    source.width = img.naturalWidth;
+    source.height = img.naturalHeight;
+    const sctx = source.getContext("2d");
+    sctx.imageSmoothingEnabled = false;
+    sctx.drawImage(img, 0, 0);
+    playerSpriteSourceCanvases.set(img, source);
+    return source;
+}
+
+function getTintedPlayerSprite(img, color, cacheKey = "player") {
+    if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) return img;
+    if (!color) return img;
+    const key = `${cacheKey}|${color}|${img.src}`;
+    if (tintedPlayerSpriteCache.has(key)) return tintedPlayerSpriteCache.get(key);
+
+    const source = getPlayerSpriteSourceCanvas(img);
+    if (!source) return img;
+
+    const target = getCssColorRgb(color);
+    const canvasCopy = document.createElement("canvas");
+    canvasCopy.width = source.width;
+    canvasCopy.height = source.height;
+    const cctx = canvasCopy.getContext("2d");
+    const imageData = source.getContext("2d").getImageData(0, 0, source.width, source.height);
+    const data = imageData.data;
+
+    for (let i = 0; i < data.length; i += 4) {
+        const alpha = data[i + 3];
+        if (alpha <= 8) continue;
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        const brightness = (r + g + b) / 3;
+        if (brightness < 34) continue;
+        const shade = Math.max(0.34, Math.min(1.08, brightness / 210));
+        data[i] = Math.max(0, Math.min(255, Math.round(target.r * shade)));
+        data[i + 1] = Math.max(0, Math.min(255, Math.round(target.g * shade)));
+        data[i + 2] = Math.max(0, Math.min(255, Math.round(target.b * shade)));
+    }
+
+    cctx.putImageData(imageData, 0, 0);
+    tintedPlayerSpriteCache.set(key, canvasCopy);
+    return canvasCopy;
+}
+
+function drawCharacterPreviewCanvas(canvasEl, colorId) {
+    if (!canvasEl) return;
+    const pctx = canvasEl.getContext("2d");
+    if (!pctx) return;
+    pctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+    pctx.imageSmoothingEnabled = false;
+
+    pctx.fillStyle = "rgba(9, 22, 33, 0.22)";
+    pctx.fillRect(10, canvasEl.height - 18, canvasEl.width - 20, 5);
+
+    const walkImage = playerSprites.walk;
+    const idleImage = playerSprites.idle;
+    let img = walkImage;
+    let frameData = getSpriteFrameData(img);
+    if (!frameData) {
+        img = idleImage;
+        frameData = getSpriteFrameData(img);
+    }
+
+    if (frameData) {
+        const { frameWidth, frameHeight, columns, rows } = frameData;
+        const row = rows >= 2 ? 1 : 0;
+        const frameInRow = Math.max(0, characterPreviewFrameTick % Math.max(1, columns));
+        const frameIndex = row * columns + frameInRow;
+        const sx = (frameIndex % columns) * frameWidth;
+        const sy = Math.floor(frameIndex / columns) * frameHeight;
+        const renderImg = getTintedPlayerSprite(img, getPlayerColorOption(colorId).color, `preview-${colorId}`) || img;
+        const drawSize = 44;
+        pctx.save();
+        pctx.translate(canvasEl.width / 2 - 2, canvasEl.height / 2 + 4);
+        pctx.drawImage(renderImg, sx, sy, frameWidth, frameHeight, -drawSize / 2, -drawSize / 2, drawSize, drawSize);
+        pctx.restore();
+    } else {
+        pctx.fillStyle = getPlayerColorOption(colorId).color;
+        pctx.beginPath();
+        pctx.arc(canvasEl.width / 2, canvasEl.height / 2, 13, 0, Math.PI * 2);
+        pctx.fill();
+        pctx.fillStyle = "#20140d";
+        pctx.font = "bold 18px Arial";
+        pctx.textAlign = "center";
+        pctx.textBaseline = "middle";
+        pctx.fillText("P", canvasEl.width / 2, canvasEl.height / 2 + 1);
+    }
+}
+
+function renderCharacterSelectionUI() {
+    if (!characterSelection) return;
+    const currentId = sanitizePlayerColorId(selectedPlayerColorId);
+    characterSelection.innerHTML = PLAYER_COLOR_OPTIONS.map(option => `
+        <button type="button" class="characterOption${option.id === currentId ? " selected" : ""}" data-color-id="${option.id}" aria-label="Elegir personaje color ${option.id}" title="${option.id}">
+            <canvas width="64" height="64" data-character-preview="${option.id}"></canvas>
+        </button>
+    `).join("");
+    drawAllCharacterPreviews();
+}
+
+function drawAllCharacterPreviews() {
+    if (!characterSelection) return;
+    characterSelection.querySelectorAll("canvas[data-character-preview]").forEach(canvasEl => {
+        drawCharacterPreviewCanvas(canvasEl, canvasEl.dataset.characterPreview);
+    });
+}
+
+function setSelectedPlayerColor(id, persist = true) {
+    selectedPlayerColorId = sanitizePlayerColorId(id);
+    if (persist) localStorage.setItem("ardentPlayerColor", selectedPlayerColorId);
+    if (characterSelection) {
+        characterSelection.querySelectorAll(".characterOption").forEach(button => {
+            button.classList.toggle("selected", button.dataset.colorId === selectedPlayerColorId);
+        });
+    }
+    drawAllCharacterPreviews();
+}
+
 function getSpriteFrameData(img) {
+
     if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) return null;
 
     const frameWidth = PLAYER_SPRITE_TILE_SIZE;
@@ -174,8 +327,6 @@ function drawPlayerSprite() {
         if (!player.deathStartedAt) player.deathStartedAt = getGameTime();
         frameIndex = Math.min(frameCount - 1, Math.floor((getGameTime() - player.deathStartedAt) / (1000 / fps)));
     } else {
-        // Para idle/walk/hurt, no recorremos toda la grilla completa.
-        // Elegimos UNA fila de dirección y animamos solo sus columnas.
         const row = getPlayerSpriteDirectionRow(rows);
         const frameInRow = animation === "idle"
             ? 0
@@ -187,13 +338,14 @@ function drawPlayerSprite() {
     const sy = Math.floor(frameIndex / columns) * frameHeight;
     const drawSize = PLAYER_SPRITE_DRAW_SIZE;
     const shouldFlip = (Number(player.lastMoveX) || 0) < -0.15;
+    const renderImg = getTintedPlayerSprite(img, getPlayerSelectedColor().color, `player-${animation}`) || img;
 
     ctx.save();
     ctx.translate(player.x, player.y);
     if (shouldFlip) ctx.scale(-1, 1);
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(
-        img,
+        renderImg,
         sx,
         sy,
         frameWidth,
@@ -204,6 +356,21 @@ function drawPlayerSprite() {
         drawSize
     );
     ctx.restore();
+
+    if (enemy.special === "exploder") {
+        const pulse = 1 + Math.sin(getGameTime() / 120) * 0.18;
+        ctx.save();
+        ctx.fillStyle = "#ffdf4a";
+        ctx.strokeStyle = "#3a1200";
+        ctx.lineWidth = 2;
+        ctx.font = `bold ${Math.round(16 * pulse)}px Arial`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.strokeText("!", enemy.x, enemy.y - hitboxRadius - 13);
+        ctx.fillText("!", enemy.x, enemy.y - hitboxRadius - 13);
+        ctx.restore();
+    }
+
     return true;
 }
 
@@ -541,6 +708,7 @@ function codeToLabel(code) {
 }
 
 function getAbilityIdByCode(code) {
+    if (code === "KeyE") return "blink";
     return ["bomb", "freeze", "tsunami", "lightning", "meteor", "eclipse"].find(id => controlBindings[id] === code) || null;
 }
 
@@ -554,6 +722,7 @@ function applyControlsToAbilities() {
     ["bomb", "freeze", "tsunami", "lightning", "meteor", "eclipse"].forEach(id => {
         if (abilities[id]) abilities[id].key = codeToLabel(controlBindings[id]);
     });
+    if (abilities.blink) abilities.blink.key = "E";
 }
 
 function updateControlsUI() {
@@ -718,13 +887,18 @@ function playShootSound() {
 }
 
 function playHitSound() {
-    playSfx(sounds.hit, 0.9);
+    const now = performance.now();
+    if (now - lastHitSfxAt < 42 || hitSfxPlayedThisFrame >= 3) return;
+    lastHitSfxAt = now;
+    hitSfxPlayedThisFrame++;
+    playSfx(sounds.hit, 0.55);
 }
 
 const menu = document.getElementById("menu");
 const gameArea = document.getElementById("gameArea");
 const startGameBtn = document.getElementById("startGameBtn");
 const playerNameInput = document.getElementById("playerNameInput");
+const characterSelection = document.getElementById("characterSelection");
 
 const waveText = document.getElementById("waveText");
 const hpText = document.getElementById("hpText");
@@ -738,7 +912,8 @@ const abilitySlots = {
     tsunami: document.getElementById("abilityTsunamiSlot"),
     lightning: document.getElementById("abilityLightningSlot"),
     meteor: document.getElementById("abilityMeteorSlot"),
-    eclipse: document.getElementById("abilityEclipseSlot")
+    eclipse: document.getElementById("abilityEclipseSlot"),
+    blink: document.getElementById("abilityBlinkSlot")
 };
 
 const inventorySlotsPanel = document.getElementById("inventorySlots");
@@ -850,6 +1025,7 @@ const buyTsunamiBtn = document.getElementById("buyTsunamiBtn");
 const buyLightningBtn = document.getElementById("buyLightningBtn");
 const buyMeteorBtn = document.getElementById("buyMeteorBtn");
 const buyEclipseBtn = document.getElementById("buyEclipseBtn");
+const buyBlinkBtn = document.getElementById("buyBlinkBtn");
 
 const nextWaveBtn = document.getElementById("nextWaveBtn");
 const repeatWaveBtn = document.getElementById("repeatWaveBtn");
@@ -925,6 +1101,10 @@ const tsunamiCostText = document.getElementById("tsunamiCostText");
 const lightningCostText = document.getElementById("lightningCostText");
 const meteorCostText = document.getElementById("meteorCostText");
 const eclipseCostText = document.getElementById("eclipseCostText");
+const blinkCostText = document.getElementById("blinkCostText");
+const shopCoinCounterText = document.getElementById("shopCoinCounterText");
+const constructionCoinCounterText = document.getElementById("constructionCoinCounterText");
+const staminaBarFill = document.getElementById("staminaBarFill");
 
 const pauseBtn = document.getElementById("pauseBtn");
 const pausePanel = document.getElementById("pausePanel");
@@ -990,6 +1170,7 @@ let frameScale = 1;
 
 let bestScore = Number(localStorage.getItem("towerDefenseBestScore")) || 0;
 let playerName = localStorage.getItem("ardentPlayerName") || "Jugador";
+let selectedPlayerColorId = sanitizePlayerColorId(localStorage.getItem("ardentPlayerColor") || PLAYER_COLOR_OPTIONS[0].id);
 let alphaTesterName = localStorage.getItem("ardentAlphaTesterName") || "";
 let developerName = localStorage.getItem("ardentDeveloperName") || "";
 
@@ -1052,6 +1233,8 @@ let spawnInterval;
 let lastSpawnTime;
 
 let redFlashAlpha = 0;
+let lastHitSfxAt = 0;
+let hitSfxPlayedThisFrame = 0;
 
 let waveStats;
 
@@ -1063,6 +1246,23 @@ let mousePosition = {
 if (playerNameInput) {
     playerNameInput.value = playerName === "Jugador" ? "" : playerName;
 }
+
+renderCharacterSelectionUI();
+setSelectedPlayerColor(selectedPlayerColorId, false);
+
+if (characterSelection) {
+    characterSelection.addEventListener("click", event => {
+        const button = event.target.closest(".characterOption");
+        if (!button) return;
+        setSelectedPlayerColor(button.dataset.colorId);
+    });
+}
+
+setInterval(() => {
+    if (!characterSelection || menu.classList.contains("hidden")) return;
+    characterPreviewFrameTick = (characterPreviewFrameTick + 1) % 4;
+    drawAllCharacterPreviews();
+}, 140);
 
 const barricadeTiers = [
     { name: "Madera", color: "#8b5a2b", hpBonus: 25 },
@@ -1083,8 +1283,8 @@ const REPEAT_ENEMY_STRENGTH_MULTIPLIER = 1.2;
 const REPEAT_GOLD_MULTIPLIER = 0.6;
 const BOSS_BARRICADE_DAMAGE_MULTIPLIER = 1.2;
 // Control anti-lag: cada summoner puede sostener como máximo
-// 2 tandas activas de 5 bichitos invocados.
-const SUMMONER_BATCH_SIZE = 5;
+// 2 tandas activas de 3 bichitos invocados.
+const SUMMONER_BATCH_SIZE = 3;
 const SUMMONER_MAX_ACTIVE_BATCHES = 2;
 const SUMMONER_MAX_ACTIVE_MINIONS = SUMMONER_BATCH_SIZE * SUMMONER_MAX_ACTIVE_BATCHES;
 let repeatCountsByWave = {};
@@ -1194,9 +1394,66 @@ function getSnappedBuildPoint(x = mousePosition.x, y = mousePosition.y) {
 }
 
 function getBarricadeDimensions(orientation = barricadeBuildOrientation) {
-    return orientation === "vertical"
-        ? { width: BARRICADE_THICKNESS, height: BARRICADE_LENGTH }
-        : { width: BARRICADE_LENGTH, height: BARRICADE_THICKNESS };
+    if (orientation === "vertical") return { width: BARRICADE_THICKNESS, height: BARRICADE_LENGTH };
+    if (isDiagonalBarricadeOrientation(orientation)) {
+        const side = (BARRICADE_LENGTH + BARRICADE_THICKNESS) / Math.SQRT2;
+        return { width: side, height: side };
+    }
+    return { width: BARRICADE_LENGTH, height: BARRICADE_THICKNESS };
+}
+
+function isDiagonalBarricadeOrientation(orientation = "horizontal") {
+    return orientation === "diagonalDown" || orientation === "diagonalUp";
+}
+
+function getBarricadeRotation(orientation = "horizontal") {
+    if (orientation === "vertical") return Math.PI / 2;
+    if (orientation === "diagonalDown") return Math.PI / 4;
+    if (orientation === "diagonalUp") return -Math.PI / 4;
+    return 0;
+}
+
+function getBarricadeLocalPoint(x, y, barricade) {
+    const angle = -getBarricadeRotation(barricade.orientation || "horizontal");
+    const dx = x - barricade.x;
+    const dy = y - barricade.y;
+    return {
+        x: dx * Math.cos(angle) - dy * Math.sin(angle),
+        y: dx * Math.sin(angle) + dy * Math.cos(angle)
+    };
+}
+
+function getBarricadeContactPoint(cx, cy, barricade) {
+    const local = getBarricadeLocalPoint(cx, cy, barricade);
+    const halfW = BARRICADE_LENGTH / 2;
+    const halfH = BARRICADE_THICKNESS / 2;
+    const lx = Math.max(-halfW, Math.min(halfW, local.x));
+    const ly = Math.max(-halfH, Math.min(halfH, local.y));
+    const angle = getBarricadeRotation(barricade.orientation || "horizontal");
+    return {
+        x: barricade.x + lx * Math.cos(angle) - ly * Math.sin(angle),
+        y: barricade.y + lx * Math.sin(angle) + ly * Math.cos(angle),
+        localX: lx,
+        localY: ly
+    };
+}
+
+function circleIntersectsBarricade(cx, cy, radius, barricade, padding = 0) {
+    if (!barricade) return false;
+    const contact = getBarricadeContactPoint(cx, cy, barricade);
+    return Math.hypot(cx - contact.x, cy - contact.y) <= radius + padding;
+}
+
+function rectIntersectsBarricade(rect, barricade, padding = 0) {
+    if (!rect || !barricade) return false;
+    const points = [
+        { x: rect.left, y: rect.top }, { x: rect.right, y: rect.top },
+        { x: rect.right, y: rect.bottom }, { x: rect.left, y: rect.bottom },
+        { x: (rect.left + rect.right) / 2, y: (rect.top + rect.bottom) / 2 }
+    ];
+    const approxRadius = Math.hypot(rect.right - rect.left, rect.bottom - rect.top) / 2;
+    if (points.some(pt => circleIntersectsBarricade(pt.x, pt.y, padding + 1, barricade, 0))) return true;
+    return circleIntersectsBarricade((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2, approxRadius + padding, barricade, 0);
 }
 
 function getBarricadeBaseCost(kind = "standard") {
@@ -1250,7 +1507,23 @@ function getTowerBaseMaxHp(t) {
     return 36;
 }
 
+function getTowerRangeCap(towerOrType) {
+    const type = typeof towerOrType === "string" ? towerOrType : towerOrType?.type;
+    return TOWER_RANGE_CAPS[type] || 0;
+}
+
+function clampTowerRange(tower) {
+    if (!tower) return tower;
+    const rangeCap = getTowerRangeCap(tower);
+    tower.rangeCap = rangeCap;
+    if (rangeCap > 0 && Number.isFinite(Number(tower.range))) {
+        tower.range = Math.min(Number(tower.range), rangeCap);
+    }
+    return tower;
+}
+
 function ensureTowerEconomy(t) {
+
     if (!t) return t;
     t.spent = Number(t.spent) || Number(t.cost) || 0;
     t.upgradeCost = Number(t.upgradeCost) || Math.floor((Number(t.cost) || 100) * 1.35);
@@ -1264,6 +1537,7 @@ function ensureTowerEconomy(t) {
     }
     if (!Number.isFinite(Number(t.hp)) || Number(t.hp) <= 0) t.hp = t.maxHp;
     t.hp = Math.min(t.maxHp, t.hp);
+    clampTowerRange(t);
     return t;
 }
 
@@ -1403,13 +1677,29 @@ const towerDefinitions = [
     { key: "tower5", name: "Doble", type: "double", cost: 260, upgradeCost: 300, damage: 0.65, range: 235, fireDelay: 1050, color: "#ff8bd1", label: "D" },
     { key: "tower6", name: "Veneno", type: "poison", cost: 310, upgradeCost: 350, damage: 2.45, range: 248, fireDelay: 2850, color: "#8cff4a", label: "V", areaRadius: 58, poisonDuration: 3200, tickDelay: 650 },
     { key: "tower7", name: "Ballesta", type: "ballista", cost: 360, upgradeCost: 420, damage: 9.5, range: 320, fireDelay: 2850, color: "#c58b4b", label: "X" },
-    { key: "tower8", name: "Sanguijuela", type: "siphon", cost: 420, upgradeCost: 460, damage: 0.55, drainAmount: 2.2, range: 245, fireDelay: 850, color: "#b81444", label: "S" },
+    { key: "tower8", name: "Sanguijuela", type: "siphon", cost: 420, upgradeCost: 460, damage: 0.16, drainAmount: 3.1, range: 245, fireDelay: 850, color: "#b81444", label: "S" },
     { key: "tower9", name: "Buffer", type: "buffer", cost: 620, upgradeCost: 600, damage: 0, range: 180, fireDelay: 999999, color: "#b78cff", label: "+", buffDamage: 0.10, buffSpeed: 0.10 },
     { key: "tower10", name: "Lucky Block", type: "lucky", cost: 240, upgradeCost: 0, damage: 0, range: 0, fireDelay: 999999, color: "#ffe28a", label: "?" },
     { key: "tower11", name: "Cuchilla", type: "blade", cost: 90, upgradeCost: 120, damage: 0.55, range: 62, fireDelay: 620, color: "#d9d9d9", label: "C", maxHp: 60 },
     { key: "tower12", name: "Lancera", type: "spear", cost: 135, upgradeCost: 165, damage: 1.05, range: 310, fireDelay: 1650, color: "#d7b06a", label: "L", maxHp: 44, laneWidth: 38 },
     { key: "tower13", name: "Láser", type: "laser", cost: 1450, upgradeCost: 950, damage: 14, range: 360, fireDelay: 120, color: "#ff4fd8", label: "⚡", maxHp: 52, beamWidth: 5 }
 ];
+
+const TOWER_RANGE_CAPS = {
+    basic: 320,
+    rapid: 255,
+    pierce: 340,
+    slow: 355,
+    double: 315,
+    poison: 330,
+    ballista: 430,
+    siphon: 320,
+    buffer: 290,
+    blade: 95,
+    spear: 430,
+    laser: 470,
+    lucky: 0
+};
 
 const enemyTypes = [
     {
@@ -1482,7 +1772,7 @@ const specialEnemyTypes = [
     },
     {
         name: "Kamikaze Carmesí",
-        color: "#ff4747",
+        color: "#ff6a18",
         hp: 3,
         speed: 1.45,
         reward: 10,
@@ -1769,11 +2059,7 @@ function getBlockingBarricadeForEnemy(enemy, targetX, targetY) {
     let bestDist = Infinity;
     (barricades || []).forEach(b => {
         if (!b.active || b.hp <= 0 || b.isOpen) return;
-        const rect = getEntityRect({ ...b, isBuildBarricade: true });
-        const closestX = Math.max(rect.left, Math.min(rect.right, enemy.x));
-        const closestY = Math.max(rect.top, Math.min(rect.bottom, enemy.y));
-        const d = Math.hypot(enemy.x - closestX, enemy.y - closestY);
-        if (d <= enemy.radius + 7) {
+        if (circleIntersectsBarricade(enemy.x, enemy.y, (enemy.radius || 18) + 7, b, 0)) {
             const targetDist = Math.hypot(targetX - b.x, targetY - b.y);
             if (targetDist < bestDist) { best = b; bestDist = targetDist; }
         }
@@ -1784,16 +2070,16 @@ function getBlockingBarricadeForEnemy(enemy, targetX, targetY) {
 
 function getBarricadeContactInfo(enemy, barricade) {
     if (!enemy || !barricade) return null;
-    const rect = getEntityRect({ ...barricade, isBuildBarricade: true });
-    const closestX = Math.max(rect.left, Math.min(rect.right, enemy.x));
-    const closestY = Math.max(rect.top, Math.min(rect.bottom, enemy.y));
-    const dx = enemy.x - closestX;
-    const dy = enemy.y - closestY;
+    const contact = getBarricadeContactPoint(enemy.x, enemy.y, barricade);
+    const dx = enemy.x - contact.x;
+    const dy = enemy.y - contact.y;
     const distance = Math.hypot(dx, dy);
-    const onVerticalEdge = closestX === rect.left || closestX === rect.right;
-    const onHorizontalEdge = closestY === rect.top || closestY === rect.bottom;
-    return { rect, closestX, closestY, dx, dy, distance, isCorner: onVerticalEdge && onHorizontalEdge };
+    const halfW = BARRICADE_LENGTH / 2;
+    const halfH = BARRICADE_THICKNESS / 2;
+    const isCorner = Math.abs(contact.localX) >= halfW - 1 && Math.abs(contact.localY) >= halfH - 1;
+    return { rect: getEntityRect({ ...barricade, isBuildBarricade: true }), closestX: contact.x, closestY: contact.y, dx, dy, distance, isCorner };
 }
+
 
 function isEnemyPositionBlockedBySolid(enemy, x, y, ignoredBarricade = null) {
     if (!enemy) return true;
@@ -1801,7 +2087,7 @@ function isEnemyPositionBlockedBySolid(enemy, x, y, ignoredBarricade = null) {
 
     if ((barricades || []).some(b => {
         if (!b || b === ignoredBarricade || !b.active || b.hp <= 0 || b.isOpen) return false;
-        return circleIntersectsRect(x, y, radius, getEntityRect({ ...b, isBuildBarricade: true }), 0);
+        return circleIntersectsBarricade(x, y, radius, b, 0);
     })) return true;
 
     if ((towers || []).some(t => t && t.owned && t.hp > 0 && Math.hypot(t.x - x, t.y - y) < TOWER_COLLISION_RADIUS + radius)) return true;
@@ -2011,6 +2297,29 @@ function healDefensesAndPlayer(amount) {
     if (player && remaining > 0 && player.hp < player.maxHp) {
         player.hp = Math.min(player.maxHp, player.hp + remaining);
     }
+}
+
+
+function healClosestDefenseOrPlayer(x, y, range, amount) {
+    const candidates = [];
+    (barricades || []).forEach(b => {
+        if (b && b.active && b.hp > 0 && b.hp < b.maxHp) candidates.push({ object: b, x: b.x, y: b.y, type: "barricade" });
+    });
+    (towers || []).forEach(t => {
+        if (t && t.owned && t.hp > 0 && t.hp < t.maxHp) candidates.push({ object: t, x: t.x, y: t.y, type: "tower" });
+    });
+    if (player && player.hp > 0 && player.hp < player.maxHp) candidates.push({ object: player, x: player.x, y: player.y, type: "player" });
+    candidates.sort((a, b) => Math.hypot(a.x - x, a.y - y) - Math.hypot(b.x - x, b.y - y));
+    const target = candidates.find(c => Math.hypot(c.x - x, c.y - y) <= range);
+    if (!target) return false;
+    if (target.type === "player") {
+        target.object.hp = Math.min(target.object.maxHp, target.object.hp + amount);
+    } else {
+        target.object.hp = Math.min(target.object.maxHp, target.object.hp + amount);
+    }
+    addDamageText(target.x, target.y - 24, `+${Math.round(amount)}`, false, "#73ff9f");
+    effects.push({ type: "line", x1: x, y1: y, x2: target.x, y2: target.y, life: 12, color: "#73ff9f" });
+    return true;
 }
 
 function damageBarricade(b, amount, sourceEnemy = null) {
@@ -2281,7 +2590,8 @@ function createTowerFromDefinition(def, paidCost = def.cost, tile = null) {
         damageMultiplier: 1,
         fireDelayMultiplier: 1,
         activePoisonZoneExpiresAt: 0,
-        activeSlowZoneNextShotAt: 0
+        activeSlowZoneNextShotAt: 0,
+        rangeCap: getTowerRangeCap(def)
     };
 }
 
@@ -2611,6 +2921,10 @@ function createDefaultState() {
         critChance: 0,
         critMultiplier: 2,
         moveSpeed: PLAYER_SURVIVAL_SPEED,
+        stamina: PLAYER_MAX_STAMINA,
+        maxStamina: PLAYER_MAX_STAMINA,
+        blinkLastDx: 1,
+        blinkLastDy: 0,
         aimX: WORLD_WIDTH / 2 + 1,
         aimY: WORLD_HEIGHT / 2,
         shieldCharges: 0,
@@ -2628,6 +2942,7 @@ function createDefaultState() {
         lastMoveY: 0,
         hurtUntil: 0,
         deathStartedAt: 0,
+        colorId: sanitizePlayerColorId(selectedPlayerColorId),
         alphaTester: Boolean(alphaTesterName),
         developer: Boolean(developerName),
         name: developerName || alphaTesterName || playerName
@@ -2714,6 +3029,14 @@ function createDefaultState() {
             owned: false,
             cost: 2800,
             cooldown: 42000,
+            lastUsed: -Infinity
+        },
+        blink: {
+            name: "Blink",
+            key: "E",
+            owned: false,
+            cost: 800,
+            cooldown: 5000,
             lastUsed: -Infinity
         }
     };
@@ -2966,7 +3289,12 @@ function restoreSavedRun() {
         player = data.player;
         player.x = clampWorldX(Number(player.x) || WORLD_WIDTH / 2, 32);
         player.y = clampWorldY(Number(player.y) || WORLD_HEIGHT / 2, 32);
-        player.moveSpeed = Number(player.moveSpeed) || PLAYER_SURVIVAL_SPEED;
+        player.moveSpeed = PLAYER_SURVIVAL_SPEED;
+        player.maxStamina = Number(player.maxStamina) || PLAYER_MAX_STAMINA;
+        player.stamina = Math.max(0, Math.min(player.maxStamina, Number(player.stamina) || player.maxStamina));
+        player.blinkLastDx = Number(player.blinkLastDx) || 1;
+        player.blinkLastDy = Number(player.blinkLastDy) || 0;
+        player.colorId = sanitizePlayerColorId(player.colorId || selectedPlayerColorId);
         player.name = developerName || alphaTesterName || playerName;
         player.alphaTester = Boolean(alphaTesterName);
         player.developer = Boolean(developerName);
@@ -2985,6 +3313,8 @@ function restoreSavedRun() {
         if (abilities.lightning) abilities.lightning.cost = Math.max(Number(abilities.lightning.cost) || 0, 980);
         if (abilities.meteor) abilities.meteor.cost = Math.max(Number(abilities.meteor.cost) || 0, 1750);
         if (abilities.eclipse) abilities.eclipse.cost = Math.max(Number(abilities.eclipse.cost) || 0, 2800);
+        if (!abilities.blink) abilities.blink = { name: "Blink", key: "E", owned: false, cost: 800, cooldown: 5000, lastUsed: -Infinity };
+        abilities.blink.name = "Blink"; abilities.blink.key = "E"; abilities.blink.cost = Math.max(Number(abilities.blink.cost) || 0, 800); abilities.blink.cooldown = 5000;
         costs = data.costs || costs;
         if (!Number.isFinite(Number(costs.tower11))) costs.tower11 = 90;
         if (!Number.isFinite(Number(costs.tower12))) costs.tower12 = 135;
@@ -3088,6 +3418,8 @@ function startGame() {
         playerName = typedName || "Jugador";
         localStorage.setItem("ardentPlayerName", playerName);
     }
+    selectedPlayerColorId = sanitizePlayerColorId(selectedPlayerColorId);
+    localStorage.setItem("ardentPlayerColor", selectedPlayerColorId);
 
     enableSound();
 
@@ -3168,6 +3500,9 @@ function startWave() {
 
     enemiesToSpawn = getEnemiesAmountForWave();
     enemiesSpawned = 0;
+    if (isBossWave()) {
+        spawnBoss();
+    }
 
     spawnInterval = getSpawnIntervalForWave(enemiesToSpawn);
     lastSpawnTime = getGameTime() - spawnInterval;
@@ -3234,7 +3569,7 @@ function getEnemyTypeForWave() {
     if (specialPool.length > 0 && Math.random() < getSpecialEnemyChance()) {
         const weighted = [];
         specialPool.forEach(type => {
-            const weight = type.special === "healer" ? 0.38 : type.special === "summoner" ? 0.85 : 1;
+            const weight = type.special === "healer" ? 0.38 : type.special === "summoner" ? 0.32 : 1;
             const count = Math.max(1, Math.round(weight * 10));
             for (let i = 0; i < count; i++) weighted.push(type);
         });
@@ -3383,11 +3718,6 @@ function shouldSpawnDoomEnemy() {
 }
 
 function spawnEnemy() {
-    if (isBossWave() && enemiesSpawned === enemiesToSpawn - 1) {
-        spawnBoss();
-        enemiesSpawned++;
-        return;
-    }
 
     let type;
     if (shouldSpawnDoomEnemy()) {
@@ -3404,6 +3734,14 @@ function spawnEnemy() {
         const maxHealers = Math.max(1, Math.min(2, Math.floor(enemiesToSpawn / 32)));
         const currentHealers = enemies.filter(e => e.special === "healer").length;
         if (currentHealers >= maxHealers) {
+            type = enemyTypes[Math.floor(Math.random() * getUnlockedEnemyCount())];
+        }
+    }
+
+    if (type && type.special === "summoner") {
+        const maxSummoners = Math.max(1, Math.min(3, Math.floor(enemiesToSpawn / 55)));
+        const currentSummoners = enemies.filter(e => e.special === "summoner" && e.hp > 0).length;
+        if (currentSummoners >= maxSummoners) {
             type = enemyTypes[Math.floor(Math.random() * getUnlockedEnemyCount())];
         }
     }
@@ -3528,7 +3866,9 @@ function addTowerProjectile(tower, targetX, targetY, options = {}) {
         areaRadius: options.areaRadius,
         poisonDuration: options.poisonDuration,
         tickDelay: options.tickDelay,
-        sourceTower: tower
+        sourceTower: tower,
+        life: options.life ?? 2600,
+        bornAt: getGameTime()
     });
 }
 
@@ -3642,8 +3982,8 @@ function shoot(targetX, targetY, owner = "player", tower = null) {
             const target = findClosestEnemy(tower.x, tower.y, tower.range);
             if (target) {
                 damageEnemy(target, getTowerDamage(tower), false, "#ff5d86", "tower");
-                healDefensesAndPlayer(tower.drainAmount || 2);
-                effects.push({ type: "line", x1: tower.x, y1: tower.y, x2: target.x, y2: target.y, life: 10, color: "#ff2f68" });
+                const healed = healClosestDefenseOrPlayer(tower.x, tower.y, tower.range || 245, tower.drainAmount || 2);
+                if (!healed) effects.push({ type: "line", x1: tower.x, y1: tower.y, x2: target.x, y2: target.y, life: 10, color: "#ff2f68" });
                 if (target.hp <= 0) {
                     const idx = enemies.indexOf(target);
                     if (idx >= 0) killEnemy(idx);
@@ -3668,7 +4008,7 @@ function resolvePlayerBarricadeCollision(oldX, oldY) {
     for (const b of (barricades || [])) {
         if (!b.active || b.hp <= 0 || b.isOpen) continue;
         const rect = getEntityRect({ ...b, isBuildBarricade: true });
-        if (rectsOverlap(playerRect, rect, 2)) {
+        if (rectsOverlap(playerRect, rect, 2) && circleIntersectsBarricade(player.x, player.y, 22, b, 2)) {
             player.x = oldX;
             player.y = oldY;
             return;
@@ -3697,7 +4037,10 @@ function updatePlayerMovement() {
     if (pressedKeys.has(controlBindings.moveDown)) dy += 1;
 
     player.isMoving = dx !== 0 || dy !== 0;
-    if (dx === 0 && dy === 0) return;
+    if (dx === 0 && dy === 0) {
+        player.stamina = Math.min(player.maxStamina || PLAYER_MAX_STAMINA, (player.stamina || 0) + PLAYER_STAMINA_REGEN_PER_SECOND * (frameScale / 60) * gameSpeed);
+        return;
+    }
 
     const oldX = player.x;
     const oldY = player.y;
@@ -3711,7 +4054,16 @@ function updatePlayerMovement() {
     // del juego. Antes el jugador solo escalaba con sqrt(gameSpeed), pero los enemigos
     // escalaban linealmente, entonces en x4 los bichos pasaban a ser mucho más rápidos
     // que el jugador aunque en x1 fueran más lentos.
-    const speed = player.moveSpeed * gameSpeed * frameScale;
+    player.blinkLastDx = dx;
+    player.blinkLastDy = dy;
+    const seconds = (frameScale / 60) * gameSpeed;
+    const wantsSprint = isShiftDown && player.stamina > PLAYER_MIN_STAMINA_TO_SPRINT;
+    if (wantsSprint) {
+        player.stamina = Math.max(0, player.stamina - PLAYER_STAMINA_DRAIN_PER_SECOND * seconds);
+    } else {
+        player.stamina = Math.min(player.maxStamina || PLAYER_MAX_STAMINA, player.stamina + PLAYER_STAMINA_REGEN_PER_SECOND * seconds);
+    }
+    const speed = player.moveSpeed * (wantsSprint ? PLAYER_SPRINT_MULTIPLIER : 1) * gameSpeed * frameScale;
 
     player.x += dx * speed;
     player.y += dy * speed;
@@ -3995,7 +4347,7 @@ function updateEnemySpecials(now, defenseLineX) {
             effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 6, maxRadius: 40, life: 18, color: "#d58cff" });
         }
 
-        if (enemy.special === "summoner" && !enemy.isAttacking && enemies.length < 120 && now - enemy.lastSummonTime >= enemy.summonDelay) {
+        if (enemy.special === "summoner" && !enemy.isAttacking && enemies.length < 100 && enemies.filter(e => e.special === "summoner" && e.hp > 0).length <= Math.max(1, Math.floor(enemiesToSpawn / 46)) && now - enemy.lastSummonTime >= enemy.summonDelay) {
             enemy.lastSummonTime = now;
 
             if (canSummonerCreateBatch(enemy)) {
@@ -4067,10 +4419,7 @@ function fireBossProjectile(x, y, targetX, targetY, options = {}) {
 function getBossProjectileBarricadeHit(projectile) {
     return (barricades || []).find(b => {
         if (!b.active || b.hp <= 0) return false;
-        const rect = getEntityRect({ ...b, isBuildBarricade: true });
-        const cx = Math.max(rect.left, Math.min(rect.right, projectile.x));
-        const cy = Math.max(rect.top, Math.min(rect.bottom, projectile.y));
-        return Math.hypot(projectile.x - cx, projectile.y - cy) <= projectile.radius + 3;
+return circleIntersectsBarricade(projectile.x, projectile.y, projectile.radius + 3, b, 0);
     });
 }
 
@@ -4712,7 +5061,7 @@ function updateProjectiles() {
         p.x += p.dx * p.speed * gameSpeed * frameScale;
         p.y += p.dy * p.speed * gameSpeed * frameScale;
 
-        if (p.x < -80 || p.x > WORLD_WIDTH + 80 || p.y < -80 || p.y > WORLD_HEIGHT + 80) {
+        if (getGameTime() - (p.bornAt || 0) > (p.life || 2600) || p.x < -80 || p.x > WORLD_WIDTH + 80 || p.y < -80 || p.y > WORLD_HEIGHT + 80) {
             projectiles.splice(i, 1);
             continue;
         }
@@ -4823,6 +5172,17 @@ function killEnemy(index) {
     enemies.splice(index, 1);
 }
 
+function findSafeSplitSpawnPoint(enemy, angle, distance) {
+    const radius = Math.max(9, enemy.radius * 0.72);
+    for (let step = 0; step < 8; step++) {
+        const d = distance + step * 12;
+        const x = clampWorldX(enemy.x + Math.cos(angle) * d, radius + 6);
+        const y = clampWorldY(enemy.y + Math.sin(angle) * d, radius + 6);
+        if (!isEnemyPositionBlockedBySolid({ ...enemy, radius }, x, y, null)) return { x, y };
+    }
+    return { x: clampWorldX(enemy.x, radius + 6), y: clampWorldY(enemy.y, radius + 6) };
+}
+
 function splitEnemy(enemy) {
     const nextLevel = (enemy.splitLevel || 0) + 1;
     const childType = {
@@ -4840,9 +5200,10 @@ function splitEnemy(enemy) {
 
     for (let i = 0; i < 3; i++) {
         const angle = (Math.PI * 2 / 3) * i + Math.random() * 0.35;
+        const spawn = findSafeSplitSpawnPoint(enemy, angle, 30);
         enemies.push(createEnemyFromType(childType, {
-            x: clampWorldX(enemy.x + Math.cos(angle) * 24, 42),
-            y: clampWorldY(enemy.y + Math.sin(angle) * 24, 42),
+            x: spawn.x,
+            y: spawn.y,
             radius: Math.max(9, enemy.radius * 0.72),
             ignoreScaling: true,
             splitLevel: nextLevel
@@ -5075,10 +5436,11 @@ function explodeEnemyOnDeath(enemy) {
 
     let hitBarricade = false;
     (barricades || []).forEach(b => {
-        if (b.active && b.hp > 0 && Math.abs(enemy.x - b.x) <= radius) {
+        if (b.active && b.hp > 0 && circleIntersectsBarricade(enemy.x, enemy.y, radius, b, 0)) {
             hitBarricade = true;
             damageBarricade(b, damage, enemy);
-            showCenterMessage("¡Barricada detonada!", 1000);
+            createImpactParticles(enemy.x, enemy.y, "#ff8a18");
+            particles.push({ x: enemy.x, y: enemy.y, vx: 0, vy: 0, life: 18, color: "#ffb347", size: 8 });
         }
     });
 
@@ -5600,12 +5962,40 @@ function useAbility(id) {
     if (id === "lightning") useLightning();
     if (id === "meteor") useMeteor();
     if (id === "eclipse") useEclipse();
+    if (id === "blink") useBlink();
 
     updateHud();
 }
 
 function getAbilityDamage(base, waveScale = 1, playerScale = 1) {
     return base + wave * waveScale + player.damage * playerScale;
+}
+
+function useBlink() {
+    let dx = 0;
+    let dy = 0;
+    if (pressedKeys.has(controlBindings.moveLeft)) dx -= 1;
+    if (pressedKeys.has(controlBindings.moveRight)) dx += 1;
+    if (pressedKeys.has(controlBindings.moveUp)) dy -= 1;
+    if (pressedKeys.has(controlBindings.moveDown)) dy += 1;
+    if (dx === 0 && dy === 0) {
+        dx = player.blinkLastDx || Math.cos(Math.atan2(mousePosition.y - player.y, mousePosition.x - player.x));
+        dy = player.blinkLastDy || Math.sin(Math.atan2(mousePosition.y - player.y, mousePosition.x - player.x));
+    }
+    const len = Math.hypot(dx, dy) || 1;
+    dx /= len; dy /= len;
+    const oldX = player.x;
+    const oldY = player.y;
+    player.x = clampWorldX(player.x + dx * BLINK_DISTANCE, 32);
+    player.y = clampWorldY(player.y + dy * BLINK_DISTANCE, 32);
+    // Blink atraviesa paredes, pero no permite terminar adentro de una torre/núcleo/enemigo.
+    resolvePlayerEnemyCollision(oldX, oldY);
+    if ((towers || []).some(t => t && t.owned && t.hp > 0 && Math.hypot(player.x - t.x, player.y - t.y) < TOWER_COLLISION_RADIUS + 22) || (baseCore && basePlaced && baseCore.hp > 0 && Math.hypot(player.x - baseCore.x, player.y - baseCore.y) < BASE_RADIUS + 22)) {
+        player.x = oldX; player.y = oldY;
+    }
+    effects.push({ type: "line", x1: oldX, y1: oldY, x2: player.x, y2: player.y, life: 18, color: "#77b7ff" });
+    effects.push({ type: "circle", x: player.x, y: player.y, radius: 6, maxRadius: 44, life: 18, color: "#77b7ff" });
+    showCenterMessage("¡BLINK!", 520);
 }
 
 function useBomb() {
@@ -5893,21 +6283,28 @@ function drawBarricade() {
         if (!b.active || b.hp <= 0) return;
         const dims = getBarricadeDimensions(b.orientation || "horizontal");
         const rect = getEntityRect({ ...b, isBuildBarricade: true });
+        const orientation = b.orientation || "horizontal";
+        const visualW = isDiagonalBarricadeOrientation(orientation) ? BARRICADE_LENGTH : dims.width;
+        const visualH = isDiagonalBarricadeOrientation(orientation) ? BARRICADE_THICKNESS : dims.height;
+        ctx.save();
+        ctx.translate(b.x, b.y);
+        ctx.rotate(getBarricadeRotation(orientation));
         ctx.globalAlpha = b.isOpen ? 0.28 : 1;
         ctx.fillStyle = b.color;
-        ctx.fillRect(rect.left, rect.top, dims.width, dims.height);
+        ctx.fillRect(-visualW / 2, -visualH / 2, visualW, visualH);
         ctx.globalAlpha = 1;
         if (b.kind === "door") {
             ctx.fillStyle = b.isOpen ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.35)";
             ctx.font = "bold 12px Arial";
-            ctx.fillText(b.isOpen ? "ABIERTA" : "PUERTA", rect.left + 6, rect.top + dims.height / 2 + 4);
+            ctx.fillText(b.isOpen ? "ABIERTA" : "PUERTA", -visualW / 2 + 6, 4);
         }
         ctx.strokeStyle = isStructureSelected("barricade", b.id) ? "#ffe28a" : "rgba(0,0,0,0.7)";
         ctx.lineWidth = isStructureSelected("barricade", b.id) ? 4 : 2;
-        ctx.strokeRect(rect.left, rect.top, dims.width, dims.height);
+        ctx.strokeRect(-visualW / 2, -visualH / 2, visualW, visualH);
+        ctx.restore();
 
-        if (b.thorns) {
-            drawBarricadeThorns(rect, dims, b.orientation || "horizontal");
+        if (b.thorns && !isDiagonalBarricadeOrientation(orientation)) {
+            drawBarricadeThorns(rect, dims, orientation);
         }
 
         const hpPercent = b.maxHp > 0 ? Math.max(0, b.hp / b.maxHp) : 0;
@@ -5923,11 +6320,17 @@ function drawBuildPreview() {
         const point = getSnappedBuildPoint();
         const dims = getBarricadeDimensions(barricadeBuildOrientation);
         const valid = isBarricadePositionValid(point.x, point.y, barricadeBuildOrientation);
+        ctx.save();
+        ctx.translate(point.x, point.y);
+        ctx.rotate(getBarricadeRotation(barricadeBuildOrientation));
+        const visualW = isDiagonalBarricadeOrientation(barricadeBuildOrientation) ? BARRICADE_LENGTH : dims.width;
+        const visualH = isDiagonalBarricadeOrientation(barricadeBuildOrientation) ? BARRICADE_THICKNESS : dims.height;
         ctx.fillStyle = valid ? "rgba(115,255,159,0.35)" : "rgba(255,80,80,0.35)";
-        ctx.fillRect(point.x - dims.width / 2, point.y - dims.height / 2, dims.width, dims.height);
+        ctx.fillRect(-visualW / 2, -visualH / 2, visualW, visualH);
         ctx.strokeStyle = valid ? "rgba(115,255,159,0.95)" : "rgba(255,80,80,0.95)";
         ctx.lineWidth = 3;
-        ctx.strokeRect(point.x - dims.width / 2, point.y - dims.height / 2, dims.width, dims.height);
+        ctx.strokeRect(-visualW / 2, -visualH / 2, visualW, visualH);
+        ctx.restore();
         ctx.fillStyle = "white";
         ctx.font = "bold 14px Arial";
         ctx.fillText("Click coloca · R rota · Click derecho/Esc cancela", point.x - 150, point.y - dims.height / 2 - 12);
@@ -5984,7 +6387,7 @@ function drawPlayer() {
 
     // Si los PNG todavía no cargaron o faltan, usa el dibujo viejo como fallback.
     if (!spriteDrawn) {
-        ctx.fillStyle = "white";
+        ctx.fillStyle = getPlayerSelectedColor().color;
         ctx.beginPath();
         ctx.arc(player.x, player.y, 22, 0, Math.PI * 2);
         ctx.fill();
@@ -6960,9 +7363,12 @@ function updateHud(force = false) {
     const hpBarFill = document.getElementById("hpBarFill");
     const hpHudBox = document.getElementById("hpHudBox");
     if (hpBarFill) hpBarFill.style.width = `${hpPct * 100}%`;
-    if (hpHudBox) hpHudBox.title = `Vida: ${Math.round(player.hp)}/${player.maxHp}${player.shieldCharges > 0 ? ` · Escudos: ${player.shieldCharges}` : ""}`;
+    if (hpHudBox) hpHudBox.title = `Vida: ${Math.round(player.hp)}/${player.maxHp}${player.shieldCharges > 0 ? ` · Escudos: ${player.shieldCharges}` : ""} · Stamina: ${Math.round(player.stamina || 0)}/${player.maxStamina || PLAYER_MAX_STAMINA}`;
+    if (staminaBarFill) staminaBarFill.style.width = `${Math.max(0, Math.min(1, (player.stamina || 0) / Math.max(1, player.maxStamina || PLAYER_MAX_STAMINA))) * 100}%`;
     barricadeText.textContent = `Muros ${Math.round(getTotalBarricadeHp())}/${Math.round(getTotalBarricadeMaxHp())}`;
     coinsText.textContent = formatMoney(coins);
+    if (shopCoinCounterText) shopCoinCounterText.textContent = formatMoney(coins);
+    if (constructionCoinCounterText) constructionCoinCounterText.textContent = formatMoney(coins);
     scoreText.textContent = formatCompactNumber(score);
 
     playerDamageText.textContent = player.damage;
@@ -7018,7 +7424,7 @@ function updateHud(force = false) {
     updateBarricadeButtonState(buyDoorBarricadeBtn, "door", "doorBarricade");
     if (doorBarricadeCostText) doorBarricadeCostText.textContent = formatMoney(getBarricadeBaseCost("door"));
 
-    barricadeTierText.textContent = getBarricadeStatusText();
+    barricadeTierText.textContent = "Click para colocar · R rota";
     updateBarricadeSlotChoiceUI();
     clampPlayerToPlayableArea();
 
@@ -7035,6 +7441,7 @@ function updateHud(force = false) {
     lightningCostText.textContent = formatMoney(abilities.lightning.cost);
     meteorCostText.textContent = formatMoney(abilities.meteor.cost);
     if (eclipseCostText) eclipseCostText.textContent = formatMoney(abilities.eclipse.cost);
+    if (blinkCostText && abilities.blink) blinkCostText.textContent = formatMoney(abilities.blink.cost);
 
     updateTowerShopVisibility();
     updateAbilityShopVisibility();
@@ -7164,6 +7571,7 @@ function updateAbilityShopVisibility() {
     setShopButtonAffordability(buyLightningBtn, abilities.lightning.cost, abilities.lightning.owned, abilities.lightning.owned ? "Ya compraste esta habilidad" : "");
     setShopButtonAffordability(buyMeteorBtn, abilities.meteor.cost, abilities.meteor.owned, abilities.meteor.owned ? "Ya compraste esta habilidad" : "");
     setShopButtonAffordability(buyEclipseBtn, abilities.eclipse.cost, abilities.eclipse.owned, abilities.eclipse.owned ? "Ya compraste esta habilidad" : "");
+    if (buyBlinkBtn && abilities.blink) setShopButtonAffordability(buyBlinkBtn, abilities.blink.cost, abilities.blink.owned, abilities.blink.owned ? "Ya compraste esta habilidad" : "");
 
     if (abilities.bomb.owned) buyBombBtn.innerHTML = `Bomba comprada<br><small>${abilities.bomb.key} para usar</small>`;
     if (abilities.freeze.owned) buyFreezeBtn.innerHTML = `Congelar comprado<br><small>${abilities.freeze.key} para usar</small>`;
@@ -7171,6 +7579,7 @@ function updateAbilityShopVisibility() {
     if (abilities.lightning.owned) buyLightningBtn.innerHTML = `Rayo comprado<br><small>${abilities.lightning.key} para usar</small>`;
     if (abilities.meteor.owned) buyMeteorBtn.innerHTML = `Meteorito comprado<br><small>${abilities.meteor.key} para usar</small>`;
     if (buyEclipseBtn && abilities.eclipse.owned) buyEclipseBtn.innerHTML = `Eclipse comprado<br><small>${abilities.eclipse.key} para usar</small>`;
+    if (buyBlinkBtn && abilities.blink && abilities.blink.owned) buyBlinkBtn.innerHTML = `Blink comprado<br><small>${abilities.blink.key} para usar</small>`;
 }
 
 function updateAbilityBar() {
@@ -7301,6 +7710,7 @@ function gameLoop() {
     // No baja de 1 para conservar el ritmo original en PCs que ya iban fluidas.
     // El límite evita saltos gigantes si el navegador se traba.
     frameScale = Math.max(1, Math.min(delta / 16.666, 2.5));
+    hitSfxPlayedThisFrame = 0;
 
     recoverFrozenWaveState("loop");
     updateBuildPhase();
@@ -7767,9 +8177,10 @@ function getTowerUpgradePreview(tower) {
     const hp = `HP ${Math.ceil(tower.hp || 0)}/${Math.ceil(tower.maxHp || 0)}`;
     if (tower.type === "buffer") return `Nivel ${tower.level || 1} · ${hp} · buff ${Math.round((tower.buffDamage || 0) * 100)}% daño / ${Math.round((tower.buffSpeed || 0) * 100)}% vel.`;
     if (tower.type === "blade") return `Nivel ${tower.level || 1} · ${hp} · daño/tick ${formatCompactNumber(tower.damage || 0, 2)} · área ${Math.round(tower.range || 0)} · tick ${Math.round(tower.fireDelay || 0)}ms`;
-    if (tower.type === "spear") return `Nivel ${tower.level || 1} · ${hp} · mira ${getRotationLabel(tower.rotation || 0)} · daño ${formatCompactNumber(tower.damage || 0, 2)} · alcance ${Math.round(tower.range || 0)}`;
-    if (tower.type === "laser") return `Nivel ${tower.level || 1} · ${hp} · DPS ${formatCompactNumber(tower.damage || 0, 2)} · alcance ${Math.round(tower.range || 0)} · objetivo único`;
-    return `Nivel ${tower.level || 1} · ${hp} · daño ${formatCompactNumber(tower.damage || 0, 2)} · rango ${Math.round(tower.range || 0)} · delay ${Math.round(tower.fireDelay || 0)}ms`;
+    if (tower.type === "spear") return `Nivel ${tower.level || 1} · ${hp} · mira ${getRotationLabel(tower.rotation || 0)} · daño ${formatCompactNumber(tower.damage || 0, 2)} · alcance ${Math.round(tower.range || 0)}/${getTowerRangeCap(tower) || Math.round(tower.range || 0)}`;
+    if (tower.type === "laser") return `Nivel ${tower.level || 1} · ${hp} · DPS ${formatCompactNumber(tower.damage || 0, 2)} · alcance ${Math.round(tower.range || 0)}/${getTowerRangeCap(tower) || Math.round(tower.range || 0)} · objetivo único`;
+    const rangeText = getTowerRangeCap(tower) > 0 ? `${Math.round(tower.range || 0)}/${getTowerRangeCap(tower)}` : `${Math.round(tower.range || 0)}`;
+    return `Nivel ${tower.level || 1} · ${hp} · daño ${formatCompactNumber(tower.damage || 0, 2)} · rango ${rangeText} · delay ${Math.round(tower.fireDelay || 0)}ms`;
 }
 
 function getBarricadeInfoText(b) {
@@ -8237,8 +8648,10 @@ window.addEventListener("keydown", event => {
     if (event.code === "KeyR" && (pendingBarricadePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null)) {
         event.preventDefault();
         if (pendingBarricadePlacement) {
-            barricadeBuildOrientation = barricadeBuildOrientation === "horizontal" ? "vertical" : "horizontal";
-            showCenterMessage(`Barricada ${barricadeBuildOrientation === "horizontal" ? "horizontal" : "vertical"}`, 550);
+            const orientations = ["horizontal", "vertical", "diagonalDown", "diagonalUp"];
+            barricadeBuildOrientation = orientations[(orientations.indexOf(barricadeBuildOrientation) + 1) % orientations.length];
+            const label = barricadeBuildOrientation === "diagonalDown" ? "diagonal ↘" : barricadeBuildOrientation === "diagonalUp" ? "diagonal ↗" : barricadeBuildOrientation === "horizontal" ? "horizontal" : "vertical";
+            showCenterMessage(`Barricada ${label}`, 550);
         } else if (pendingTowerMoveIndex !== null) {
             rotateTowerObject(towers[pendingTowerMoveIndex]);
             showCenterMessage(`Torre hacia ${getRotationLabel(towers[pendingTowerMoveIndex]?.rotation || 0)}`, 550);
@@ -9029,6 +9442,8 @@ function upgradeTower(index, silent = false) {
         tower.buffSpeed += 0.018;
     }
 
+    clampTowerRange(tower);
+
     const hpGain = tower.type === "blade" ? 8 : tower.type === "spear" ? 7 : tower.type === "laser" ? 8 : tower.type === "ballista" ? 7 : 5;
     tower.maxHp = Math.max(oldMaxHp + hpGain, Number(tower.maxHp) || 0);
     tower.hp = Math.min(tower.maxHp, (Number(tower.hp) || oldMaxHp) + hpGain);
@@ -9060,6 +9475,7 @@ buyTsunamiBtn.addEventListener("click", () => buyAbility("tsunami"));
 buyLightningBtn.addEventListener("click", () => buyAbility("lightning"));
 buyMeteorBtn.addEventListener("click", () => buyAbility("meteor"));
 if (buyEclipseBtn) buyEclipseBtn.addEventListener("click", () => buyAbility("eclipse"));
+if (buyBlinkBtn) buyBlinkBtn.addEventListener("click", () => buyAbility("blink"));
 
 function pauseGame() {
     if (!gameStarted || !hasActiveRun) return;
