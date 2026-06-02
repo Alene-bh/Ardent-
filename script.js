@@ -1345,50 +1345,31 @@ function distanceSegmentToSegment(a1x, a1y, a2x, a2y, b1x, b1y, b2x, b2y) {
 }
 
 function getClosestPointOnBarricade(px, py, barricade) {
-    if (!isDiagonalBarricade(barricade.orientation || "horizontal")) {
-        const rect = getEntityRect({ ...barricade, isBuildBarricade: true });
-        return {
-            x: Math.max(rect.left, Math.min(rect.right, px)),
-            y: Math.max(rect.top, Math.min(rect.bottom, py))
-        };
-    }
+    // Todas las barricadas usan el mismo modelo de colisión: una cápsula fina
+    // alineada con su orientación real. Así |, /, - y \ no comparten
+    // una hitbox diagonal ni una caja invisible grande.
     const seg = getBarricadeSegment(barricade);
     const hit = distancePointToSegment(px, py, seg.x1, seg.y1, seg.x2, seg.y2);
     return { x: hit.closestX, y: hit.closestY };
 }
 
 function barricadesIntersect(a, b, padding = 0) {
-    const aDiagonal = isDiagonalBarricade(a.orientation || "horizontal");
-    const bDiagonal = isDiagonalBarricade(b.orientation || "horizontal");
-    if (!aDiagonal && !bDiagonal) {
-        return rectsOverlap(getEntityRect({ ...a, isBuildBarricade: true }), getEntityRect({ ...b, isBuildBarricade: true }), padding);
-    }
-    const hitRadius = BARRICADE_THICKNESS + padding;
-    if (aDiagonal && bDiagonal) {
-        const sa = getBarricadeSegment(a);
-        const sb = getBarricadeSegment(b);
-        return distanceSegmentToSegment(sa.x1, sa.y1, sa.x2, sa.y2, sb.x1, sb.y1, sb.x2, sb.y2) <= hitRadius;
-    }
-    const diagonal = aDiagonal ? a : b;
-    const rectSource = aDiagonal ? b : a;
-    return barricadeIntersectsRect(diagonal, getEntityRect({ ...rectSource, isBuildBarricade: true }), padding);
+    const sa = getBarricadeSegment(a);
+    const sb = getBarricadeSegment(b);
+    // Dos cápsulas chocan cuando sus segmentos centrales están más cerca que
+    // la suma de sus medios grosores. Funciona para vertical, horizontal y diagonales.
+    return distanceSegmentToSegment(sa.x1, sa.y1, sa.x2, sa.y2, sb.x1, sb.y1, sb.x2, sb.y2) <= BARRICADE_THICKNESS + padding;
 }
 
 function circleIntersectsBarricade(cx, cy, radius, barricade, padding = 0) {
-    if (!isDiagonalBarricade(barricade.orientation || "horizontal")) {
-        return circleIntersectsRect(cx, cy, radius, getEntityRect({ ...barricade, isBuildBarricade: true }), padding);
-    }
     const seg = getBarricadeSegment(barricade);
     const info = distancePointToSegment(cx, cy, seg.x1, seg.y1, seg.x2, seg.y2);
     return info.distance <= radius + BARRICADE_THICKNESS / 2 + padding;
 }
 
 function barricadeIntersectsRect(barricade, rect, padding = 0) {
-    if (!isDiagonalBarricade(barricade.orientation || "horizontal")) {
-        return rectsOverlap(getEntityRect({ ...barricade, isBuildBarricade: true }), rect, padding);
-    }
-    // Colisión real de barricada diagonal: una cápsula fina siguiendo la madera.
-    // Antes se usaba el radio del rectángulo completo y generaba una pared invisible grande.
+    // Colisión real de barricada: cápsula fina siguiendo la madera en la
+    // orientación guardada al colocarla: |, /, - o \.
     const seg = getBarricadeSegment(barricade);
     return distanceSegmentToRect(seg.x1, seg.y1, seg.x2, seg.y2, rect) <= BARRICADE_THICKNESS / 2 + padding;
 }
@@ -3912,17 +3893,84 @@ function getPlayerRightBoundaryX() {
     return WORLD_WIDTH - 32;
 }
 
-function resolvePlayerBarricadeCollision(oldX, oldY) {
-    if (!player) return;
-    const playerRect = getEntityRect({ x: player.x, y: player.y, radius: 22 });
+function getPlayerBarricadeBlockAt(x, y, ignoredBarricade = null) {
+    if (!player) return null;
     for (const b of (barricades || [])) {
+        if (b === ignoredBarricade) continue;
         if (!b.active || b.hp <= 0 || b.isOpen) continue;
-        if (circleIntersectsBarricade(player.x, player.y, 22, b, 2)) {
-            player.x = oldX;
-            player.y = oldY;
-            return;
-        }
+        if (circleIntersectsBarricade(x, y, 22, b, 2)) return b;
     }
+    return null;
+}
+
+function isPlayerBarricadeBlockedAt(x, y, ignoredBarricade = null) {
+    return !!getPlayerBarricadeBlockAt(x, y, ignoredBarricade);
+}
+
+function resolvePlayerBarricadeCollision(oldX, oldY) {
+    if (!player) return false;
+    const blocker = getPlayerBarricadeBlockAt(player.x, player.y);
+    if (blocker) {
+        player.x = oldX;
+        player.y = oldY;
+        return true;
+    }
+    return false;
+}
+
+function tryMovePlayerWithBarricadeSlide(moveX, moveY) {
+    if (!player) return;
+    const oldX = player.x;
+    const oldY = player.y;
+    let targetX = clampWorldX(oldX + moveX, 32);
+    let targetY = clampWorldY(oldY + moveY, 32);
+    const firstBlocker = getPlayerBarricadeBlockAt(targetX, targetY);
+
+    if (!firstBlocker) {
+        player.x = targetX;
+        player.y = targetY;
+        return;
+    }
+
+    // Si el movimiento completo choca, proyectamos el movimiento sobre la línea real
+    // de la barricada. Esto permite resbalar sobre muros verticales, horizontales y
+    // diagonales sin crear una caja invisible ni frenar al jugador en seco.
+    const seg = getBarricadeSegment(firstBlocker);
+    const wallDx = seg.x2 - seg.x1;
+    const wallDy = seg.y2 - seg.y1;
+    const wallLength = Math.hypot(wallDx, wallDy) || 1;
+    const tangentX = wallDx / wallLength;
+    const tangentY = wallDy / wallLength;
+    const dot = moveX * tangentX + moveY * tangentY;
+    const slideX = tangentX * dot;
+    const slideY = tangentY * dot;
+
+    const slideTargetX = clampWorldX(oldX + slideX, 32);
+    const slideTargetY = clampWorldY(oldY + slideY, 32);
+    if ((Math.abs(slideX) > 0.01 || Math.abs(slideY) > 0.01) && !isPlayerBarricadeBlockedAt(slideTargetX, slideTargetY)) {
+        player.x = slideTargetX;
+        player.y = slideTargetY;
+        return;
+    }
+
+    // Fallback clásico por ejes: ayuda mucho en esquinas y contra los extremos de las
+    // barricadas cuando el jugador llega con movimiento diagonal.
+    const xOnly = clampWorldX(oldX + moveX, 32);
+    if (Math.abs(moveX) > 0.01 && !isPlayerBarricadeBlockedAt(xOnly, oldY)) {
+        player.x = xOnly;
+        player.y = oldY;
+        return;
+    }
+
+    const yOnly = clampWorldY(oldY + moveY, 32);
+    if (Math.abs(moveY) > 0.01 && !isPlayerBarricadeBlockedAt(oldX, yOnly)) {
+        player.x = oldX;
+        player.y = yOnly;
+        return;
+    }
+
+    player.x = oldX;
+    player.y = oldY;
 }
 
 function clampPlayerToPlayableArea() {
@@ -3973,10 +4021,8 @@ function updatePlayerMovement() {
     }
     const speed = player.moveSpeed * (wantsSprint ? PLAYER_SPRINT_SPEED_MULTIPLIER : 1) * gameSpeed * frameScale;
 
-    player.x += dx * speed;
-    player.y += dy * speed;
+    tryMovePlayerWithBarricadeSlide(dx * speed, dy * speed);
     clampPlayerToPlayableArea();
-    resolvePlayerBarricadeCollision(oldX, oldY);
     resolvePlayerEnemyCollision(oldX, oldY);
 }
 
@@ -6195,59 +6241,34 @@ function drawBase() {
     ctx.restore();
 }
 
-function drawBarricadeThorns(rect, dims, orientation = "horizontal") {
+function drawBarricadeThornsLocal(width, height) {
+    // Se dibuja en coordenadas LOCALES de la barricada.
+    // Como drawBarricade() ya hizo translate + rotate, los pinchos acompañan
+    // exactamente la orientación real: |, /, - o \.
     ctx.save();
     ctx.fillStyle = "#ff9f55";
+    const count = Math.max(4, Math.floor(width / 16));
+    const step = width / count;
+    const centerY = 0;
+    const spikeLength = Math.min(13, Math.max(8, height * 0.62));
+    const halfBase = Math.min(7, step * 0.32);
 
-    const isVertical = orientation === "vertical";
-    const count = isVertical
-        ? Math.max(3, Math.floor(dims.height / 18))
-        : Math.max(3, Math.floor(dims.width / 18));
+    for (let i = 0; i < count; i++) {
+        const x = -width / 2 + step * (i + 0.5);
 
-    if (isVertical) {
-        const step = dims.height / count;
-        const centerX = rect.left + dims.width / 2;
-        const spikeLength = Math.min(12, Math.max(7, dims.width * 0.55));
-        const halfBase = Math.min(7, step * 0.32);
+        // Pinchos hacia un lado de la barricada.
+        ctx.beginPath();
+        ctx.moveTo(x - halfBase, centerY - height / 2 + 1);
+        ctx.lineTo(x, centerY - height / 2 - spikeLength);
+        ctx.lineTo(x + halfBase, centerY - height / 2 + 1);
+        ctx.fill();
 
-        for (let i = 0; i < count; i++) {
-            const y = rect.top + step * (i + 0.5);
-
-            // Pinchos hacia ambos lados para que la muralla vertical también se lea rotada.
-            ctx.beginPath();
-            ctx.moveTo(centerX, y - halfBase);
-            ctx.lineTo(centerX + spikeLength, y);
-            ctx.lineTo(centerX, y + halfBase);
-            ctx.fill();
-
-            ctx.beginPath();
-            ctx.moveTo(centerX, y - halfBase);
-            ctx.lineTo(centerX - spikeLength, y);
-            ctx.lineTo(centerX, y + halfBase);
-            ctx.fill();
-        }
-    } else {
-        const step = dims.width / count;
-        const centerY = rect.top + dims.height / 2;
-        const spikeLength = Math.min(12, Math.max(7, dims.height * 0.55));
-        const halfBase = Math.min(7, step * 0.32);
-
-        for (let i = 0; i < count; i++) {
-            const x = rect.left + step * (i + 0.5);
-
-            // Pinchos hacia arriba y abajo para la muralla horizontal.
-            ctx.beginPath();
-            ctx.moveTo(x - halfBase, centerY);
-            ctx.lineTo(x, centerY - spikeLength);
-            ctx.lineTo(x + halfBase, centerY);
-            ctx.fill();
-
-            ctx.beginPath();
-            ctx.moveTo(x - halfBase, centerY);
-            ctx.lineTo(x, centerY + spikeLength);
-            ctx.lineTo(x + halfBase, centerY);
-            ctx.fill();
-        }
+        // Pinchos hacia el lado contrario.
+        ctx.beginPath();
+        ctx.moveTo(x - halfBase, centerY + height / 2 - 1);
+        ctx.lineTo(x, centerY + height / 2 + spikeLength);
+        ctx.lineTo(x + halfBase, centerY + height / 2 - 1);
+        ctx.fill();
     }
 
     ctx.restore();
@@ -6259,8 +6280,11 @@ function drawBarricade() {
         const dims = getBarricadeDimensions(b.orientation || "horizontal");
         const rect = getEntityRect({ ...b, isBuildBarricade: true });
         const angle = getBarricadeAngle(b.orientation || "horizontal");
-        const drawWidth = isDiagonalBarricade(b.orientation || "horizontal") ? BARRICADE_LENGTH : dims.width;
-        const drawHeight = isDiagonalBarricade(b.orientation || "horizontal") ? BARRICADE_THICKNESS : dims.height;
+        // Siempre dibujamos la barricada como una barra local horizontal
+        // y la rotamos por orientación. Antes la vertical usaba dims rotados
+        // y visualmente volvía a quedar horizontal.
+        const drawWidth = BARRICADE_LENGTH;
+        const drawHeight = BARRICADE_THICKNESS;
 
         ctx.save();
         ctx.translate(b.x, b.y);
@@ -6277,11 +6301,10 @@ function drawBarricade() {
             ctx.font = "bold 12px Arial";
             ctx.fillText(b.isOpen ? "ABIERTA" : "PUERTA", -drawWidth / 2 + 6, 4);
         }
-        ctx.restore();
-
         if (b.thorns) {
-            drawBarricadeThorns(rect, dims, b.orientation || "horizontal");
+            drawBarricadeThornsLocal(drawWidth, drawHeight);
         }
+        ctx.restore();
 
         const hpPercent = b.maxHp > 0 ? Math.max(0, b.hp / b.maxHp) : 0;
         ctx.fillStyle = "red";
@@ -6299,8 +6322,8 @@ function drawBuildPreview() {
         ctx.save();
         ctx.translate(point.x, point.y);
         ctx.rotate(getBarricadeAngle(barricadeBuildOrientation));
-        const previewWidth = isDiagonalBarricade(barricadeBuildOrientation) ? BARRICADE_LENGTH : dims.width;
-        const previewHeight = isDiagonalBarricade(barricadeBuildOrientation) ? BARRICADE_THICKNESS : dims.height;
+        const previewWidth = BARRICADE_LENGTH;
+        const previewHeight = BARRICADE_THICKNESS;
         ctx.fillStyle = valid ? "rgba(115,255,159,0.35)" : "rgba(255,80,80,0.35)";
         ctx.fillRect(-previewWidth / 2, -previewHeight / 2, previewWidth, previewHeight);
         ctx.strokeStyle = valid ? "rgba(115,255,159,0.95)" : "rgba(255,80,80,0.95)";
@@ -8245,12 +8268,7 @@ function findBarricadeAtWorldPoint(x, y) {
     for (let i = (barricades || []).length - 1; i >= 0; i--) {
         const b = barricades[i];
         if (!b || !b.active || b.hp <= 0) continue;
-        if (isDiagonalBarricade(b.orientation || "horizontal")) {
-            if (circleIntersectsBarricade(x, y, 6, b, 0)) return b;
-        } else {
-            const rect = getEntityRect({ ...b, isBuildBarricade: true });
-            if (x >= rect.left - 6 && x <= rect.right + 6 && y >= rect.top - 6 && y <= rect.bottom + 6) return b;
-        }
+        if (circleIntersectsBarricade(x, y, 6, b, 0)) return b;
     }
     return null;
 }
@@ -9150,11 +9168,12 @@ function finishBarricadePlacement() {
         return;
     }
     coins -= price;
-    const b = createFreeBarricade(kind, point.x, point.y, barricadeBuildOrientation);
+    const placedOrientation = normalizeBarricadeBuildOrientation();
+    const b = createFreeBarricade(kind, point.x, point.y, placedOrientation);
     upgradeBarricadeInstance(b, kind, true);
     b.x = point.x;
     b.y = point.y;
-    b.orientation = barricadeBuildOrientation;
+    b.orientation = placedOrientation;
     b.isBuildBarricade = true;
     barricades.push(b);
     // Comprar barricadas nuevas mantiene precio fijo.
