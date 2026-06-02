@@ -5188,6 +5188,124 @@ function killEnemy(index) {
     enemies.splice(index, 1);
 }
 
+function getSignedDistanceToBarricadeLine(px, py, barricade) {
+    const seg = getBarricadeSegment(barricade);
+    const vx = seg.x2 - seg.x1;
+    const vy = seg.y2 - seg.y1;
+    const length = Math.hypot(vx, vy) || 1;
+    return (vx * (py - seg.y1) - vy * (px - seg.x1)) / length;
+}
+
+function getNearestSplitBarricadeNormal(enemy, childRadius) {
+    let best = null;
+    let bestDistance = Infinity;
+    (barricades || []).forEach(b => {
+        if (!b || !b.active || b.hp <= 0 || b.isOpen) return;
+        const seg = getBarricadeSegment(b);
+        const hit = distancePointToSegment(enemy.x, enemy.y, seg.x1, seg.y1, seg.x2, seg.y2);
+        const distance = hit.distance - BARRICADE_THICKNESS / 2 - (enemy.radius || childRadius || 12);
+        if (distance < bestDistance) {
+            let nx = enemy.x - hit.closestX;
+            let ny = enemy.y - hit.closestY;
+            let len = Math.hypot(nx, ny);
+            if (len < 0.0001) {
+                const angle = getBarricadeAngle(b.orientation || "horizontal") - Math.PI / 2;
+                nx = Math.cos(angle);
+                ny = Math.sin(angle);
+                len = 1;
+            }
+            best = { barricade: b, nx: nx / len, ny: ny / len, distance };
+            bestDistance = distance;
+        }
+    });
+    return bestDistance <= childRadius + 18 ? best : null;
+}
+
+function isValidSplitSpawnPosition(sourceX, sourceY, x, y, childRadius) {
+    const probe = { radius: childRadius };
+    if (isEnemyPositionBlockedBySolid(probe, x, y)) return false;
+
+    for (const b of (barricades || [])) {
+        if (!b || !b.active || b.hp <= 0 || b.isOpen) continue;
+        const seg = getBarricadeSegment(b);
+        const sourceSide = getSignedDistanceToBarricadeLine(sourceX, sourceY, b);
+        const childSide = getSignedDistanceToBarricadeLine(x, y, b);
+        const safeSideMargin = BARRICADE_THICKNESS / 2 + 2;
+
+        // Si al nacer el hijo quedaría del otro lado de la pared, no lo aceptamos.
+        // Este era el bug: el splitter moría pegado a la barricada y generaba hijos
+        // con offset radial, entonces alguno aparecía detrás de la muralla.
+        if (
+            sourceSide * childSide < 0 &&
+            Math.abs(sourceSide) > safeSideMargin &&
+            Math.abs(childSide) > safeSideMargin &&
+            segmentsIntersectFinite(sourceX, sourceY, x, y, seg.x1, seg.y1, seg.x2, seg.y2)
+        ) {
+            return false;
+        }
+
+        // Además revisamos el recorrido entre el cadáver y el punto de spawn para que
+        // no atraviese una cápsula de barricada, incluso en diagonales.
+        for (let step = 0.35; step <= 1; step += 0.2) {
+            const px = sourceX + (x - sourceX) * step;
+            const py = sourceY + (y - sourceY) * step;
+            if (circleIntersectsBarricade(px, py, Math.max(5, childRadius * 0.55), b, 0)) return false;
+        }
+    }
+
+    return true;
+}
+
+function findSplitChildSpawnPosition(enemy, childRadius, childIndex, childCount) {
+    const wallNormal = getNearestSplitBarricadeNormal(enemy, childRadius);
+    const candidates = [];
+
+    if (wallNormal) {
+        const awayAngle = Math.atan2(wallNormal.ny, wallNormal.nx);
+        const baseSpread = childCount <= 1 ? 0 : (childIndex - (childCount - 1) / 2) * 0.62;
+        const angleOffsets = [baseSpread, baseSpread - 0.42, baseSpread + 0.42, baseSpread - 0.86, baseSpread + 0.86, baseSpread - 1.22, baseSpread + 1.22];
+        const distances = [childRadius + 24, childRadius + 36, childRadius + 52, childRadius + 72, childRadius + 96];
+        distances.forEach(distance => {
+            angleOffsets.forEach(offset => {
+                candidates.push({
+                    x: clampWorldX(enemy.x + Math.cos(awayAngle + offset) * distance, childRadius + 6),
+                    y: clampWorldY(enemy.y + Math.sin(awayAngle + offset) * distance, childRadius + 6)
+                });
+            });
+        });
+    }
+
+    const radialBase = (Math.PI * 2 / childCount) * childIndex + Math.random() * 0.28;
+    const radialOffsets = [0, -0.45, 0.45, -0.9, 0.9, Math.PI / 2, -Math.PI / 2, Math.PI];
+    const radialDistances = [childRadius + 24, childRadius + 38, childRadius + 56, childRadius + 78, childRadius + 104];
+    radialDistances.forEach(distance => {
+        radialOffsets.forEach(offset => {
+            candidates.push({
+                x: clampWorldX(enemy.x + Math.cos(radialBase + offset) * distance, childRadius + 6),
+                y: clampWorldY(enemy.y + Math.sin(radialBase + offset) * distance, childRadius + 6)
+            });
+        });
+    });
+
+    let bestFallback = null;
+    let bestFallbackScore = Infinity;
+    for (const candidate of candidates) {
+        if (isValidSplitSpawnPosition(enemy.x, enemy.y, candidate.x, candidate.y, childRadius)) return candidate;
+
+        // Fallback seguro: si no hay lugar perfecto, al menos elegimos un punto no bloqueado
+        // y lo más cerca posible. No permitimos puntos bloqueados dentro de murallas.
+        if (!isEnemyPositionBlockedBySolid({ radius: childRadius }, candidate.x, candidate.y)) {
+            const score = Math.hypot(candidate.x - enemy.x, candidate.y - enemy.y);
+            if (score < bestFallbackScore) {
+                bestFallback = candidate;
+                bestFallbackScore = score;
+            }
+        }
+    }
+
+    return bestFallback;
+}
+
 function splitEnemy(enemy) {
     const nextLevel = (enemy.splitLevel || 0) + 1;
     const childType = {
@@ -5203,20 +5321,29 @@ function splitEnemy(enemy) {
         splitLevel: nextLevel
     };
 
-    for (let i = 0; i < 3; i++) {
-        const angle = (Math.PI * 2 / 3) * i + Math.random() * 0.35;
-        const childRadius = Math.max(9, enemy.radius * 0.72);
-        let x = clampWorldX(enemy.x + Math.cos(angle) * 24, 42);
-        let y = clampWorldY(enemy.y + Math.sin(angle) * 24, 42);
-        for (let attempt = 0; attempt < 8 && isEnemyPositionBlockedBySolid({ radius: childRadius }, x, y); attempt++) {
-            const push = 30 + attempt * 14;
-            x = clampWorldX(enemy.x + Math.cos(angle) * push, childRadius + 6);
-            y = clampWorldY(enemy.y + Math.sin(angle) * push, childRadius + 6);
+    const childCount = 3;
+    const childRadius = Math.max(9, enemy.radius * 0.72);
+    const spawnedPositions = [];
+
+    for (let i = 0; i < childCount; i++) {
+        const position = findSplitChildSpawnPosition(enemy, childRadius, i, childCount);
+        if (!position) continue;
+
+        // Evita que los hijos nazcan apilados y se empujen atravesando la barricada.
+        const overlapsSibling = spawnedPositions.some(p => Math.hypot(p.x - position.x, p.y - position.y) < childRadius * 2.1);
+        if (overlapsSibling) {
+            const retry = findSplitChildSpawnPosition({ ...enemy, x: position.x, y: position.y }, childRadius, i + 1, childCount + 1);
+            if (retry && !spawnedPositions.some(p => Math.hypot(p.x - retry.x, p.y - retry.y) < childRadius * 2.1)) {
+                position.x = retry.x;
+                position.y = retry.y;
+            }
         }
-        if (isEnemyPositionBlockedBySolid({ radius: childRadius }, x, y)) continue;
+
+        if (isEnemyPositionBlockedBySolid({ radius: childRadius }, position.x, position.y)) continue;
+        spawnedPositions.push({ x: position.x, y: position.y });
         enemies.push(createEnemyFromType(childType, {
-            x,
-            y,
+            x: position.x,
+            y: position.y,
             radius: childRadius,
             ignoreScaling: true,
             splitLevel: nextLevel
