@@ -1327,14 +1327,39 @@ function distanceSegmentToRect(x1, y1, x2, y2, rect) {
     return best;
 }
 
-function distanceSegmentToSegment(a1x, a1y, a2x, a2y, b1x, b1y, b2x, b2y) {
-    // Si se cruzan, la distancia real es 0.
+function segmentsIntersectFinite(a1x, a1y, a2x, a2y, b1x, b1y, b2x, b2y) {
+    // Intersección REAL entre segmentos finitos.
+    // El bug anterior trataba dos líneas colineales como si se tocaran aunque
+    // estuvieran separadas, por eso una barricada horizontal bloqueaba toda la fila
+    // y una vertical bloqueaba toda la columna durante construcción.
+    const EPS = 0.000001;
     const cross = (ax, ay, bx, by, cx, cy) => (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    const onSegment = (ax, ay, bx, by, px, py) => (
+        px >= Math.min(ax, bx) - EPS && px <= Math.max(ax, bx) + EPS &&
+        py >= Math.min(ay, by) - EPS && py <= Math.max(ay, by) + EPS &&
+        Math.abs(cross(ax, ay, bx, by, px, py)) <= EPS
+    );
+
     const d1 = cross(a1x, a1y, a2x, a2y, b1x, b1y);
     const d2 = cross(a1x, a1y, a2x, a2y, b2x, b2y);
     const d3 = cross(b1x, b1y, b2x, b2y, a1x, a1y);
     const d4 = cross(b1x, b1y, b2x, b2y, a2x, a2y);
-    if (((d1 >= 0 && d2 <= 0) || (d1 <= 0 && d2 >= 0)) && ((d3 >= 0 && d4 <= 0) || (d3 <= 0 && d4 >= 0))) return 0;
+
+    if (((d1 > EPS && d2 < -EPS) || (d1 < -EPS && d2 > EPS)) &&
+        ((d3 > EPS && d4 < -EPS) || (d3 < -EPS && d4 > EPS))) {
+        return true;
+    }
+
+    if (Math.abs(d1) <= EPS && onSegment(a1x, a1y, a2x, a2y, b1x, b1y)) return true;
+    if (Math.abs(d2) <= EPS && onSegment(a1x, a1y, a2x, a2y, b2x, b2y)) return true;
+    if (Math.abs(d3) <= EPS && onSegment(b1x, b1y, b2x, b2y, a1x, a1y)) return true;
+    if (Math.abs(d4) <= EPS && onSegment(b1x, b1y, b2x, b2y, a2x, a2y)) return true;
+    return false;
+}
+
+function distanceSegmentToSegment(a1x, a1y, a2x, a2y, b1x, b1y, b2x, b2y) {
+    // Si los segmentos finitos se cruzan o se superponen, la distancia real es 0.
+    if (segmentsIntersectFinite(a1x, a1y, a2x, a2y, b1x, b1y, b2x, b2y)) return 0;
 
     return Math.min(
         distancePointToSegment(a1x, a1y, b1x, b1y, b2x, b2y).distance,
@@ -1545,7 +1570,7 @@ function isBarricadePositionValid(x, y, orientation = barricadeBuildOrientation,
     // Las barricadas NO consumen slots de torre.
     // Usamos la forma real de la barricada —también en diagonal— para evitar paredes invisibles.
     if ((towers || []).some(t => barricadeIntersectsRect(testBarricade, getEntityRect({ x: t.x, y: t.y, radius: TOWER_COLLISION_RADIUS + 2 }), 0))) return false;
-    if ((barricades || []).some(b => b !== ignoredBarricade && b.active && b.hp > 0 && !b.isOpen && barricadesIntersect(testBarricade, b, 4))) return false;
+    if ((barricades || []).some(b => b !== ignoredBarricade && b.active && b.hp > 0 && !b.isOpen && barricadesIntersect(testBarricade, b, 2))) return false;
     if ((traps || []).some(trap => circleIntersectsBarricade(trap.x, trap.y, TRAP_COLLISION_RADIUS + 6, testBarricade, 0))) return false;
     if ((mines || []).some(mine => circleIntersectsBarricade(mine.x, mine.y, MINE_COLLISION_RADIUS + 8, testBarricade, 0))) return false;
     return true;
@@ -6274,6 +6299,23 @@ function drawBarricadeThornsLocal(width, height) {
     ctx.restore();
 }
 
+function drawBarricadeHealthBar(b, hpPercent) {
+    if (!b) return;
+    const angle = getBarricadeAngle(b.orientation || "horizontal");
+    const barWidth = BARRICADE_LENGTH;
+    const barHeight = 5;
+    const offset = BARRICADE_THICKNESS / 2 + 11;
+
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.rotate(angle);
+    ctx.fillStyle = "red";
+    ctx.fillRect(-barWidth / 2, -offset, barWidth, barHeight);
+    ctx.fillStyle = "lime";
+    ctx.fillRect(-barWidth / 2, -offset, barWidth * hpPercent, barHeight);
+    ctx.restore();
+}
+
 function drawBarricade() {
     (barricades || []).forEach(b => {
         if (!b.active || b.hp <= 0) return;
@@ -6307,10 +6349,7 @@ function drawBarricade() {
         ctx.restore();
 
         const hpPercent = b.maxHp > 0 ? Math.max(0, b.hp / b.maxHp) : 0;
-        ctx.fillStyle = "red";
-        ctx.fillRect(rect.left, rect.top - 9, dims.width, 5);
-        ctx.fillStyle = "lime";
-        ctx.fillRect(rect.left, rect.top - 9, dims.width * hpPercent, 5);
+        drawBarricadeHealthBar(b, hpPercent);
     });
 }
 
