@@ -53,7 +53,9 @@ let pendingBasePlacement = false;
 let pendingBarricadePlacement = null;
 let pendingTrapPlacement = null;
 let pendingMinePlacement = null;
-const BARRICADE_BUILD_ORIENTATIONS = ["horizontal", "vertical", "diagonalDown", "diagonalUp"];
+// Ciclo de rotación de barricadas: | → / → - → \ → |.
+// En canvas, diagonalUp = / y diagonalDown = \.
+const BARRICADE_BUILD_ORIENTATIONS = ["vertical", "diagonalUp", "horizontal", "diagonalDown"];
 let barricadeBuildOrientationIndex = 0;
 let barricadeBuildOrientation = BARRICADE_BUILD_ORIENTATIONS[barricadeBuildOrientationIndex];
 let towerBuildRotation = 0;
@@ -1222,10 +1224,10 @@ function normalizeBarricadeBuildOrientation() {
 }
 
 function getBarricadeOrientationLabel(orientation = barricadeBuildOrientation) {
-    if (orientation === "vertical") return "vertical";
-    if (orientation === "diagonalDown") return "diagonal ↘";
-    if (orientation === "diagonalUp") return "diagonal ↗";
-    return "horizontal";
+    if (orientation === "vertical") return "vertical |";
+    if (orientation === "diagonalUp") return "diagonal /";
+    if (orientation === "diagonalDown") return "diagonal \\";
+    return "horizontal -";
 }
 
 function rotateBarricadeBuildOrientation() {
@@ -1282,6 +1284,96 @@ function distancePointToSegment(px, py, x1, y1, x2, y2) {
     return { distance: Math.hypot(px - cx, py - cy), closestX: cx, closestY: cy, t };
 }
 
+function pointToRectDistance(px, py, rect) {
+    const closestX = Math.max(rect.left, Math.min(rect.right, px));
+    const closestY = Math.max(rect.top, Math.min(rect.bottom, py));
+    return Math.hypot(px - closestX, py - closestY);
+}
+
+function segmentIntersectsRect(x1, y1, x2, y2, rect) {
+    let t0 = 0;
+    let t1 = 1;
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const checks = [
+        [-dx, x1 - rect.left],
+        [dx, rect.right - x1],
+        [-dy, y1 - rect.top],
+        [dy, rect.bottom - y1]
+    ];
+
+    for (const [p, q] of checks) {
+        if (Math.abs(p) < 0.000001) {
+            if (q < 0) return false;
+            continue;
+        }
+        const r = q / p;
+        if (p < 0) t0 = Math.max(t0, r);
+        else t1 = Math.min(t1, r);
+        if (t0 > t1) return false;
+    }
+    return true;
+}
+
+function distanceSegmentToRect(x1, y1, x2, y2, rect) {
+    if (segmentIntersectsRect(x1, y1, x2, y2, rect)) return 0;
+    let best = Math.min(pointToRectDistance(x1, y1, rect), pointToRectDistance(x2, y2, rect));
+    const corners = [
+        [rect.left, rect.top], [rect.right, rect.top], [rect.right, rect.bottom], [rect.left, rect.bottom]
+    ];
+    for (const [cx, cy] of corners) {
+        best = Math.min(best, distancePointToSegment(cx, cy, x1, y1, x2, y2).distance);
+    }
+    return best;
+}
+
+function distanceSegmentToSegment(a1x, a1y, a2x, a2y, b1x, b1y, b2x, b2y) {
+    // Si se cruzan, la distancia real es 0.
+    const cross = (ax, ay, bx, by, cx, cy) => (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    const d1 = cross(a1x, a1y, a2x, a2y, b1x, b1y);
+    const d2 = cross(a1x, a1y, a2x, a2y, b2x, b2y);
+    const d3 = cross(b1x, b1y, b2x, b2y, a1x, a1y);
+    const d4 = cross(b1x, b1y, b2x, b2y, a2x, a2y);
+    if (((d1 >= 0 && d2 <= 0) || (d1 <= 0 && d2 >= 0)) && ((d3 >= 0 && d4 <= 0) || (d3 <= 0 && d4 >= 0))) return 0;
+
+    return Math.min(
+        distancePointToSegment(a1x, a1y, b1x, b1y, b2x, b2y).distance,
+        distancePointToSegment(a2x, a2y, b1x, b1y, b2x, b2y).distance,
+        distancePointToSegment(b1x, b1y, a1x, a1y, a2x, a2y).distance,
+        distancePointToSegment(b2x, b2y, a1x, a1y, a2x, a2y).distance
+    );
+}
+
+function getClosestPointOnBarricade(px, py, barricade) {
+    if (!isDiagonalBarricade(barricade.orientation || "horizontal")) {
+        const rect = getEntityRect({ ...barricade, isBuildBarricade: true });
+        return {
+            x: Math.max(rect.left, Math.min(rect.right, px)),
+            y: Math.max(rect.top, Math.min(rect.bottom, py))
+        };
+    }
+    const seg = getBarricadeSegment(barricade);
+    const hit = distancePointToSegment(px, py, seg.x1, seg.y1, seg.x2, seg.y2);
+    return { x: hit.closestX, y: hit.closestY };
+}
+
+function barricadesIntersect(a, b, padding = 0) {
+    const aDiagonal = isDiagonalBarricade(a.orientation || "horizontal");
+    const bDiagonal = isDiagonalBarricade(b.orientation || "horizontal");
+    if (!aDiagonal && !bDiagonal) {
+        return rectsOverlap(getEntityRect({ ...a, isBuildBarricade: true }), getEntityRect({ ...b, isBuildBarricade: true }), padding);
+    }
+    const hitRadius = BARRICADE_THICKNESS + padding;
+    if (aDiagonal && bDiagonal) {
+        const sa = getBarricadeSegment(a);
+        const sb = getBarricadeSegment(b);
+        return distanceSegmentToSegment(sa.x1, sa.y1, sa.x2, sa.y2, sb.x1, sb.y1, sb.x2, sb.y2) <= hitRadius;
+    }
+    const diagonal = aDiagonal ? a : b;
+    const rectSource = aDiagonal ? b : a;
+    return barricadeIntersectsRect(diagonal, getEntityRect({ ...rectSource, isBuildBarricade: true }), padding);
+}
+
 function circleIntersectsBarricade(cx, cy, radius, barricade, padding = 0) {
     if (!isDiagonalBarricade(barricade.orientation || "horizontal")) {
         return circleIntersectsRect(cx, cy, radius, getEntityRect({ ...barricade, isBuildBarricade: true }), padding);
@@ -1295,15 +1387,10 @@ function barricadeIntersectsRect(barricade, rect, padding = 0) {
     if (!isDiagonalBarricade(barricade.orientation || "horizontal")) {
         return rectsOverlap(getEntityRect({ ...barricade, isBuildBarricade: true }), rect, padding);
     }
-    const corners = [
-        [rect.left, rect.top], [rect.right, rect.top], [rect.right, rect.bottom], [rect.left, rect.bottom]
-    ];
-    const hitRadius = BARRICADE_THICKNESS / 2 + padding;
-    if (corners.some(([x, y]) => circleIntersectsBarricade(x, y, hitRadius, barricade, 0))) return true;
-    const centerX = (rect.left + rect.right) / 2;
-    const centerY = (rect.top + rect.bottom) / 2;
-    const rectRadius = Math.hypot(rect.right - rect.left, rect.bottom - rect.top) / 2;
-    return circleIntersectsBarricade(centerX, centerY, rectRadius, barricade, padding);
+    // Colisión real de barricada diagonal: una cápsula fina siguiendo la madera.
+    // Antes se usaba el radio del rectángulo completo y generaba una pared invisible grande.
+    const seg = getBarricadeSegment(barricade);
+    return distanceSegmentToRect(seg.x1, seg.y1, seg.x2, seg.y2, rect) <= BARRICADE_THICKNESS / 2 + padding;
 }
 
 function getBarricadeBaseCost(kind = "standard") {
@@ -1443,6 +1530,11 @@ function buildRectOverlapsEnemy(rect, padding = 10) {
     return (enemies || []).some(enemy => enemy.hp > 0 && circleIntersectsRect(enemy.x, enemy.y, (enemy.radius || 12) + padding, rect, 0));
 }
 
+function buildBarricadeOverlapsEnemy(x, y, orientation = barricadeBuildOrientation, padding = 10) {
+    const testBarricade = { x, y, orientation, isBuildBarricade: true };
+    return (enemies || []).some(enemy => enemy.hp > 0 && circleIntersectsBarricade(enemy.x, enemy.y, (enemy.radius || 12) + padding, testBarricade, 0));
+}
+
 function buildCircleOverlapsEnemy(x, y, radius, padding = 10) {
     return (enemies || []).some(enemy => enemy.hp > 0 && Math.hypot(enemy.x - x, enemy.y - y) < (enemy.radius || 12) + radius + padding);
 }
@@ -1462,21 +1554,19 @@ function isTowerPositionOccupied(x, y, ignoredTower = null) {
 }
 
 function isBarricadePositionValid(x, y, orientation = barricadeBuildOrientation, ignoredBarricade = null) {
-    const rect = getEntityRect({ x, y, orientation, isBuildBarricade: true });
+    const testBarricade = { x, y, orientation, isBuildBarricade: true };
+    const rect = getEntityRect(testBarricade);
     if (!isBuildRectInsideWorld(rect)) return false;
     if (isRectInBossSpawnZone(rect, 8)) return false;
-    if (baseCore && rectsOverlap(rect, getEntityRect({ x: baseCore.x, y: baseCore.y, radius: BASE_RADIUS }), 10)) return false;
-    if (player && rectsOverlap(rect, getEntityRect({ x: player.x, y: player.y, radius: 22 }), 8)) return false;
-    if (buildRectOverlapsEnemy(rect, 10)) return false;
+    if (baseCore && circleIntersectsBarricade(baseCore.x, baseCore.y, BASE_RADIUS + 10, testBarricade, 0)) return false;
+    if (player && circleIntersectsBarricade(player.x, player.y, 30, testBarricade, 0)) return false;
+    if (buildBarricadeOverlapsEnemy(x, y, orientation, 10)) return false;
     // Las barricadas NO consumen slots de torre.
-    // Antes usábamos la caja cuadrada de cada torre + padding, y con 12 torres
-    // esa validación bloqueaba demasiado espacio aunque la muralla no tocara la torre.
-    // Usamos colisión circular real para permitir poner barricadas cerca/delante
-    // de torres sin permitir superposición visual.
-    if ((towers || []).some(t => barricadeIntersectsRect({ x, y, orientation, isBuildBarricade: true }, getEntityRect({ x: t.x, y: t.y, radius: TOWER_COLLISION_RADIUS + 2 }), 0))) return false;
-    if ((barricades || []).some(b => b !== ignoredBarricade && b.active && b.hp > 0 && !b.isOpen && barricadeIntersectsRect(b, rect, 4))) return false;
-    if ((traps || []).some(trap => circleIntersectsBarricade(trap.x, trap.y, TRAP_COLLISION_RADIUS + 6, { x, y, orientation, isBuildBarricade: true }, 0))) return false;
-    if ((mines || []).some(mine => circleIntersectsRect(mine.x, mine.y, MINE_COLLISION_RADIUS + 8, rect, 0))) return false;
+    // Usamos la forma real de la barricada —también en diagonal— para evitar paredes invisibles.
+    if ((towers || []).some(t => barricadeIntersectsRect(testBarricade, getEntityRect({ x: t.x, y: t.y, radius: TOWER_COLLISION_RADIUS + 2 }), 0))) return false;
+    if ((barricades || []).some(b => b !== ignoredBarricade && b.active && b.hp > 0 && !b.isOpen && barricadesIntersect(testBarricade, b, 4))) return false;
+    if ((traps || []).some(trap => circleIntersectsBarricade(trap.x, trap.y, TRAP_COLLISION_RADIUS + 6, testBarricade, 0))) return false;
+    if ((mines || []).some(mine => circleIntersectsBarricade(mine.x, mine.y, MINE_COLLISION_RADIUS + 8, testBarricade, 0))) return false;
     return true;
 }
 
@@ -1792,12 +1882,10 @@ function getEnemyMainTarget(enemy) {
 
     (barricades || []).forEach(b => {
         if (!b || !b.active || b.hp <= 0 || b.isOpen) return;
-        const rect = getEntityRect({ ...b, isBuildBarricade: true });
-        const closestX = Math.max(rect.left, Math.min(rect.right, enemy.x));
-        const closestY = Math.max(rect.top, Math.min(rect.bottom, enemy.y));
-        const d = Math.hypot(enemy.x - closestX, enemy.y - closestY);
+        const closest = getClosestPointOnBarricade(enemy.x, enemy.y, b);
+        const d = Math.hypot(enemy.x - closest.x, enemy.y - closest.y);
         const proximityBonus = d < 120 ? 85 : d < 220 ? 38 : 0;
-        candidates.push({ type: "barricade", x: closestX, y: closestY, radius: 12, object: b, score: d - proximityBonus });
+        candidates.push({ type: "barricade", x: closest.x, y: closest.y, radius: 12, object: b, score: d - proximityBonus });
     });
 
     (mines || []).forEach(mine => {
@@ -6221,7 +6309,7 @@ function drawBuildPreview() {
         ctx.restore();
         ctx.fillStyle = "white";
         ctx.font = "bold 14px Arial";
-        ctx.fillText("Click coloca · R rota · Click derecho/Esc cancela", point.x - 150, point.y - dims.height / 2 - 12);
+        ctx.fillText(`Click coloca · R rota (${getBarricadeOrientationLabel(barricadeBuildOrientation)}) · Click derecho/Esc cancela`, point.x - 205, point.y - dims.height / 2 - 12);
     }
 
     if (pendingTrapPlacement) {
@@ -8157,8 +8245,12 @@ function findBarricadeAtWorldPoint(x, y) {
     for (let i = (barricades || []).length - 1; i >= 0; i--) {
         const b = barricades[i];
         if (!b || !b.active || b.hp <= 0) continue;
-        const rect = getEntityRect({ ...b, isBuildBarricade: true });
-        if (x >= rect.left - 6 && x <= rect.right + 6 && y >= rect.top - 6 && y <= rect.bottom + 6) return b;
+        if (isDiagonalBarricade(b.orientation || "horizontal")) {
+            if (circleIntersectsBarricade(x, y, 6, b, 0)) return b;
+        } else {
+            const rect = getEntityRect({ ...b, isBuildBarricade: true });
+            if (x >= rect.left - 6 && x <= rect.right + 6 && y >= rect.top - 6 && y <= rect.bottom + 6) return b;
+        }
     }
     return null;
 }
