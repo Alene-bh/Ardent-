@@ -7779,26 +7779,10 @@ function updateAbilityBar() {
 }
 
 function drawWorldGrid() {
-    ctx.fillStyle = "#263426";
+    // Fondo limpio: sin tiles, sin grilla y sin piso especial.
+    // Mantenerlo sólido ayuda a leer mejor las barricadas y las formas de la base.
+    ctx.fillStyle = "#263c26";
     ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-    const bossRect = getBossSpawnRect(0);
-    // Piso de spawn de jefes: asfalto gris sólido, no perímetro brillante.
-    ctx.fillStyle = "#3a3d3d";
-    ctx.fillRect(bossRect.left, bossRect.top, bossRect.right - bossRect.left, bossRect.bottom - bossRect.top);
-    ctx.fillStyle = "rgba(255,255,255,0.035)";
-    for (let i = 0; i < 18; i++) {
-        const px = bossRect.left + ((i * 47) % (bossRect.right - bossRect.left));
-        const py = bossRect.top + ((i * 31) % (bossRect.bottom - bossRect.top));
-        ctx.fillRect(px, py, 2, 2);
-    }
-    ctx.strokeStyle = "rgba(255,255,255,0.035)";
-    ctx.lineWidth = 1;
-    for (let x = 0; x <= WORLD_WIDTH; x += 100) {
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, WORLD_HEIGHT); ctx.stroke();
-    }
-    for (let y = 0; y <= WORLD_HEIGHT; y += 100) {
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(WORLD_WIDTH, y); ctx.stroke();
-    }
 }
 
 function drawMinimap() {
@@ -8294,6 +8278,30 @@ function selectStructure(type, entity, multiSame = false) {
     updateStructurePanel();
 }
 
+function toggleStructureSelection(type, entity) {
+    if (!entity) { clearStructureSelection(); return; }
+
+    const id = String(entity.id);
+    if (selectedStructureType !== type) {
+        selectedStructureType = type;
+        selectedStructureIds = [id];
+        updateStructurePanel();
+        return;
+    }
+
+    if (selectedStructureIds.includes(id)) {
+        selectedStructureIds = selectedStructureIds.filter(selectedId => selectedId !== id);
+    } else {
+        selectedStructureIds.push(id);
+    }
+
+    if (!selectedStructureIds.length) {
+        selectedStructureType = null;
+    }
+
+    updateStructurePanel();
+}
+
 function findTowerAtWorldPoint(x, y) {
     for (let i = (towers || []).length - 1; i >= 0; i--) {
         const t = towers[i];
@@ -8317,21 +8325,34 @@ function handleStructureClickSelection(event) {
     // toggles de puertas y clicks accidentales que traban la pelea.
     if (!buildPhaseActive || waveInProgress) return false;
 
+    const multiSame = event.ctrlKey || event.metaKey;
+    const addSingle = event.shiftKey;
+
     const tower = findTowerAtWorldPoint(mousePosition.x, mousePosition.y);
     if (tower) {
-        selectStructure("tower", tower, event.ctrlKey || event.metaKey);
-        showCenterMessage(event.ctrlKey || event.metaKey ? `Seleccionadas torres ${tower.name}` : `${tower.name} seleccionada`, 650);
+        if (addSingle) {
+            toggleStructureSelection("tower", tower);
+            showCenterMessage(isStructureSelected("tower", tower.id) ? `Agregada ${tower.name}` : `Quitada ${tower.name}`, 650);
+        } else {
+            selectStructure("tower", tower, multiSame);
+            showCenterMessage(multiSame ? `Seleccionadas torres ${tower.name}` : `${tower.name} seleccionada`, 650);
+        }
         return true;
     }
     const b = findBarricadeAtWorldPoint(mousePosition.x, mousePosition.y);
     if (b) {
         ensureBarricadeEconomy(b);
-        if (b.kind === "door" && !(event.ctrlKey || event.metaKey)) {
+        if (b.kind === "door" && !multiSame && !addSingle) {
             b.isOpen = !b.isOpen;
             showCenterMessage(b.isOpen ? "Puerta abierta" : "Puerta cerrada", 650);
         }
-        selectStructure("barricade", b, event.ctrlKey || event.metaKey);
-        showCenterMessage(event.ctrlKey || event.metaKey ? `Seleccionadas barricadas ${getBarricadeKindLabel(b.kind)}` : `${getBarricadeKindLabel(b.kind)} seleccionada`, 650);
+        if (addSingle) {
+            toggleStructureSelection("barricade", b);
+            showCenterMessage(isStructureSelected("barricade", b.id) ? `Agregada ${getBarricadeKindLabel(b.kind)}` : `Quitada ${getBarricadeKindLabel(b.kind)}`, 650);
+        } else {
+            selectStructure("barricade", b, multiSame);
+            showCenterMessage(multiSame ? `Seleccionadas barricadas ${getBarricadeKindLabel(b.kind)}` : `${getBarricadeKindLabel(b.kind)} seleccionada`, 650);
+        }
         return true;
     }
     return false;
@@ -8376,7 +8397,7 @@ function updateStructurePanel() {
         const damaged = selected.filter(t => t.hp < t.maxHp);
         const repairTotal = damaged.reduce((sum, t) => sum + getTowerRepairCost(t), 0);
         structurePanelTitle.textContent = multiple ? `${selected.length} torretas ${first.name}` : first.name;
-        structurePanelInfo.innerHTML = `${multiple ? "Selección múltiple" : getTowerUpgradePreview(first)}<br><small>Ctrl+click selecciona todas las torres iguales.</small>`;
+        structurePanelInfo.innerHTML = `${multiple ? "Selección múltiple" : getTowerUpgradePreview(first)}<br><small>Ctrl+click selecciona todas las torres iguales · Shift+click agrega/quita una.</small>`;
         structurePanelActions.innerHTML = `
             <button type="button" data-structure-action="upgrade" ${coins < upgradeTotal ? "disabled" : ""}>Mejorar ${multiple ? "todas" : ""} (${formatMoney(upgradeTotal)})</button>
             <button type="button" data-structure-action="repair" ${damaged.length === 0 || coins < repairTotal ? "disabled" : ""}>Reparar ${multiple ? "dañadas" : ""} (${formatMoney(repairTotal)})</button>
@@ -8394,7 +8415,7 @@ function updateStructurePanel() {
     const repairTotal = damaged.reduce((sum, b) => sum + getBarricadeRepairCost(b), 0);
     const sellTotal = selected.reduce((sum, b) => sum + getBarricadeSellRefund(b), 0);
     structurePanelTitle.textContent = multiple ? `${selected.length} barricadas ${getBarricadeKindLabel(first.kind)}` : `Barricada ${getBarricadeKindLabel(first.kind)}`;
-    structurePanelInfo.innerHTML = `${multiple ? "Selección múltiple" : getBarricadeInfoText(first)}<br><small>Ctrl+click selecciona todas las barricadas iguales.</small>`;
+    structurePanelInfo.innerHTML = `${multiple ? "Selección múltiple" : getBarricadeInfoText(first)}<br><small>Ctrl+click selecciona todas las barricadas iguales · Shift+click agrega/quita una.</small>`;
     structurePanelActions.innerHTML = `
         <button type="button" data-structure-action="upgrade" ${coins < upgradeTotal ? "disabled" : ""}>Mejorar ${multiple ? "todas" : ""} (${formatMoney(upgradeTotal)})</button>
         <button type="button" data-structure-action="repair" ${damaged.length === 0 || coins < repairTotal ? "disabled" : ""}>Reparar ${multiple ? "dañadas" : ""} (${formatMoney(repairTotal)})</button>
