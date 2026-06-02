@@ -4238,18 +4238,38 @@ function fireBossProjectile(x, y, targetX, targetY, options = {}) {
 
 function getBossProjectileBarricadeHit(projectile) {
     return (barricades || []).find(b => {
-        if (!b.active || b.hp <= 0) return false;
-        const rect = getEntityRect({ ...b, isBuildBarricade: true });
-        const cx = Math.max(rect.left, Math.min(rect.right, projectile.x));
-        const cy = Math.max(rect.top, Math.min(rect.bottom, projectile.y));
-        return Math.hypot(projectile.x - cx, projectile.y - cy) <= projectile.radius + 3;
+        if (!b.active || b.hp <= 0 || b.isOpen) return false;
+        // Usa la misma colisión real de barricadas que usan los enemigos.
+        // Esto incluye las diagonales, evitando que las balas de jefe las atraviesen.
+        return circleIntersectsBarricade(projectile.x, projectile.y, (projectile.radius || 8) + 3, b, 0);
     });
+}
+
+function getBossProjectileBarricadeImpactPoint(projectile, barricade) {
+    if (!projectile || !barricade) return { x: projectile?.x || 0, y: projectile?.y || 0 };
+    if (isDiagonalBarricade(barricade.orientation || "horizontal")) {
+        const seg = getBarricadeSegment(barricade);
+        const info = distancePointToSegment(projectile.x, projectile.y, seg.x1, seg.y1, seg.x2, seg.y2);
+        return { x: info.closestX, y: info.closestY };
+    }
+    const rect = getEntityRect({ ...barricade, isBuildBarricade: true });
+    return {
+        x: Math.max(rect.left, Math.min(rect.right, projectile.x)),
+        y: Math.max(rect.top, Math.min(rect.bottom, projectile.y))
+    };
 }
 
 function getBossProjectileMineHit(projectile) {
     return (mines || []).find(mine => {
         if (!mine || mine.hp <= 0) return false;
         return Math.hypot(projectile.x - mine.x, projectile.y - mine.y) <= projectile.radius + (mine.radius || MINE_COLLISION_RADIUS);
+    });
+}
+
+function getBossProjectileTowerHit(projectile) {
+    return (towers || []).find(tower => {
+        if (!tower || !tower.owned || tower.hp <= 0) return false;
+        return Math.hypot(projectile.x - tower.x, projectile.y - tower.y) <= (projectile.radius || 8) + TOWER_COLLISION_RADIUS;
     });
 }
 
@@ -4339,11 +4359,22 @@ function updateBossProjectiles() {
 
         const hitBarricade = getBossProjectileBarricadeHit(p);
         if (hitBarricade) {
-            // El escudo del jugador solo bloquea golpes al jugador, no impactos a murallas.
+            // Las balas de jefe ahora se consumen al pegar contra defensas.
+            // Así las barricadas/torres funcionan como escudo real para el jugador.
+            const impact = getBossProjectileBarricadeImpactPoint(p, hitBarricade);
             damageBarricade(hitBarricade, p.damage, p);
-            if (p.burn) createFireZone(hitBarricade.x, p.y, 54, Math.max(1.2, p.damage * 0.28), 1800, 450);
-            createImpactParticles(hitBarricade.x, p.y, p.color);
-            addDamageText(hitBarricade.x + 20, p.y - 18, p.damage * BOSS_BARRICADE_DAMAGE_MULTIPLIER, false, "#ffb36b");
+            if (p.burn) createFireZone(impact.x, impact.y, 54, Math.max(1.2, p.damage * 0.28), 1800, 450);
+            createImpactParticles(impact.x, impact.y, p.color);
+            addDamageText(impact.x + 20, impact.y - 18, p.damage * BOSS_BARRICADE_DAMAGE_MULTIPLIER, false, "#ffb36b");
+            bossProjectiles.splice(i, 1);
+            continue;
+        }
+
+        const hitTower = getBossProjectileTowerHit(p);
+        if (hitTower) {
+            damageTower(hitTower, p.damage, p);
+            if (p.burn) createFireZone(hitTower.x, hitTower.y, 54, Math.max(1.2, p.damage * 0.28), 1800, 450);
+            createImpactParticles(hitTower.x, hitTower.y, p.color);
             bossProjectiles.splice(i, 1);
             continue;
         }
@@ -4356,17 +4387,11 @@ function updateBossProjectiles() {
             continue;
         }
 
-        if (false && basePlaced && baseCore && Math.hypot(p.x - baseCore.x, p.y - baseCore.y) <= p.radius + BASE_RADIUS) {
-            damageBase(p.damage, p.x, p.y);
-            bossProjectiles.splice(i, 1);
-            continue;
-        }
-
         if (player && Math.hypot(p.x - player.x, p.y - player.y) <= p.radius + 18) {
             if (player.immortal) {
                 createImpactParticles(player.x, player.y, "#ffe28a");
             } else {
-                const ended = damagePlayer(p.damage, p, player.x, player.y, "¡Proyectil bloqueado!");
+                const ended = damagePlayer(p.damage, p, player.x, player.y, "¡Te alcanzó un proyectil!");
                 if (p.burn) { createFireZone(player.x, player.y, 60, Math.max(1.2, p.damage * 0.25), 1800, 450); }
                 if (ended) return;
             }
@@ -4448,7 +4473,7 @@ function resolveEnemyCollisions() {
 function damageTower(tower, amount, sourceEnemy = null) {
     if (!tower || tower.hp <= 0) return;
     ensureTowerEconomy(tower);
-    const finalAmount = (sourceEnemy && sourceEnemy.isBoss) ? amount * 1.15 : amount;
+    const finalAmount = (sourceEnemy && (sourceEnemy.isBoss || sourceEnemy.isBossProjectile)) ? amount * 1.15 : amount;
     tower.hp -= finalAmount;
     createImpactParticles(tower.x, tower.y, sourceEnemy && sourceEnemy.color ? sourceEnemy.color : "#ff7777");
     addDamageText(tower.x, tower.y - 24, finalAmount, false, "#ff7777");
@@ -5379,7 +5404,10 @@ function updateVisualEffects() {
         }
 
         if (e.type === "tsunami") {
-            e.x += 16 * gameSpeed * frameScale;
+            const speed = 18 * gameSpeed * frameScale;
+            e.x += (e.dx || 1) * speed;
+            e.y += (e.dy || 0) * speed;
+            e.length = Math.min(e.maxLength || e.length || 120, (e.length || 120) + 18 * frameScale);
         }
 
         if (e.life <= 0) effects.splice(i, 1);
@@ -5862,16 +5890,35 @@ function useFreeze() {
 function useTsunami() {
     const damage = getAbilityDamage(8, 0.62, 2.2);
     const push = 72 + Math.min(36, player.damage * 2.2);
+    const dxRaw = mousePosition.x - player.x;
+    const dyRaw = mousePosition.y - player.y;
+    const len = Math.hypot(dxRaw, dyRaw) || 1;
+    const dx = dxRaw / len;
+    const dy = dyRaw / len;
+    const waveLength = 620 + Math.min(180, player.damage * 10);
+    const waveWidth = 135 + Math.min(55, player.damage * 3);
+    const startX = player.x + dx * 42;
+    const startY = player.y + dy * 42;
 
     enemies.forEach(enemy => {
+        const relX = enemy.x - startX;
+        const relY = enemy.y - startY;
+        const forward = relX * dx + relY * dy;
+        const side = Math.abs(relX * -dy + relY * dx);
+        const hitRadius = (enemy.radius || 16) + waveWidth * 0.5;
+
+        if (forward < -35 || forward > waveLength || side > hitRadius) return;
+
         if (enemy.tsunamiImmune) {
             addDamageText(enemy.x, enemy.y - enemy.radius - 8, "INMUNE", false, "#9be7ff");
             effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 6, maxRadius: 34, life: 18, color: "#4aa3ff" });
             return;
         }
 
-        enemy.x += enemy.isBoss ? push * 0.38 : push;
-        damageEnemy(enemy, damage, false);
+        const enemyPush = enemy.isBoss ? push * 0.38 : push;
+        enemy.x += dx * enemyPush;
+        enemy.y += dy * enemyPush;
+        damageEnemy(enemy, damage, false, "#9be7ff", "tsunami");
     });
 
     for (let i = enemies.length - 1; i >= 0; i--) {
@@ -5880,12 +5927,17 @@ function useTsunami() {
 
     effects.push({
         type: "tsunami",
-        x: -80,
-        y: 0,
-        width: 80,
-        height: GAME_HEIGHT,
-        life: 70,
-        color: "#4aa3ff"
+        x: startX,
+        y: startY,
+        dx,
+        dy,
+        width: waveWidth,
+        length: 115,
+        maxLength: waveLength,
+        life: 58,
+        maxLife: 58,
+        color: "#4aa3ff",
+        foamOffset: Math.random() * 1000
     });
 
     showCenterMessage("¡TSUNAMI!", 900);
@@ -5895,7 +5947,9 @@ function useLightning() {
     if (enemies.length === 0) return;
 
     const chains = [];
-    let current = findClosestEnemy(mousePosition.x, mousePosition.y, Infinity);
+    const originX = mousePosition.x;
+    const originY = mousePosition.y;
+    let current = findClosestEnemy(originX, originY, Infinity);
     let damage = getAbilityDamage(20, 0.9, 4.1);
     const maxChains = player.damage >= 8 ? 5 : 4;
 
@@ -5903,7 +5957,7 @@ function useLightning() {
         if (!current) break;
 
         chains.push(current);
-        damageEnemy(current, damage, true);
+        damageEnemy(current, damage, true, "#60c8ff", "lightning");
 
         const next = findClosestEnemy(current.x, current.y, 150 + Math.min(55, player.damage * 3), chains);
         current = next;
@@ -5914,29 +5968,39 @@ function useLightning() {
         if (enemies[i].hp <= 0) killEnemy(i);
     }
 
-    for (let i = 0; i < chains.length - 1; i++) {
+    chains.forEach((enemy, index) => {
+        const from = index === 0 ? { x: originX, y: originY } : chains[index - 1];
         effects.push({
-            type: "line",
-            x1: chains[i].x,
-            y1: chains[i].y,
-            x2: chains[i + 1].x,
-            y2: chains[i + 1].y,
-            life: 14,
-            color: "#f7ff61"
+            type: "lightning",
+            x1: from.x,
+            y1: from.y,
+            x2: enemy.x,
+            y2: enemy.y,
+            life: 18,
+            maxLife: 18,
+            color: "#4bc3ff",
+            seed: Math.random() * 1000
         });
-    }
 
-    if (chains.length > 0) {
-        effects.push({
-            type: "line",
-            x1: mousePosition.x,
-            y1: mousePosition.y,
-            x2: chains[0].x,
-            y2: chains[0].y,
-            life: 14,
-            color: "#f7ff61"
-        });
-    }
+        // Ramitas visuales extra para que se lea como rayo encadenado azul.
+        const branches = Math.min(2, chains.length - 1);
+        for (let b = 0; b < branches; b++) {
+            const angle = Math.atan2(enemy.y - from.y, enemy.x - from.x) + (Math.random() < 0.5 ? -1 : 1) * (0.7 + Math.random() * 0.45);
+            const branchLength = 22 + Math.random() * 32;
+            effects.push({
+                type: "lightning",
+                x1: enemy.x,
+                y1: enemy.y,
+                x2: enemy.x + Math.cos(angle) * branchLength,
+                y2: enemy.y + Math.sin(angle) * branchLength,
+                life: 12,
+                maxLife: 12,
+                color: "#8ee9ff",
+                seed: Math.random() * 1000,
+                branch: true
+            });
+        }
+    });
 }
 
 function useMeteor() {
@@ -5964,8 +6028,8 @@ function useEclipse() {
 
     effects.push({
         type: "eclipse",
-        x: GAME_WIDTH / 2,
-        y: GAME_HEIGHT / 2,
+        x: mousePosition.x,
+        y: mousePosition.y,
         radius,
         pulseRadius: 20,
         life: 240,
@@ -5975,7 +6039,8 @@ function useEclipse() {
         pulseDamage: getAbilityDamage(5, 0.32, 1.7),
         executePercent: 0.18 + Math.min(0.08, player.damage * 0.004),
         finalDone: false,
-        color: "#7d55ff"
+        color: "#7d55ff",
+        rotation: Math.random() * Math.PI * 2
     });
 
     showCenterMessage("¡ECLIPSE!", 900);
@@ -6810,6 +6875,52 @@ function drawProjectiles() {
     });
 }
 
+function drawLightningEffect(e) {
+    const alpha = Math.max(0, e.life / (e.maxLife || 18));
+    const segments = 9;
+    const dx = e.x2 - e.x1;
+    const dy = e.y2 - e.y1;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len;
+    const ny = dx / len;
+    const jitter = e.branch ? 8 : 15;
+    const points = [];
+
+    for (let i = 0; i <= segments; i++) {
+        const t = i / segments;
+        const noise = i === 0 || i === segments ? 0 : Math.sin((e.seed || 0) + i * 12.989 + e.life * 0.7) * jitter * (0.45 + Math.sin(t * Math.PI));
+        points.push({
+            x: e.x1 + dx * t + nx * noise,
+            y: e.y1 + dy * t + ny * noise
+        });
+    }
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    ctx.strokeStyle = `rgba(50,130,255,${0.22 * alpha})`;
+    ctx.lineWidth = e.branch ? 7 : 11;
+    ctx.beginPath();
+    points.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    ctx.stroke();
+
+    ctx.strokeStyle = `rgba(75,195,255,${0.75 * alpha})`;
+    ctx.lineWidth = e.branch ? 3 : 5;
+    ctx.beginPath();
+    points.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    ctx.stroke();
+
+    ctx.strokeStyle = `rgba(235,252,255,${0.95 * alpha})`;
+    ctx.lineWidth = e.branch ? 1.4 : 2.2;
+    ctx.beginPath();
+    points.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    ctx.stroke();
+
+    ctx.restore();
+}
+
 function drawVisualEffects() {
     effects.forEach(e => {
         if (e.type === "circle") {
@@ -6823,31 +6934,104 @@ function drawVisualEffects() {
         }
 
         if (e.type === "tsunami") {
-            ctx.fillStyle = "rgba(74, 163, 255, 0.35)";
-            ctx.fillRect(e.x, e.y, e.width, e.height);
+            const alpha = Math.max(0, Math.min(0.48, (e.life / (e.maxLife || 58)) * 0.48));
+            const dx = e.dx || 1;
+            const dy = e.dy || 0;
+            const length = e.length || 120;
+            const width = e.width || 120;
+            const angle = Math.atan2(dy, dx);
+
+            ctx.save();
+            ctx.translate(e.x, e.y);
+            ctx.rotate(angle);
+
+            const gradient = ctx.createLinearGradient(0, 0, length, 0);
+            gradient.addColorStop(0, `rgba(155,231,255,${alpha * 0.15})`);
+            gradient.addColorStop(0.35, `rgba(74,163,255,${alpha})`);
+            gradient.addColorStop(1, `rgba(155,231,255,${alpha * 0.15})`);
+            ctx.fillStyle = gradient;
+            ctx.beginPath();
+            ctx.roundRect ? ctx.roundRect(0, -width / 2, length, width, width * 0.35) : ctx.rect(0, -width / 2, length, width);
+            ctx.fill();
+
+            ctx.strokeStyle = `rgba(210,248,255,${Math.min(0.95, alpha + 0.22)})`;
+            ctx.lineWidth = 3;
+            for (let i = -2; i <= 2; i++) {
+                const y = i * width / 6;
+                ctx.beginPath();
+                for (let x = 0; x <= length; x += 18) {
+                    const wave = Math.sin((x + (e.foamOffset || 0) + e.life * 5) * 0.045 + i) * 8;
+                    if (x === 0) ctx.moveTo(x, y + wave);
+                    else ctx.lineTo(x, y + wave);
+                }
+                ctx.stroke();
+            }
+
+            ctx.fillStyle = `rgba(230,252,255,${Math.min(0.9, alpha + 0.25)})`;
+            for (let i = 0; i < 9; i++) {
+                const px = (i / 9) * length + ((e.foamOffset || 0) % 18);
+                const py = Math.sin(i * 1.7 + e.life * 0.18) * width * 0.32;
+                ctx.beginPath();
+                ctx.arc(px, py, 3 + (i % 3), 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            ctx.restore();
         }
 
         if (e.type === "eclipse") {
-            const alpha = Math.max(0, Math.min(0.34, e.life / e.maxLife * 0.34));
-            ctx.fillStyle = `rgba(25, 8, 45, ${alpha})`;
+            const lifeRatio = Math.max(0, Math.min(1, e.life / (e.maxLife || 240)));
+            const alpha = Math.max(0.12, Math.min(0.58, lifeRatio * 0.58));
+
+            ctx.save();
+            ctx.globalCompositeOperation = "source-over";
+            ctx.fillStyle = `rgba(9, 2, 18, ${alpha})`;
             ctx.beginPath();
             ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2);
             ctx.fill();
 
-            ctx.strokeStyle = "rgba(183, 140, 255, 0.75)";
-            ctx.globalAlpha = Math.max(0.2, e.life / e.maxLife);
-            ctx.lineWidth = 4;
+            const glow = ctx.createRadialGradient(e.x, e.y, Math.max(8, e.radius * 0.08), e.x, e.y, e.radius);
+            glow.addColorStop(0, `rgba(190,120,255,${0.18 * lifeRatio})`);
+            glow.addColorStop(0.58, `rgba(92,40,150,${0.30 * lifeRatio})`);
+            glow.addColorStop(1, `rgba(180,110,255,0)`);
+            ctx.fillStyle = glow;
+            ctx.beginPath();
+            ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.globalCompositeOperation = "lighter";
+            ctx.strokeStyle = `rgba(207,168,255,${0.95 * lifeRatio})`;
+            ctx.lineWidth = 5;
             ctx.beginPath();
             ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2);
             ctx.stroke();
 
             e.pulseRadius += 8 * frameScale;
-            ctx.strokeStyle = "rgba(215, 194, 255, 0.7)";
-            ctx.lineWidth = 2;
+            ctx.strokeStyle = `rgba(232,214,255,${0.85 * lifeRatio})`;
+            ctx.lineWidth = 2.5;
             ctx.beginPath();
             ctx.arc(e.x, e.y, Math.min(e.radius, e.pulseRadius), 0, Math.PI * 2);
             ctx.stroke();
-            ctx.globalAlpha = 1;
+
+            const moonRadius = Math.max(22, e.radius * 0.19);
+            const spin = (e.rotation || 0) + (e.maxLife - e.life) * 0.01;
+            const moonX = e.x + Math.cos(spin) * e.radius * 0.18;
+            const moonY = e.y + Math.sin(spin) * e.radius * 0.10;
+            ctx.fillStyle = `rgba(225,205,255,${0.95 * lifeRatio})`;
+            ctx.beginPath();
+            ctx.arc(moonX, moonY, moonRadius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalCompositeOperation = "source-over";
+            ctx.fillStyle = `rgba(20,6,38,${0.96 * lifeRatio})`;
+            ctx.beginPath();
+            ctx.arc(moonX + moonRadius * 0.38, moonY - moonRadius * 0.08, moonRadius * 0.92, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.restore();
+        }
+
+        if (e.type === "lightning") {
+            drawLightningEffect(e);
         }
 
         if (e.type === "line") {
@@ -8399,6 +8583,13 @@ window.addEventListener("keydown", event => {
     if (event.code === "Escape") {
         event.preventDefault();
 
+        // Evita que mantener Escape apretado dispare pausa/reanudar varias veces.
+        // Ese repeat era la causa de que la música a veces quedara pausada y a veces no.
+        if (event.repeat) {
+            syncMusicState();
+            return;
+        }
+
         if (pendingBarricadePlacement) {
             cancelBarricadePlacement(false);
             return;
@@ -8543,6 +8734,7 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("focus", () => {
     lastFrameTime = performance.now();
     recoverFrozenWaveState("focus");
+    syncMusicState();
 });
 
 controlKeyButtons.forEach(button => {
@@ -8652,6 +8844,7 @@ function closeShop() {
         constructionBtn.textContent = "Construcción";
         constructionBtn.classList.remove("constructionOpen");
     }
+    syncMusicState();
     updateHud(true);
 }
 
