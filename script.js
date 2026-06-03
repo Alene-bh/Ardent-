@@ -3660,7 +3660,14 @@ function spawnEnemy() {
         }
     }
 
-    enemies.push(createEnemyFromType(type));
+    const spawnOptions = {};
+    if (type && type.special === "doombringer") {
+        // El Titán Negro también aparece en la zona central de jefes,
+        // no desde los bordes del mapa.
+        spawnOptions.spawnPoint = getBossSpawnPoint();
+    }
+
+    enemies.push(createEnemyFromType(type, spawnOptions));
     enemiesSpawned++;
 }
 
@@ -7912,6 +7919,27 @@ function drawWorldGrid() {
     ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
 }
 
+function drawBossSpawnZone() {
+    // Zona central de aparición de jefes / Titán Negro.
+    // Antes solo se veía en el minimapa; ahora también queda marcada en el mundo.
+    const zone = getBossSpawnRect(0);
+    const width = zone.right - zone.left;
+    const height = zone.bottom - zone.top;
+
+    ctx.save();
+    ctx.fillStyle = "rgba(150, 150, 150, 0.32)";
+    ctx.fillRect(zone.left, zone.top, width, height);
+
+    ctx.strokeStyle = "rgba(210, 210, 210, 0.72)";
+    ctx.lineWidth = 4;
+    ctx.strokeRect(zone.left, zone.top, width, height);
+
+    ctx.strokeStyle = "rgba(40, 40, 40, 0.38)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(zone.left + 5, zone.top + 5, Math.max(0, width - 10), Math.max(0, height - 10));
+    ctx.restore();
+}
+
 function drawMinimap() {
     const scale = visualSettings.minimapScale || 0.82;
     const w = Math.round(150 * scale);
@@ -7959,6 +7987,7 @@ function draw() {
     ctx.scale(zoom, zoom);
     ctx.translate(-camera.x, -camera.y);
     drawWorldGrid();
+    drawBossSpawnZone();
     drawPath();
     drawBase();
     drawBarricade();
