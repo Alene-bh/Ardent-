@@ -2253,7 +2253,12 @@ const specialEnemyTypes = [
         damageToDefense: 2,
         attackDelay: 980,
         special: "mirror",
-        reflectPercent: 0.18,
+        // Nerf: antes reflejaba demasiado al jugador solitario.
+        // Mantiene la fantasía de castigar daño directo, pero sin derretirte por pegarle.
+        reflectPercent: 0.10,
+        playerReflectPercent: 0.06,
+        towerReflectPercent: 0.10,
+        reflectCooldown: 420,
         unlockWave: 16
     },
     {
@@ -4654,6 +4659,11 @@ function createEnemyFromType(type, options = {}) {
         rangedCooldown: type.rangedCooldown || 0,
         lastRangedShotAt: getGameTime() + Math.random() * 1200,
         reflectPercent: type.special === "shielded" ? 0 : (type.reflectPercent || 0),
+        playerReflectPercent: type.playerReflectPercent || type.reflectPercent || 0,
+        towerReflectPercent: type.towerReflectPercent || type.reflectPercent || 0,
+        reflectCooldown: type.reflectCooldown || 0,
+        lastPlayerReflectAt: -999999,
+        lastTowerReflectAt: -999999,
         shieldHp: type.shieldHp ? Math.ceil(type.shieldHp * hpScaling) : 0,
         maxShieldHp: type.shieldHp ? Math.ceil(type.shieldHp * hpScaling) : 0,
         auraRadius: type.auraRadius || 0,
@@ -6731,10 +6741,23 @@ function damageEnemy(enemy, amount, isCrit = false, textColor = null, source = "
     if (runStats) runStats.damageDealt += Math.max(0, finalAmount);
     if (activeSideMission?.type === "bossPlayerDamage" && enemy.isBoss && source === "player") addMissionProgress(finalAmount);
 
-    if (enemy.special === "mirror" && enemy.reflectPercent && finalAmount > 0) {
-        const reflected = Math.max(0.1, finalAmount * enemy.reflectPercent);
-        if (source === "player") damagePlayer(reflected, { name: "reflejo del Bicho Espejo", color: enemy.color, deathName: "reflejo del Bicho Espejo" }, enemy.x, enemy.y, "¡Reflejo bloqueado!");
-        if (source === "tower") damageNearestTower(enemy, reflected);
+    if (enemy.special === "mirror" && finalAmount > 0) {
+        const nowReflect = getGameTime();
+        const reflectCooldown = enemy.reflectCooldown || 0;
+
+        if (source === "player" && nowReflect - (enemy.lastPlayerReflectAt || -999999) >= reflectCooldown) {
+            enemy.lastPlayerReflectAt = nowReflect;
+            // El espejo ahora devuelve una parte chica y con tope: sigue siendo peligroso,
+            // pero no destruye a un jugador solitario que no tenga base todavía.
+            const reflected = Math.min(1.25, Math.max(0.08, finalAmount * (enemy.playerReflectPercent || enemy.reflectPercent || 0.06)));
+            damagePlayer(reflected, { name: "reflejo del Bicho Espejo", color: enemy.color, deathName: "reflejo del Bicho Espejo" }, enemy.x, enemy.y, "¡Reflejo!");
+        }
+
+        if (source === "tower" && nowReflect - (enemy.lastTowerReflectAt || -999999) >= reflectCooldown) {
+            enemy.lastTowerReflectAt = nowReflect;
+            const reflected = Math.min(2.5, Math.max(0.08, finalAmount * (enemy.towerReflectPercent || enemy.reflectPercent || 0.10)));
+            damageNearestTower(enemy, reflected);
+        }
     }
 
     const now = getGameTime();
