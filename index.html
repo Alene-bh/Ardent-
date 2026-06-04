@@ -102,6 +102,13 @@
                 <input id="playerNameInput" type="text" maxlength="18" placeholder="Tu nombre" autocomplete="off">
             </div>
 
+            <div id="classSelectionPanel" class="classSelectionPanel">
+                <h3>Elegí tu clase</h3>
+                <p class="classSelectionHint">Cada clase cambia el estilo de tu run. Elegí cómo querés enfrentar al Abismo.</p>
+                <div id="classCardsBox" class="classCardsBox"></div>
+                <p id="selectedClassInfo" class="selectedClassInfo"></p>
+            </div>
+
             <button id="startGameBtn">Jugar</button>
 
             <div class="leaderboardBox menuLeaderboardBox">
@@ -181,6 +188,18 @@
 
                 <div id="centerMessage" class="hidden"></div>
 
+                <div id="sideMissionBox" class="sideMissionBox hidden">
+                    <strong id="sideMissionTitle">Misión</strong>
+                    <span id="sideMissionDesc">Objetivo</span>
+                    <em id="sideMissionProgress">0/0</em>
+                </div>
+
+                <div id="relicChoicePanel" class="overlayPanel hidden relicChoicePanel">
+                    <h2 id="relicChoiceTitle">Reliquia del Abismo</h2>
+                    <p id="relicChoiceHint">Elegí una recompensa.</p>
+                    <div id="relicChoiceOptions" class="relicChoiceOptions"></div>
+                </div>
+
                 <div id="consolePanel" class="overlayPanel hidden consolePanel">
                     <h2>Consola</h2>
                     <p class="consoleHint">Escribí comandos para debuggear o activar easter eggs.</p>
@@ -226,25 +245,25 @@
                             <button id="upgradeDamageBtn">
                                 Mejorar daño<br>
                                 <small>Actual: <span id="playerDamageText">1</span></small><br>
-                                <span id="damageCostText">35</span> monedas
+                                <span id="damageCostText">35</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="upgradeFireRateBtn">
                                 Mejorar velocidad<br>
                                 <small>Delay: <span id="playerFireDelayText">550</span>ms</small><br>
-                                <span id="fireRateCostText">50</span> monedas
+                                <span id="fireRateCostText">50</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="upgradeMaxHpBtn">
                                 Mejorar vida máxima<br>
                                 <small>Actual: <span id="playerMaxHpText">20</span></small><br>
-                                <span id="maxHpCostText">80</span> monedas
+                                <span id="maxHpCostText">80</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="upgradeCritBtn">
                                 Mejorar crítico<br>
                                 <small>Chance: <span id="critChanceText">0</span>%</small><br>
-                                <span id="critCostText">120</span> monedas
+                                <span id="critCostText">120</span><span class="currencyLabel"> monedas</span>
                             </button>
                         </section>
 
@@ -254,43 +273,43 @@
                             <button id="buySmallPotionBtn">
                                 Poción chica<br>
                                 <small>Guarda x1 · Cura 6 en 2.5s</small><br>
-                                <span id="smallPotionCostText">15</span> monedas
+                                <span id="smallPotionCostText">15</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyMediumPotionBtn">
                                 Poción mediana<br>
                                 <small>Guarda x1 · Cura 14 en 3.5s</small><br>
-                                <span id="mediumPotionCostText">35</span> monedas
+                                <span id="mediumPotionCostText">35</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyLargePotionBtn">
                                 Poción grande<br>
                                 <small>Guarda x1 · Cura 30 en 5s</small><br>
-                                <span id="largePotionCostText">70</span> monedas
+                                <span id="largePotionCostText">70</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyShieldPotionBtn">
                                 Amuleto protector<br>
                                 <small>Guarda x1 · Bloquea el próximo golpe</small><br>
-                                <span id="shieldPotionCostText">110</span> monedas
+                                <span id="shieldPotionCostText">110</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyAttackSpeedPotionBtn">
                                 Poción de rapidez<br>
                                 <small>Guarda x1 · +45% velocidad por 10s</small><br>
-                                <span id="attackSpeedPotionCostText">260</span> monedas
+                                <span id="attackSpeedPotionCostText">260</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyDoubleShotPotionBtn">
                                 Poción de doble disparo<br>
                                 <small>Guarda x1 · Disparo doble por 9s</small><br>
-                                <span id="doubleShotPotionCostText">620</span> monedas
+                                <span id="doubleShotPotionCostText">620</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyLifeStealPotionBtn">
                                 Poción vampírica<br>
                                 <small>Guarda x1 · Robo de vida temporal</small><br>
-                                <span id="lifeStealPotionCostText">520</span> monedas
+                                <span id="lifeStealPotionCostText">520</span><span class="currencyLabel"> monedas</span>
                             </button>
                         </section>
 
@@ -304,36 +323,36 @@
                             <button id="repairBarricadeBtn">
                                 Reparar barricadas<br>
                                 <small>Repara la más dañada</small><br>
-                                <span id="repairBarricadeCostText">45</span> monedas
+                                <span id="repairBarricadeCostText">45</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="upgradeBarricadeBtn">
                                 Construir barricada estándar<br>
                                 <small><span id="barricadeTierText">Sin barricadas</span></small><br>
-                                <span id="upgradeBarricadeCostText">70</span> monedas
+                                <span id="upgradeBarricadeCostText">70</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyRegenBarricadeBtn">
                                 Construir barricada regenerativa<br>
                                 <small>Regenera vida por segundo</small><br>
-                                <span id="regenBarricadeCostText">125</span> monedas
+                                <span id="regenBarricadeCostText">125</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyExplosiveBarricadeBtn">
                                 Construir barricada explosiva<br>
                                 <small>Explota al romperse</small><br>
-                                <span id="explosiveBarricadeCostText">150</span> monedas
+                                <span id="explosiveBarricadeCostText">150</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyThornsBarricadeBtn">
                                 Construir barricada con espinas<br>
                                 <small>Devuelve 50% del daño recibido</small><br>
-                                <span id="thornsBarricadeCostText">95</span> monedas
+                                <span id="thornsBarricadeCostText">95</span><span class="currencyLabel"> monedas</span>
                             </button>
                             <button id="buyDoorBarricadeBtn">
                                 Construir puerta
                                 <small>Se abre/cierra con click · 75% más débil</small><br>
-                                <span id="doorBarricadeCostText">48</span> monedas
+                                <span id="doorBarricadeCostText">48</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                         </section>
@@ -344,85 +363,85 @@
                             <button id="buyTowerSlotBtn" class="towerSlotUpgradeButton">
                                 Comprar slot de torre
                                 <small>Compra 1 slot por toque · 12/20</small><br>
-                                <span id="towerSlotCostText">850</span> monedas
+                                <span id="towerSlotCostText">850</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyTower1Btn">
                                 Comprar torre básica<br>
                                 <small>Colocación libre · dispara al más cercano</small><br>
-                                <span id="tower1CostText">70</span> monedas
+                                <span id="tower1CostText">70</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyTower2Btn">
                                 Comprar torre rápida<br>
                                 <small>Early barato · muchos disparos, poco daño</small><br>
-                                <span id="tower2CostText">40</span> monedas
+                                <span id="tower2CostText">40</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyTower3Btn">
                                 Comprar torre perforante<br>
                                 <small>Golpea a 2 enemigos</small><br>
-                                <span id="tower3CostText">160</span> monedas
+                                <span id="tower3CostText">160</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyTower4Btn">
                                 Comprar torre de hielo<br>
                                 <small>Ralentiza en área</small><br>
-                                <span id="tower4CostText">220</span> monedas
+                                <span id="tower4CostText">220</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyTower5Btn">
                                 Comprar torre doble<br>
                                 <small>Dispara 2 proyectiles</small><br>
-                                <span id="tower5CostText">260</span> monedas
+                                <span id="tower5CostText">260</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyTower6Btn">
                                 Comprar torre de veneno<br>
                                 <small>Área con daño por ticks</small><br>
-                                <span id="tower6CostText">310</span> monedas
+                                <span id="tower6CostText">310</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyTower7Btn">
                                 Comprar ballesta<br>
                                 <small>Mucho daño, lento</small><br>
-                                <span id="tower7CostText">360</span> monedas
+                                <span id="tower7CostText">360</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyTower8Btn">
                                 Comprar torre sanguijuela<br>
                                 <small>Succiona vida y cura defensas</small><br>
-                                <span id="tower8CostText">420</span> monedas
+                                <span id="tower8CostText">420</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyTower9Btn">
                                 Comprar torre buffer<br>
                                 <small>Bufea daño y velocidad en área</small><br>
-                                <span id="tower9CostText">620</span> monedas
+                                <span id="tower9CostText">620</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyTower10Btn">
                                 Comprar Lucky Block<br>
                                 <small>Se convierte en una torre aleatoria</small><br>
-                                <span id="tower10CostText">240</span> monedas
+                                <span id="tower10CostText">240</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyTower11Btn">
                                 Comprar torre cuchilla<br>
                                 <small>Melee por ticks · vulnerable pero resistente</small><br>
-                                <span id="tower11CostText">90</span> monedas
+                                <span id="tower11CostText">90</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyTower12Btn">
                                 Comprar torre lancera<br>
                                 <small>Ataca en línea frontal · rota con R</small><br>
-                                <span id="tower12CostText">135</span> monedas
+                                <span id="tower12CostText">135</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyTower13Btn">
                                 Comprar torre láser<br>
                                 <small>Objetivo único · DPS continuo</small><br>
-                                <span id="tower13CostText">1450</span> monedas
+                                <span id="tower13CostText">1450</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <div id="towerSlotsPanel" class="towerSlotsPanel"></div>
@@ -434,13 +453,13 @@
                             <button id="buyTrapSnareBtn">
                                 Colocar trampa de agarre<br>
                                 <small>1 uso · atrapa 1.5s al primer enemigo que la pisa</small><br>
-                                <span id="trapSnareCostText">55</span> monedas
+                                <span id="trapSnareCostText">55</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyTrapBleedBtn">
                                 Colocar trampa serrada<br>
                                 <small>1 uso · slow 0.5s + sangrado por 3s</small><br>
-                                <span id="trapBleedCostText">75</span> monedas
+                                <span id="trapBleedCostText">75</span><span class="currencyLabel"> monedas</span>
                             </button>
                         </section>
 
@@ -450,7 +469,7 @@
                             <button id="buyMineGoldBtn">
                                 Construir mina de eco<br>
                                 <small>No se mejora · genera oro al completar cada oleada</small><br>
-                                <span id="mineGoldCostText">220</span> monedas
+                                <span id="mineGoldCostText">220</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <div class="mineInfoBox">
@@ -465,43 +484,43 @@
                             <button id="buyBombBtn">
                                 Comprar Bomba<br>
                                 <small><span id="bombKeyText">1</span> · Daño en área</small><br>
-                                <span id="bombCostText">180</span> monedas
+                                <span id="bombCostText">180</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyFreezeBtn">
                                 Comprar Congelar<br>
                                 <small><span id="freezeKeyText">2</span> · Ralentiza a todos</small><br>
-                                <span id="freezeCostText">280</span> monedas
+                                <span id="freezeCostText">280</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyTsunamiBtn">
                                 Comprar Tsunami<br>
                                 <small><span id="tsunamiKeyText">3</span> · Empuja y daña</small><br>
-                                <span id="tsunamiCostText">560</span> monedas
+                                <span id="tsunamiCostText">560</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyLightningBtn">
                                 Comprar Rayo ramificado<br>
                                 <small><span id="lightningKeyText">4</span> · Salta entre enemigos</small><br>
-                                <span id="lightningCostText">980</span> monedas
+                                <span id="lightningCostText">980</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyMeteorBtn">
                                 Comprar Meteorito<br>
                                 <small><span id="meteorKeyText">5</span> · Gran explosión</small><br>
-                                <span id="meteorCostText">1750</span> monedas
+                                <span id="meteorCostText">1750</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyEclipseBtn">
                                 Comprar Eclipse<br>
                                 <small><span id="eclipseKeyText">6</span> · Zona oscura de daño y slow</small><br>
-                                <span id="eclipseCostText">2800</span> monedas
+                                <span id="eclipseCostText">2800</span><span class="currencyLabel"> monedas</span>
                             </button>
 
                             <button id="buyBlinkBtn">
                                 Comprar Blink<br>
                                 <small><span id="blinkKeyText">E</span> · Dash corto que atraviesa paredes</small><br>
-                                <span id="blinkCostText">800</span> monedas
+                                <span id="blinkCostText">800</span><span class="currencyLabel"> monedas</span>
                             </button>
                         </section>
                     </div>

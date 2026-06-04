@@ -980,8 +980,9 @@ h1 {
         "menuDesc leaderboard"
         "menuRecord leaderboard"
         "menuName leaderboard"
+        "classSelection leaderboard"
         "menuPlay leaderboard";
-    gap: 8px 18px;
+    gap: 6px 16px;
     align-items: start;
     overflow: hidden;
 }
@@ -1093,6 +1094,7 @@ h1 {
             "menuDesc"
             "menuRecord"
             "menuName"
+            "classSelection"
             "menuPlay"
             "leaderboard";
     }
@@ -1893,4 +1895,220 @@ textarea {
     width: 20px;
     height: 20px;
     image-rendering: pixelated;
+}
+
+
+/* === Ardent 1.0.3: clases, reliquias, misiones y eventos === */
+.classSelectionPanel {
+    margin: 18px auto;
+    max-width: 980px;
+    padding: 14px;
+    background: rgba(10, 17, 34, 0.72);
+    border: 1px solid #42658a;
+    border-radius: 14px;
+}
+.classSelectionPanel h3 { margin: 0 0 6px; color: #9be7ff; }
+.classSelectionHint { margin: 4px 0 12px; font-size: 13px; color: #b9c7d8 !important; }
+.classCardsBox {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+    gap: 10px;
+}
+.classCard {
+    min-height: 106px;
+    padding: 10px 8px;
+    background: #123a5d;
+    border: 2px solid rgba(255,255,255,0.68);
+    box-shadow: 5px 5px 0 #ffffff;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+.classCard.selected {
+    outline: 3px solid #ffe28a;
+    transform: translateY(-2px);
+}
+.classCard.hard { background: #4a0d18; }
+.classColor {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--class-color);
+    border: 2px solid white;
+    box-shadow: 0 0 12px var(--class-color);
+}
+.classCard strong { font-size: 15px; }
+.classCard small { color: #d6e5ff; font-size: 11px; line-height: 1.15; }
+.selectedClassInfo {
+    min-height: 76px;
+    margin: 12px 0 0 !important;
+    color: #eaf5ff !important;
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 10px;
+    padding: 10px 12px;
+    text-align: left;
+}
+.selectedClassInfo strong { display:block; margin-bottom: 5px; font-size: 16px; }
+.selectedClassInfo span { display:block; margin-top: 4px; line-height: 1.28; }
+.selectedClassInfo .classLore { color:#dbeaff; font-style: italic; }
+.selectedClassInfo .classGrants { color:#b9ffd0; }
+.selectedClassInfo .classDrawback { color:#ffd1d1; }
+.sideMissionBox {
+    position: absolute;
+    top: 86px;
+    right: 12px;
+    width: min(290px, 38vw);
+    padding: 10px 12px;
+    background: rgba(12, 18, 28, 0.86);
+    border: 1px solid #ffe28a;
+    border-radius: 12px;
+    text-align: left;
+    z-index: 4;
+    box-shadow: 0 0 18px rgba(0,0,0,0.35);
+}
+.sideMissionBox strong { display:block; color:#ffe28a; margin-bottom:4px; }
+.sideMissionBox span { display:block; color:#e5e5e5; font-size:12px; line-height:1.25; }
+.sideMissionBox em { display:block; color:#9be7ff; margin-top:5px; font-style:normal; font-weight:bold; }
+.sideMissionBox.failed { border-color:#ff5c7a; opacity:0.75; }
+.relicChoicePanel { z-index: 30; }
+.relicChoiceOptions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 14px;
+    max-width: 860px;
+    margin: 18px auto;
+}
+.relicOption {
+    min-height: 170px;
+    padding: 14px;
+    background: linear-gradient(180deg, #16233a, #11151f);
+    border: 1px solid #6b7da0;
+    text-align: left;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.relicOption strong { color:#ffe28a; font-size:18px; }
+.relicOption span { color:#e6f0ff; line-height:1.25; }
+.relicOption small { color:#ffb4b4; line-height:1.25; }
+.relicOption em { margin-top:auto; color:#9be7ff; font-style:normal; font-size:12px; }
+.family-sangre { border-color:#d71945; }
+.family-codicia { border-color:#ffd84a; }
+.family-constructor { border-color:#73ff9f; }
+.family-arcana { border-color:#9be7ff; }
+.finalRunDetails {
+    display:grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 8px;
+    margin: 12px auto;
+    max-width: 760px;
+}
+.finalRunDetails div {
+    background: rgba(0,0,0,0.28);
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 8px;
+    padding: 8px;
+}
+.finalRunDetails strong { display:block; color:#ffe28a; font-size:12px; }
+.finalRunDetails span { display:block; color:#fff; font-size:13px; margin-top:3px; }
+
+
+/* === Ardent 1.0.3.3: menú de clases compacto + selector condicional === */
+.classSelectionPanel {
+    grid-area: classSelection;
+    width: 100%;
+    margin: 2px 0 0;
+    max-width: none;
+    padding: 8px;
+}
+.classSelectionPanel h3 {
+    margin: 0 0 3px;
+    font-size: 15px;
+    line-height: 1.05;
+}
+.classSelectionHint {
+    margin: 0 0 6px !important;
+    font-size: 11px;
+    line-height: 1.15;
+}
+.classCardsBox {
+    grid-template-columns: repeat(4, minmax(70px, 1fr));
+    gap: 6px;
+}
+.classCard {
+    min-height: 64px;
+    padding: 5px 4px;
+    gap: 3px;
+    box-shadow: 3px 3px 0 #ffffff;
+    border-width: 1px;
+}
+.classColor {
+    width: 16px;
+    height: 16px;
+    border-width: 1px;
+}
+.classCard strong {
+    font-size: 12px;
+    line-height: 1.05;
+}
+.classCard small {
+    display: none;
+}
+.selectedClassInfo {
+    min-height: 0;
+    margin: 6px 0 0 !important;
+    padding: 7px 8px;
+    font-size: 11px;
+    line-height: 1.16;
+}
+.selectedClassInfo strong {
+    margin-bottom: 3px;
+    font-size: 13px;
+}
+.selectedClassInfo span {
+    margin-top: 2px;
+    line-height: 1.18;
+}
+#menu .menuLeaderboardBox {
+    max-height: calc(100vh - 76px);
+}
+#menu .leaderboardList li {
+    padding: 5px 7px;
+}
+@media (max-height: 760px) and (min-width: 861px) {
+    #menu {
+        padding: 8px;
+        gap: 4px 12px;
+    }
+    #menu h2 { font-size: 18px; margin: 0; }
+    #menu > p:not(.recordText) { font-size: 11px; line-height: 1.14; }
+    #menu .recordText { font-size: 12px; margin: 1px 0; }
+    #menu .playerNameBox { padding: 7px; }
+    #menu .playerNameBox label { font-size: 11px; margin-bottom: 3px; }
+    #menu .playerNameBox input { padding: 7px; font-size: 12px; }
+    #startGameBtn { min-height: 38px; font-size: 16px !important; }
+    .classSelectionPanel { padding: 6px; }
+    .classSelectionPanel h3 { font-size: 13px; }
+    .classSelectionHint { display: none; }
+    .classCardsBox { gap: 4px; }
+    .classCard { min-height: 50px; padding: 4px 3px; box-shadow: 2px 2px 0 #ffffff; }
+    .classColor { width: 12px; height: 12px; }
+    .classCard strong { font-size: 10px; }
+    .selectedClassInfo { font-size: 10px; padding: 5px 6px; margin-top: 4px !important; }
+    .selectedClassInfo strong { font-size: 11px; margin-bottom: 2px; }
+}
+
+.freeCost {
+    color: #73ff9f;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    text-shadow: 0 0 8px rgba(115, 255, 159, 0.35);
+}
+
+.currencyLabel.hiddenCurrency {
+    display: none;
 }
