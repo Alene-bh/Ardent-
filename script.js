@@ -260,6 +260,68 @@ function drawPlayerSprite() {
     return true;
 }
 
+function getEntitySpriteDirectionRow(entity, rows = 1) {
+    if (!entity || rows <= 1) return 0;
+    const lastX = Number(entity.lastMoveX) || Number(entity.dx) || 0;
+    const lastY = Number(entity.lastMoveY) || Number(entity.dy) || 0;
+    if (Math.abs(lastX) > Math.abs(lastY) && rows >= 2) return 1;
+    if (lastY < -0.25 && rows >= 3) return 2;
+    return 0;
+}
+
+function drawHumanoidSpriteEntity(entity, options = {}) {
+    if (!entity) return false;
+    const animation = options.animation || (entity.hp <= 0 ? "death" : entity.isMoving ? "walk" : "idle");
+    let img = playerSprites[animation] || playerSprites.idle;
+    let frameData = getSpriteFrameData(img);
+    if (!frameData && animation !== "idle") {
+        img = playerSprites.idle;
+        frameData = getSpriteFrameData(img);
+    }
+    if (!frameData) return false;
+
+    const { frameWidth, frameHeight, columns, rows, frameCount } = frameData;
+    const fpsByAnimation = { idle: 4, walk: 10, hurt: 9, death: 7 };
+    const fps = fpsByAnimation[animation] || 8;
+    let frameIndex = 0;
+
+    if (animation === "death") {
+        frameIndex = Math.min(frameCount - 1, Math.floor(getGameTime() / (1000 / fps)));
+    } else {
+        const row = getEntitySpriteDirectionRow(entity, rows);
+        const frameInRow = animation === "idle" ? 0 : Math.floor(getGameTime() / (1000 / fps)) % Math.max(1, columns);
+        frameIndex = row * columns + frameInRow;
+    }
+
+    const sx = (frameIndex % columns) * frameWidth;
+    const sy = Math.floor(frameIndex / columns) * frameHeight;
+    const drawSize = options.drawSize || PLAYER_SPRITE_DRAW_SIZE;
+    const shouldFlip = (Number(entity.lastMoveX) || 0) < -0.15;
+    img = getTintedPlayerSprite(animation, img, options.color || entity.color || "#ffffff");
+
+    ctx.save();
+    ctx.translate(entity.x, entity.y);
+    if (shouldFlip) ctx.scale(-1, 1);
+    ctx.imageSmoothingEnabled = false;
+    if (options.shadow) {
+        ctx.shadowColor = options.shadow;
+        ctx.shadowBlur = options.shadowBlur || 10;
+    }
+    ctx.drawImage(img, sx, sy, frameWidth, frameHeight, -drawSize / 2, -drawSize / 2, drawSize, drawSize);
+    ctx.restore();
+    return true;
+}
+
+function drawVisitorSprite(visitor) {
+    return drawHumanoidSpriteEntity(visitor, {
+        animation: visitor?.isMoving ? "walk" : "idle",
+        color: visitor?.visitorTint || "#20232d",
+        drawSize: 72,
+        shadow: "rgba(0,0,0,0.85)",
+        shadowBlur: 14
+    });
+}
+
 
 loadPlayerSprites();
 
@@ -835,6 +897,7 @@ const gameOverScreen = document.getElementById("gameOverScreen");
 const deathMessageText = document.getElementById("deathMessageText");
 const finalScoreText = document.getElementById("finalScoreText");
 const bestScoreText = document.getElementById("bestScoreText");
+const copyRunSummaryBtn = document.getElementById("copyRunSummaryBtn");
 const bestScoreMenuText = document.getElementById("bestScoreMenuText");
 
 const refreshLeaderboardBtn = document.getElementById("refreshLeaderboardBtn");
@@ -1094,6 +1157,11 @@ let totalRunTimeMs = 0;
 let waveStartedAt = 0;
 let bossPressureSpawned = 0;
 let bossPressureLastSpawnAt = 0;
+let bossSpawnedThisWave = false;
+let visitorSpawnedThisWave = false;
+let lastVisitorWave = -999;
+let lastVisitorDeathWave = -999;
+let visitorAlertUntil = 0;
 
 
 const alphaTesterCommands = {
@@ -1155,7 +1223,8 @@ const barricadeTiers = [
     { name: "Roca", color: "#777777", hpBonus: 40 },
     { name: "Metal", color: "#a9b4bd", hpBonus: 60 },
     { name: "Cristal", color: "#4aa3ff", hpBonus: 85 },
-    { name: "Obsidiana", color: "#302038", hpBonus: 120 }
+    { name: "Obsidiana", color: "#302038", hpBonus: 120 },
+    { name: "Aetherita", color: "#7c5cff", hpBonus: 168, architectOnly: true, particleColor: "#bfa7ff" }
 ];
 
 const INITIAL_TOWER_LIMIT = 12;
@@ -1167,7 +1236,7 @@ const REPEAT_LIMIT_PER_WAVE = 3;
 // Repetir oleada: desafío leve y recompensa reducida, sin acumulación por repetición.
 const REPEAT_ENEMY_STRENGTH_MULTIPLIER = 1.2;
 const REPEAT_GOLD_MULTIPLIER = 0.6;
-const BOSS_BARRICADE_DAMAGE_MULTIPLIER = 1.2;
+const BOSS_BARRICADE_DAMAGE_MULTIPLIER = 0.85;
 const PLAYER_WALK_SPEED_MULTIPLIER = 0.82;
 const PLAYER_SPRINT_SPEED_MULTIPLIER = 1.65;
 const PLAYER_STAMINA_MAX = 100;
@@ -1183,6 +1252,7 @@ const SUMMONER_MAX_ACTIVE_MINIONS = SUMMONER_BATCH_SIZE * SUMMONER_MAX_ACTIVE_BA
 let repeatCountsByWave = {};
 let isRepeatingWave = false;
 let currentGoldMultiplier = 1;
+const PLAYER_ECONOMY_GOLD_MULTIPLIER = 1.15; // Hotfix 1.0.4.7: más oro para que las builds puedan crecer.
 let doomSpawnedThisWave = false;
 let lastDoomWave = -999;
 let titanRewardedWaves = {};
@@ -1237,6 +1307,20 @@ const CLASS_DEFINITIONS = {
         drawback: "Su puntaje queda marcado como modo Novato y no compite igual en récords.",
         apply() { player.goldBonusMultiplier *= 1.2; player.enemyHpMultiplier = 0.85; player.scoreMultiplier = 0.65; runDisqualifiedFromLeaderboard = true; leaderboardDisqualificationReason = "Clase Novato"; }
     },
+    minero: {
+        name: "Minero", color: "#d8a447", short: "Escarba oro donde otros ven muerte.",
+        lore: "El Minero no llegó a Ardent para rezar por una defensa: llegó con pico, codicia medida y una fe rara en que hasta el Abismo tiene vetas.",
+        grants: "Empieza con oro extra, una mina gratis y hace rendir mejor su economía minera.",
+        drawback: "Su daño personal arranca más bajo y las torres ofensivas le cuestan un poco más.",
+        apply() {
+            coins += 150;
+            player.damage *= 0.9;
+            player.classCostMultipliers.towers = 1.08;
+            player.classCostMultipliers.mines = 0.85;
+            player.mineIncomeMultiplier *= 1.1;
+            grantFreeMine(1);
+        }
+    },
     errante: {
         name: "Errante", color: "#ffffff", short: "Nada regalado. Nada maldito.",
         lore: "El Errante no trae promesas, herramientas ni pactos. Solo una voluntad terca y una noche demasiado larga.",
@@ -1284,6 +1368,21 @@ function consumeFreeBarricade() {
     return true;
 }
 
+function grantFreeMine(count = 1) {
+    if (!player) return;
+    player.freeMinePlacements = (Number(player.freeMinePlacements) || 0) + Math.max(0, Math.floor(count));
+}
+
+function getFreeMineCount() {
+    return Math.max(0, Math.floor(Number(player?.freeMinePlacements) || 0));
+}
+
+function consumeFreeMine() {
+    if (!player || getFreeMineCount() <= 0) return false;
+    player.freeMinePlacements -= 1;
+    return true;
+}
+
 function grantFreeAnyConstruction(count = 1) {
     if (!player) return;
     player.freeAnyConstructionPlacements = (Number(player.freeAnyConstructionPlacements) || 0) + Math.max(0, Math.floor(count));
@@ -1302,12 +1401,14 @@ function consumeFreeAnyConstruction() {
 function hasFreeConstructionCharge(kind = "any", defKey = "") {
     if (kind === "tower" && getFreeTowerCount(defKey) > 0) return true;
     if (kind === "barricade" && getFreeBarricadeCount() > 0) return true;
+    if (kind === "mine" && getFreeMineCount() > 0) return true;
     return getFreeAnyConstructionCount() > 0;
 }
 
 function consumeFreeConstructionCharge(kind = "any", defKey = "") {
     if (kind === "tower" && consumeFreeTower(defKey)) return true;
     if (kind === "barricade" && consumeFreeBarricade()) return true;
+    if (kind === "mine" && consumeFreeMine()) return true;
     return consumeFreeAnyConstruction();
 }
 
@@ -1331,12 +1432,12 @@ const VISITOR_RELICS = [
 ];
 
 const WAVE_EVENTS = [
-    { id:"siege", name:"Asedio", title:"LA MARCHA ROJA", desc:"Todos los enemigos aparecen desde un solo lado.", minWave:4 },
-    { id:"midas", name:"Bendición de Midas", title:"BENDICIÓN DE MIDAS", desc:"Enemigos dorados: más rápidos, pero dan más oro.", minWave:5 },
-    { id:"blindness", name:"Ceguera del Abismo", title:"CEGUERA DEL ABISMO", desc:"Visión reducida y enemigos ocultos en el minimapa.", minWave:7 },
-    { id:"blood_rain", name:"Lluvia Carmesí", title:"LLUVIA CARMESÍ", desc:"Enemigos pegan más, pero reciben más daño.", minWave:8 },
-    { id:"titan_hunger", name:"Hambre del Titán", title:"EL HAMBRE DEL TITÁN", desc:"Más especiales durante esta oleada.", minWave:12 },
-    { id:"mana_calm", name:"Calma de Maná", title:"CALMA DE MANÁ", desc:"Las habilidades tardan más, las torres golpean mejor.", minWave:10 }
+    { id:"siege", name:"Asedio", title:"LA MARCHA ROJA", desc:"La horda eligió un solo frente. Aguantá la línea o mirá cómo se parte.", minWave:4, messageType:"event-siege" },
+    { id:"midas", name:"Bendición de Midas", title:"BENDICIÓN DE MIDAS", desc:"La codicia doró a los enemigos: corren más, pero cargan más oro.", minWave:5, messageType:"event-midas" },
+    { id:"blindness", name:"Ceguera del Abismo", title:"CEGUERA DEL ABISMO", desc:"El mapa pierde sus ojos. Ahora vas a tener que defender con instinto.", minWave:7, messageType:"event-blindness" },
+    { id:"blood_rain", name:"Lluvia Carmesí", title:"LLUVIA CARMESÍ", desc:"La sangre cae del cielo. Ellos golpean más fuerte, pero también sangran más rápido.", minWave:8, messageType:"event-blood" },
+    { id:"titan_hunger", name:"Hambre del Titán", title:"EL HAMBRE DEL TITÁN", desc:"Algo enorme respira debajo de la oleada. Los especiales escucharon el llamado.", minWave:12, messageType:"event-titan-hunger" },
+    { id:"mana_calm", name:"Calma de Maná", title:"CALMA DE MANÁ", desc:"La magia se aquieta. Las habilidades tardan, pero las torres afinan el pulso.", minWave:10, messageType:"event-mana" }
 ];
 
 const SIDE_MISSIONS = [
@@ -1362,6 +1463,39 @@ const SIDE_MISSIONS = [
     { id:"survive_no_damage", title:"No retrocedas", desc:"No recibas daño durante esta oleada", type:"noPlayerDamage", target:1 }
 ];
 
+
+
+const FINAL_DEATH_LINES = {
+    record: [
+        "¡Récord superado! El Abismo tuvo que esforzarse más esta vez.", "Nuevo récord. Ardent recuerda esta defensa.", "Tu caída rompió una marca. Eso también es una victoria.", "El Abismo ganó, pero hoy tuvo que pagar caro.", "Tu nombre quedó grabado entre cenizas y barricadas.", "La horda avanzó, sí, pero primero aprendió a temerte.", "Nuevo récord: tu fortaleza duró más que la esperanza de muchos.", "El récord anterior quedó enterrado bajo tus ruinas.", "Caíste más lejos que nunca. El Abismo tomó nota.", "Ardent no te salvó, pero esta vez te honró."
+    ],
+    low: [
+        "El Abismo apenas tuvo que mirarte.", "Tu fortaleza fue una promesa demasiado corta.", "Ni las sombras llegaron a aprender tu nombre.", "La horda preguntó si eso era todo.", "Ardent prendió una vela. Se apagó enseguida.", "El primer muro fue más una sugerencia que una defensa.", "El Abismo bostezó. Después avanzó.", "La run murió antes de tener leyenda.", "La horda pasó y ni bajó la velocidad.", "Tu plan era valiente. Cortito, pero valiente."
+    ],
+    mid: [
+        "Resististe más de lo esperado, pero Ardent todavía no perdona.", "Tu defensa ardió fuerte, aunque no lo suficiente.", "El Abismo empezó a tomarte en serio.", "La horda tuvo que empujar un poco más para romperte.", "Tus torres cantaron. Las ruinas respondieron.", "No fue una caída: fue una advertencia para la próxima run.", "Aguantaste lo bastante como para molestar al Abismo.", "Tu base tuvo forma, furia y final.", "Las sombras ganaron, pero ya saben dónde te escondés.", "Ardent vio una chispa. Todavía falta incendio."
+    ],
+    high: [
+        "Caíste, pero dejaste una cicatriz en el Abismo.", "Tu nombre será recordado entre las ruinas de Ardent.", "La horda ganó, pero no salió ilesa.", "Tus muros no sobrevivieron, pero tu leyenda sí.", "El Abismo tuvo que romperte por partes.", "No defendiste una base: defendiste una historia.", "La última barricada cayó con honor.", "La horda cruzó, pero cruzó temblando.", "Ardent perdió terreno, no memoria.", "Tu caída sonó como metal contra el fin del mundo."
+    ],
+    legendary: [
+        "El Abismo ganó por cansancio, no por gloria.", "Tu defensa fue una cicatriz enorme sobre la oscuridad.", "La horda tardó tanto que casi pareció dudar.", "Ardent no olvidará esta run. Nadie debería.", "Caíste donde otros ni siquiera llegaron a mirar.", "Los enemigos pasaron sobre ruinas sagradas.", "Tu fortaleza se volvió mito antes de caer.", "El Abismo necesitó paciencia, sangre y demasiados cuerpos.", "Perdiste la run, pero ganaste una leyenda.", "Que la horda celebre: sobrevivió a vos."
+    ],
+    boss: [
+        "El jefe reclamó tu fortaleza en la wave {wave}.", "El Abismo mandó un nombre propio, y ese nombre te quebró.", "Caíste ante {cause}; la horda siguió caminando.", "El jefe no solo te mató: firmó el final de la defensa.", "{cause} encontró la grieta y la convirtió en tumba.", "Tu run terminó bajo la sombra de {cause}.", "El duelo fue digno. El resultado, cruel.", "{cause} apagó las luces de Ardent.", "No fue una oleada cualquiera: fue una sentencia con vida propia.", "El jefe cruzó tus defensas como si fueran recuerdos viejos."
+    ],
+    titan: [
+        "Caíste ante el Titán Negro en la wave {wave}.", "El Titán caminó sobre los restos de tu fortaleza.", "El suelo tembló, tus torres gritaron y el Titán siguió avanzando.", "El Titán no te venció rápido. Te borró con paciencia.", "La wave {wave} será recordada por el paso del Titán.", "El Titán Negro no atacó tu base: la declaró ruina.", "Tus muros aprendieron el peso de un dios oscuro.", "El Titán llegó tarde, pero llegó como final.", "Ardent guardó silencio cuando el Titán te alcanzó.", "Contra el Titán, hasta las sombras parecían pequeñas."
+    ]
+};
+
+function pickRandomLine(list = []) {
+    if (!Array.isArray(list) || !list.length) return "El Abismo reclamó tu run.";
+    return list[Math.floor(Math.random() * list.length)];
+}
+function formatFinalLine(template, context = {}) {
+    return String(template || "").replaceAll("{wave}", String(context.wave ?? wave ?? "?")).replaceAll("{cause}", String(context.cause || "el Abismo"));
+}
 
 const consumableDefinitions = {
     smallPotion: { name: "Poción chica", shortName: "Chica", color: "#57d7ff", effect: "heal", heal: 6, duration: 2500, message: "Poción chica" },
@@ -1418,9 +1552,10 @@ const TOWER_REPAIR_COST_FACTOR = 0.28;
 const TITAN_SHARD_RADIUS = 15;
 const TITAN_REWARD_OPTION_COUNT = 3;
 const TITAN_VARIANTS = [
-    { key: "burn", name: "Titán Ígneo", color: "#18040a", hpMultiplier: 0.92, speedMultiplier: 0.9, cooldown: 2600 },
-    { key: "dash", name: "Titán Embestida", color: "#050505", hpMultiplier: 1.45, speedMultiplier: 0.78, cooldown: 3600 },
-    { key: "split", name: "Titán Trino", color: "#160016", hpMultiplier: 0.95, speedMultiplier: 0.86, cooldown: 1800 }
+    // Hotfix 1.0.4.8: mantienen la fantasía de amenaza mítica, pero escalan más justo en waves tempranas.
+    { key: "burn", name: "Titán Ígneo", color: "#18040a", hpMultiplier: 0.82, speedMultiplier: 0.86, cooldown: 3200, intro: "El suelo se quema bajo una sombra imposible." },
+    { key: "dash", name: "Titán Embestida", color: "#050505", hpMultiplier: 1.12, speedMultiplier: 0.70, cooldown: 4300, intro: "La oscuridad no camina: embiste." },
+    { key: "split", name: "Titán Trino", color: "#160016", hpMultiplier: 0.84, speedMultiplier: 0.82, cooldown: 2300, intro: "Una sola sombra aprende a ser multitud." }
 ];
 
 function pickTitanVariant() {
@@ -2111,6 +2246,20 @@ const specialEnemyTypes = [
         unlockWave: 24
     },
     {
+        name: "El Visitante",
+        color: "#f2f2f2",
+        hp: 120,
+        speed: 0.92,
+        reward: 250,
+        score: 520,
+        damageToDefense: 3,
+        attackDelay: 1250,
+        special: "visitor",
+        unlockWave: 9999,
+        rangedCooldown: 1250,
+        visitor: true
+    },
+    {
         name: "Titán Negro",
         color: "#050505",
         hp: 140,
@@ -2120,22 +2269,22 @@ const specialEnemyTypes = [
         damageToDefense: 999,
         attackDelay: 99999,
         special: "doombringer",
-        unlockWave: 30,
+        unlockWave: 20,
         rare: true
     }
 ];
 
 const bossTypes = [
-    { name: "Jefe del Abismo", variant: "barrage", color: "#ff7b00", hp: 92, speed: 0.31, reward: 125, score: 260, damageToDefense: 5, attackDelay: 1120, specialCooldown: 2050, burstShots: 8, burstDelay: 125 },
-    { name: "Parpadeo Mayor", variant: "blink", color: "#d58cff", hp: 86, speed: 0.36, reward: 130, score: 270, damageToDefense: 5, attackDelay: 1120, specialCooldown: 1450 },
-    { name: "Orbe Rebotante", variant: "dvd", color: "#9be7ff", hp: 145, speed: 0.42, reward: 150, score: 310, damageToDefense: 7, attackDelay: 760, specialCooldown: 1850, dvdVy: 1.85 },
-    { name: "Mortero Carmesí", variant: "mortar", color: "#ff4747", hp: 104, speed: 0.27, reward: 140, score: 295, damageToDefense: 6, attackDelay: 1180, specialCooldown: 2000 },
-    { name: "Corona de Espinas", variant: "spiral", color: "#73ff9f", hp: 98, speed: 0.30, reward: 145, score: 305, damageToDefense: 5, attackDelay: 1080, specialCooldown: 1700 },
-    { name: "Carcelero del Abismo", variant: "jailer", color: "#b78cff", hp: 118, speed: 0.29, reward: 155, score: 335, damageToDefense: 5, attackDelay: 1130, specialCooldown: 3600 },
-    { name: "Devoramuros", variant: "wallEater", color: "#b06b3a", hp: 135, speed: 0.33, reward: 165, score: 355, damageToDefense: 10, attackDelay: 950, specialCooldown: 2600 },
-    { name: "Oráculo Carmesí", variant: "oracle", color: "#ff4fd8", hp: 108, speed: 0.28, reward: 160, score: 345, damageToDefense: 5, attackDelay: 1120, specialCooldown: 2300 },
-    { name: "Comandante de la Horda", variant: "commander", color: "#ffe28a", hp: 126, speed: 0.31, reward: 175, score: 375, damageToDefense: 6, attackDelay: 1060, specialCooldown: 2200 },
-    { name: "Recolector", variant: "collector", color: "#ffd84a", hp: 112, speed: 0.34, reward: 180, score: 390, damageToDefense: 5, attackDelay: 1020, specialCooldown: 2400 }
+    { name: "Jefe del Abismo", variant: "barrage", color: "#ff7b00", hp: 92, speed: 0.31, reward: 125, score: 260, damageToDefense: 4, attackDelay: 1220, specialCooldown: 2150, burstShots: 7, burstDelay: 135 },
+    { name: "Parpadeo Mayor", variant: "blink", color: "#d58cff", hp: 86, speed: 0.35, reward: 130, score: 270, damageToDefense: 4, attackDelay: 1220, specialCooldown: 1600 },
+    { name: "Orbe Rebotante", variant: "dvd", color: "#9be7ff", hp: 145, speed: 0.39, reward: 150, score: 310, damageToDefense: 5, attackDelay: 920, specialCooldown: 2050, dvdVy: 1.65 },
+    { name: "Mortero Carmesí", variant: "mortar", color: "#ff4747", hp: 104, speed: 0.27, reward: 140, score: 295, damageToDefense: 4, attackDelay: 1280, specialCooldown: 2200 },
+    { name: "Corona de Espinas", variant: "spiral", color: "#73ff9f", hp: 98, speed: 0.30, reward: 145, score: 305, damageToDefense: 4, attackDelay: 1180, specialCooldown: 1900 },
+    { name: "Carcelero del Abismo", variant: "jailer", color: "#b78cff", hp: 118, speed: 0.29, reward: 155, score: 335, damageToDefense: 4, attackDelay: 1240, specialCooldown: 3900 },
+    { name: "Devoramuros", variant: "wallEater", color: "#b06b3a", hp: 135, speed: 0.31, reward: 165, score: 355, damageToDefense: 7, attackDelay: 1120, specialCooldown: 2900 },
+    { name: "Oráculo Carmesí", variant: "oracle", color: "#ff4fd8", hp: 108, speed: 0.28, reward: 160, score: 345, damageToDefense: 4, attackDelay: 1220, specialCooldown: 2550 },
+    { name: "Comandante de la Horda", variant: "commander", color: "#ffe28a", hp: 126, speed: 0.30, reward: 175, score: 375, damageToDefense: 4, attackDelay: 1180, specialCooldown: 2450 },
+    { name: "Recolector", variant: "collector", color: "#ffd84a", hp: 112, speed: 0.33, reward: 180, score: 390, damageToDefense: 4, attackDelay: 1160, specialCooldown: 2700 }
 ];
 
 function getBossTypeForWave() {
@@ -2366,6 +2515,100 @@ function isEnemyPositionBlockedBySolid(enemy, x, y, ignoredBarricade = null) {
     return false;
 }
 
+function getPlayerBaseProtectedRadius() {
+    // Zona de respeto de la base: los enemigos míticos pueden asediar desde fuera,
+    // pero no deben teletransportarse ni aparecer adentro de la fortaleza.
+    if (!baseCore || !basePlaced || baseCore.hp <= 0) return 0;
+    let radius = 245;
+
+    (barricades || []).forEach(b => {
+        if (!b || !b.active || b.hp <= 0) return;
+        const dist = Math.hypot(b.x - baseCore.x, b.y - baseCore.y);
+        if (dist < 430) radius = Math.max(radius, dist + 72);
+    });
+
+    (towers || []).forEach(t => {
+        if (!t || !t.owned || t.hp <= 0) return;
+        const dist = Math.hypot(t.x - baseCore.x, t.y - baseCore.y);
+        if (dist < 380) radius = Math.max(radius, dist + 76);
+    });
+
+    (mines || []).forEach(m => {
+        if (!m || m.hp <= 0) return;
+        const dist = Math.hypot(m.x - baseCore.x, m.y - baseCore.y);
+        if (dist < 360) radius = Math.max(radius, dist + 72);
+    });
+
+    return Math.min(520, radius);
+}
+
+function isInsidePlayerBaseProtectedZone(x, y, extra = 0) {
+    if (!baseCore || !basePlaced || baseCore.hp <= 0) return false;
+    return Math.hypot(x - baseCore.x, y - baseCore.y) < getPlayerBaseProtectedRadius() + extra;
+}
+
+function pushPointOutsidePlayerBaseZone(x, y, extra = 0) {
+    if (!baseCore || !basePlaced || baseCore.hp <= 0) return { x, y };
+    const safeRadius = getPlayerBaseProtectedRadius() + extra;
+    const dx = x - baseCore.x;
+    const dy = y - baseCore.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    if (dist >= safeRadius) return { x, y };
+    const nx = dx / dist;
+    const ny = dy / dist;
+    return {
+        x: clampWorldX(baseCore.x + nx * safeRadius, 46),
+        y: clampWorldY(baseCore.y + ny * safeRadius, 46)
+    };
+}
+
+function isMythicTeleportForbidden(enemy, x, y) {
+    if (isInsidePlayerBaseProtectedZone(x, y, (enemy?.radius || 28) + 18)) return true;
+    return isEnemyPositionBlockedBySolid(enemy || { radius: 28 }, x, y);
+}
+
+function getSafeMythicTeleportPoint(enemy, wantedX, wantedY, oldX = null, oldY = null) {
+    let point = pushPointOutsidePlayerBaseZone(wantedX, wantedY, (enemy?.radius || 28) + 42);
+    point.x = clampWorldX(point.x, (enemy?.radius || 28) + 6);
+    point.y = clampWorldY(point.y, (enemy?.radius || 28) + 6);
+
+    if (!isMythicTeleportForbidden(enemy, point.x, point.y)) return point;
+
+    const originX = Number.isFinite(oldX) ? oldX : (enemy?.x || point.x);
+    const originY = Number.isFinite(oldY) ? oldY : (enemy?.y || point.y);
+    const baseAngle = Math.atan2(point.y - originY, point.x - originX);
+    const attempts = [0, 0.45, -0.45, 0.9, -0.9, Math.PI, Math.PI * 0.65, -Math.PI * 0.65];
+
+    for (const offset of attempts) {
+        const angle = baseAngle + offset;
+        for (const dist of [70, 120, 180, 250]) {
+            const candidate = pushPointOutsidePlayerBaseZone(
+                originX + Math.cos(angle) * dist,
+                originY + Math.sin(angle) * dist,
+                (enemy?.radius || 28) + 42
+            );
+            candidate.x = clampWorldX(candidate.x, (enemy?.radius || 28) + 6);
+            candidate.y = clampWorldY(candidate.y, (enemy?.radius || 28) + 6);
+            if (!isMythicTeleportForbidden(enemy, candidate.x, candidate.y)) return candidate;
+        }
+    }
+
+    return { x: originX, y: originY };
+}
+
+function enforceTitanOutsidePlayerBase(enemy) {
+    if (!enemy || enemy.special !== "doombringer" || enemy.hp <= 0) return;
+    if (!isInsidePlayerBaseProtectedZone(enemy.x, enemy.y, (enemy.radius || 34) + 8)) return;
+    const safe = pushPointOutsidePlayerBaseZone(enemy.x, enemy.y, (enemy.radius || 34) + 54);
+    if (!isEnemyPositionBlockedBySolid(enemy, safe.x, safe.y)) {
+        effects.push({ type: "line", x1: enemy.x, y1: enemy.y, x2: safe.x, y2: safe.y, life: 14, color: "#111111" });
+        enemy.x = safe.x;
+        enemy.y = safe.y;
+        enemy.knockbackX = 0;
+    }
+}
+
+
 function trySlideEnemyAlongBarricade(enemy, barricade, targetX, targetY) {
     if (!enemy || !barricade) return false;
     const info = getBarricadeContactInfo(enemy, barricade);
@@ -2456,8 +2699,10 @@ function damageMine(mine, amount, sourceEnemy = null) {
         return;
     }
 
-    const finalAmount = (sourceEnemy && (sourceEnemy.isBoss || sourceEnemy.isBossProjectile)) ? amount * 1.15 : amount;
+    const isVisitorProjectile = !!(sourceEnemy && (sourceEnemy.isVisitorProjectile || sourceEnemy.sourceSpecial === "visitor"));
+    const finalAmount = isVisitorProjectile ? amount * 0.75 : ((sourceEnemy && (sourceEnemy.isBoss || sourceEnemy.isBossProjectile)) ? amount * 1.15 : amount);
     mine.hp -= finalAmount;
+    awardVisitorGold(finalAmount);
     mine.lastHitAt = getGameTime();
     createImpactParticles(mine.x, mine.y, sourceEnemy && sourceEnemy.color ? sourceEnemy.color : "#ff7777");
     addDamageText(mine.x, mine.y - 24, finalAmount, false, "#ff7777");
@@ -2476,6 +2721,7 @@ function damageMine(mine, amount, sourceEnemy = null) {
 function damageBase(amount, x = baseCore ? baseCore.x : 0, y = baseCore ? baseCore.y : 0) {
     if (!baseCore || !basePlaced) return false;
     baseCore.hp -= amount;
+    awardVisitorGold(amount);
     triggerRedFlash();
     createImpactParticles(x, y, "#ff7777");
     addDamageText(x, y - 24, amount, false, "#ff7777");
@@ -2600,10 +2846,12 @@ function damageBarricade(b, amount, sourceEnemy = null) {
         return;
     }
 
+    const isVisitorProjectile = !!(sourceEnemy && (sourceEnemy.isVisitorProjectile || sourceEnemy.sourceSpecial === "visitor"));
     const isBossDamage = !!(sourceEnemy && (sourceEnemy.isBoss || sourceEnemy.isBossProjectile));
-    const finalAmount = isBossDamage ? amount * BOSS_BARRICADE_DAMAGE_MULTIPLIER : amount;
+    const finalAmount = isVisitorProjectile ? amount * 0.72 : (isBossDamage ? amount * BOSS_BARRICADE_DAMAGE_MULTIPLIER : amount);
 
     b.hp -= finalAmount;
+    awardVisitorGold(finalAmount);
 
     if (b.thorns && sourceEnemy && !sourceEnemy.isBossProjectile) {
         const reflected = Math.max(1, finalAmount * 0.5);
@@ -2657,6 +2905,7 @@ function damagePlayer(amount, sourceEnemy = null, impactX = player ? player.x : 
     }
 
     player.hp -= amount;
+    awardVisitorGold(amount);
     if (runStats) runStats.playerDamageTakenThisWave += amount;
     updateMissionFailure("noPlayerDamage");
     player.hurtUntil = getGameTime() + 280;
@@ -2776,7 +3025,7 @@ function hasFreeTrapPurchase() {
 }
 
 function hasFreeMinePurchase() {
-    return getFreeAnyConstructionCount() > 0;
+    return getFreeMineCount() > 0 || getFreeAnyConstructionCount() > 0;
 }
 
 function formatMissingMoney(value) {
@@ -2920,7 +3169,7 @@ function createTowerFromDefinition(def, paidCost = def.cost, tile = null) {
 function beginTowerPlacement(defKey) {
     if (!canStartBuildPlacement("construir torres")) return;
     if (towers.length >= towerSlotLimit) {
-        showCenterMessage("Límite de slots de torre alcanzado", 900);
+        showCenterMessage("Límite de slots de torre alcanzado", 900, "minor");
         return;
     }
 
@@ -2930,7 +3179,7 @@ function beginTowerPlacement(defKey) {
     const hasFreeStarter = hasFreeTowerPurchase(def.key);
     const price = hasFreeStarter ? 0 : getEffectiveCost(costs[def.key] ?? def.cost, "towers");
     if (coins < price) {
-        showCenterMessage("Monedas insuficientes", 800);
+        showCenterMessage("Monedas insuficientes", 800, "minor");
         return;
     }
 
@@ -2941,7 +3190,7 @@ function beginTowerPlacement(defKey) {
     pendingMinePlacement = null;
     closeShop();
     waveSummaryPanel.classList.add("hidden");
-    showCenterMessage(`Colocá: ${def.name} · podés seguir colocando hasta quedarte sin monedas`, 1300);
+    showCenterMessage(`Colocá: ${def.name} · seguí colocando o cancelá`, 1100, "minor");
     updateBuildCancelUI();
     updateHud();
 }
@@ -2964,7 +3213,7 @@ function beginTowerMove(index) {
     pendingTowerMoveIndex = index;
     closeShop();
     waveSummaryPanel.classList.add("hidden");
-    showCenterMessage(`Mové: ${tower.name}`, 1100);
+    showCenterMessage(`Mové: ${tower.name}`, 900, "minor");
     updateHud();
 }
 
@@ -2987,7 +3236,7 @@ function finishTowerMove(tile) {
     }
 
     if (!tile || !isTowerTileAvailable(tile, tower)) {
-        showCenterMessage("Lugar ocupado o inválido", 700);
+        showCenterMessage("Lugar ocupado o inválido", 700, "minor");
         return;
     }
 
@@ -2995,14 +3244,14 @@ function finishTowerMove(tile) {
     tower.y = tile.y;
     pendingTowerMoveIndex = null;
     updateBuildCancelUI();
-    showCenterMessage(`${tower.name} movida`, 750);
+    showCenterMessage(`${tower.name} movida`, 750, "minor");
     updateHud(true);
     autoSaveRun(true);
 }
 
 function finishTowerPlacement(tile) {
     if (!pendingTowerPurchase || !isTowerTileAvailable(tile)) {
-        showCenterMessage("Lugar ocupado o inválido", 700);
+        showCenterMessage("Lugar ocupado o inválido", 700, "minor");
         return;
     }
 
@@ -3016,13 +3265,13 @@ function finishTowerPlacement(tile) {
     const hasFreeStarter = getFreeTowerCount(originalDefKey) > 0 || getFreeAnyConstructionCount() > 0;
     const price = hasFreeStarter ? 0 : getEffectiveCost(costs[originalDefKey] ?? def.cost, "towers");
     if (coins < price) {
-        showCenterMessage("Monedas insuficientes", 800);
+        showCenterMessage("Monedas insuficientes", 800, "minor");
         cancelTowerPlacement(false);
         return;
     }
 
     if (towers.length >= towerSlotLimit) {
-        showCenterMessage("Límite de slots de torre alcanzado", 900);
+        showCenterMessage("Límite de slots de torre alcanzado", 900, "minor");
         cancelTowerPlacement(false);
         return;
     }
@@ -3033,16 +3282,16 @@ function finishTowerPlacement(tile) {
     if (def.type === "lucky") {
         const options = towerDefinitions.filter(t => t.type !== "lucky");
         def = options[Math.floor(Math.random() * options.length)];
-        showCenterMessage(`Lucky Block: ${def.name}`, 900);
+        showCenterMessage(`Lucky Block: te tocó ${def.name}`, 1300, "lucky");
     } else {
-        showCenterMessage(`${def.name} colocada · seguí colocando o cancelá`, 900);
+        showCenterMessage(`${def.name} colocada · seguí colocando o cancelá`, 900, "minor");
     }
 
     def = { ...def, rotation: towerBuildRotation };
     const tower = createTowerFromDefinition(def, price, tile);
     if (!tower) {
         coins += price;
-        showCenterMessage("No se pudo colocar", 800);
+        showCenterMessage("No se pudo colocar", 800, "minor");
         return;
     }
 
@@ -3054,7 +3303,7 @@ function finishTowerPlacement(tile) {
     const nextPrice = nextHasFreeStarter ? 0 : getEffectiveCost(costs[originalDefKey] ?? getTowerDefinition(originalDefKey)?.cost ?? price, "towers");
     if (towers.length >= towerSlotLimit || coins < nextPrice) {
         pendingTowerPurchase = null;
-        showCenterMessage(towers.length >= towerSlotLimit ? "Límite de torres alcanzado" : "Sin monedas para otra torre", 900);
+        showCenterMessage(towers.length >= towerSlotLimit ? "Límite de torres alcanzado" : "Sin monedas para otra torre", 900, "minor");
     } else {
         pendingTowerPurchase = { defKey: originalDefKey, price: nextPrice, freeStarter: nextHasFreeStarter };
     }
@@ -3075,8 +3324,10 @@ function getLateGameGoldMultiplier() {
 }
 
 function getWaveRewardBonus() {
-    if (wave < 40) return Math.floor(wave * 1.75);
-    return Math.floor(40 * 1.75 + Math.pow(wave - 39, 0.76) * 2.75);
+    // Hotfix economía: el bonus de wave acompaña mejor el costo de torres, barricadas y reparaciones.
+    // completeWave() suma 8 + este valor, así que en early queda parecido a: 8 + wave * 3.
+    if (wave < 40) return Math.floor(wave * 3);
+    return Math.floor(40 * 3 + Math.pow(wave - 39, 0.78) * 4.2);
 }
 
 function getEnemyRewardForWave(baseReward) {
@@ -3085,12 +3336,15 @@ function getEnemyRewardForWave(baseReward) {
 }
 
 function getBossRewardForWave(baseReward) {
-    if (wave < 40) return baseReward + wave * 8;
-    return baseReward + Math.floor(250 + Math.pow(wave, 0.78) * 7.6);
+    // Bosses ahora pagan mejor: siguen siendo amenaza, pero también una oportunidad real de recuperarse.
+    const reward = wave < 40
+        ? baseReward + wave * 9
+        : baseReward + Math.floor(285 + Math.pow(wave, 0.80) * 8.4);
+    return Math.ceil(reward * 1.12);
 }
 
 function getGoldAmount(amount) {
-    return Math.ceil(amount * BUILD_ECONOMY_GOLD_MULTIPLIER * currentGoldMultiplier * getLateGameGoldMultiplier() * (player?.goldBonusMultiplier || 1));
+    return Math.ceil(amount * BUILD_ECONOMY_GOLD_MULTIPLIER * PLAYER_ECONOMY_GOLD_MULTIPLIER * currentGoldMultiplier * getLateGameGoldMultiplier() * (player?.goldBonusMultiplier || 1));
 }
 
 function getPlayerCostMultiplier(category) {
@@ -3385,7 +3639,7 @@ function createDefaultState() {
         permanentLifeStealPercent: 0,
         goldBonusMultiplier: 1,
         bleedPowerMultiplier: 1,
-        classCostMultipliers: { damage: 1, fireRate: 1, maxHp: 1, crit: 1, towers: 1, abilities: 1, consumables: 1 },
+        classCostMultipliers: { damage: 1, fireRate: 1, maxHp: 1, crit: 1, towers: 1, abilities: 1, consumables: 1, mines: 1 },
         statPowerMultiplier: 1,
         structureCostMultiplier: 1,
         towerDamageMultiplier: 1,
@@ -3404,6 +3658,7 @@ function createDefaultState() {
         extraInventorySlots: 0,
         freeTowerPlacements: {},
         freeBarricadePlacements: 0,
+        freeMinePlacements: 0,
         freeAnyConstructionPlacements: 0,
         bloodShield: 0,
         bloodShieldMax: 8,
@@ -3445,6 +3700,9 @@ function createDefaultState() {
     currentGoldMultiplier = 1;
     doomSpawnedThisWave = false;
     lastDoomWave = -999;
+    visitorSpawnedThisWave = false;
+    lastVisitorWave = -999;
+    lastVisitorDeathWave = -999;
     titanRewardedWaves = {};
     selectedBarricadeSlotIndex = 0;
     baseCore = null;
@@ -3555,7 +3813,8 @@ function createDefaultState() {
         mineGold: FIRST_MINE_COST
     };
 
-    enemies = [];
+    const persistentVisitors = (enemies || []).filter(e => e && e.special === "visitor" && e.hp > 0);
+    enemies = persistentVisitors;
     projectiles = [];
     bossProjectiles = [];
     slowZones = [];
@@ -3650,6 +3909,9 @@ function buildSavePayload() {
         currentGoldMultiplier,
         doomSpawnedThisWave,
         lastDoomWave,
+        visitorSpawnedThisWave,
+        lastVisitorWave,
+        lastVisitorDeathWave,
         titanRewardedWaves,
         selectedBarricadeSlotIndex,
         baseCore,
@@ -3777,6 +4039,9 @@ function restoreSavedRun() {
         if (isRepeatingWave) currentGoldMultiplier = REPEAT_GOLD_MULTIPLIER;
         doomSpawnedThisWave = Boolean(data.doomSpawnedThisWave);
         lastDoomWave = Number.isFinite(Number(data.lastDoomWave)) ? Number(data.lastDoomWave) : -999;
+        visitorSpawnedThisWave = Boolean(data.visitorSpawnedThisWave);
+        lastVisitorWave = Number.isFinite(Number(data.lastVisitorWave)) ? Number(data.lastVisitorWave) : -999;
+        lastVisitorDeathWave = Number.isFinite(Number(data.lastVisitorDeathWave)) ? Number(data.lastVisitorDeathWave) : -999;
         titanRewardedWaves = data.titanRewardedWaves && typeof data.titanRewardedWaves === "object" ? data.titanRewardedWaves : {};
         selectedBarricadeSlotIndex = Number.isInteger(data.selectedBarricadeSlotIndex) ? Math.max(0, Math.min(1, data.selectedBarricadeSlotIndex)) : 0;
         baseCore = null;
@@ -4001,7 +4266,18 @@ function addMissionProgress(amount = 1) {
     activeSideMission.progress = Math.min(activeSideMission.target, (activeSideMission.progress || 0) + amount);
     updateSideMissionUI();
 }
-function updateMissionFailure(type) { if (activeSideMission?.type === type) { activeSideMission.failed = true; updateSideMissionUI(); } }
+function updateMissionFailure(type) {
+    if (activeSideMission?.type === type && !activeSideMission.failed) {
+        activeSideMission.failed = true;
+        showMissionToast(false, activeSideMission);
+        updateSideMissionUI();
+    }
+}
+function showMissionToast(completed, mission = activeSideMission) {
+    if (!mission) return;
+    if (completed) showCenterMessage(`MISIÓN COMPLETADA — ${mission.title} · +${formatMoney(mission.reward)} oro`, 1500, "mission-success");
+    else showCenterMessage(`MISIÓN FALLIDA — ${mission.title}`, 1250, "mission-fail");
+}
 function updateMissionOnKill(enemy, source) {
     if (!activeSideMission || activeSideMission.failed) return;
     if (activeSideMission.type === "playerKills" && source === "player") addMissionProgress(1);
@@ -4014,7 +4290,8 @@ function updateMissionOnKill(enemy, source) {
     if (activeSideMission.type === "bossAbilityKill" && enemy.isBoss && source === "ability") addMissionProgress(1);
 }
 function finishSideMission() {
-    if (!activeSideMission || activeSideMission.failed) { activeSideMission = null; updateSideMissionUI(); return; }
+    if (!activeSideMission) { updateSideMissionUI(); return; }
+    if (activeSideMission.failed) { activeSideMission = null; updateSideMissionUI(); return; }
     if (activeSideMission.type === "noAbilities" && runStats.abilitiesUsedThisWave === 0) activeSideMission.progress = 1;
     if (activeSideMission.type === "noConsumables" && runStats.consumablesUsedThisWave === 0) activeSideMission.progress = 1;
     if (activeSideMission.type === "minesSafe" && runStats.minesDamagedThisWave === 0) activeSideMission.progress = 1;
@@ -4028,7 +4305,9 @@ function finishSideMission() {
         coins += activeSideMission.reward;
         waveStats.gold += activeSideMission.reward;
         if (runStats) { runStats.goldEarned += activeSideMission.reward; runStats.missionsCompleted++; }
-        showCenterMessage(`Misión completada: +${formatMoney(activeSideMission.reward)} oro`, 1200);
+        showMissionToast(true, activeSideMission);
+    } else {
+        showMissionToast(false, activeSideMission);
     }
     activeSideMission = null;
     updateSideMissionUI();
@@ -4057,7 +4336,16 @@ function startWave() {
     waveInProgress = true;
     gameRunning = true;
 
-    enemies = [];
+    const persistentVisitors = (enemies || []).filter(e => e && e.special === "visitor" && e.hp > 0);
+    persistentVisitors.forEach(v => {
+        v.retreating = false;
+        v.untargetable = false;
+        v.retreatX = null;
+        v.retreatY = null;
+        v.lastVisitorShotAt = getGameTime() + 650;
+        v.visitorStrafeUntil = getGameTime() + 900;
+    });
+    enemies = persistentVisitors;
     projectiles = [];
     bossProjectiles = [];
     slowZones = [];
@@ -4072,6 +4360,8 @@ function startWave() {
     waveStartedAt = getGameTime();
     bossPressureSpawned = 0;
     bossPressureLastSpawnAt = 0;
+    bossSpawnedThisWave = false;
+    visitorSpawnedThisWave = false;
     startWaveEvent();
     maybeStartSideMission();
 
@@ -4091,7 +4381,7 @@ function startWave() {
 
     if (isBossWave()) {
         spawnBoss();
-        showCenterMessage("¡BOSS!", 1800);
+        showCenterMessage(`¡BOSS!\nLa horda retrocede. Algo más pesado entró al campo.`, 1900, "boss");
     }
 
     isPaused = false;
@@ -4152,7 +4442,7 @@ function startWaveEvent() {
     activeWaveEvent = pickWaveEvent();
     if (!activeWaveEvent) return;
     lastWaveEventWave = wave;
-    showCenterMessage(`${activeWaveEvent.title}\n${activeWaveEvent.desc}`, 2100);
+    showCenterMessage(`${activeWaveEvent.title} — ${activeWaveEvent.desc}`, 2600, activeWaveEvent.messageType || "event");
 }
 
 function endWaveEvent(completedWave) {
@@ -4310,13 +4600,38 @@ function createEnemyFromType(type, options = {}) {
         spawnWave: options.spawnWave ?? wave,
         rangedCooldown: type.rangedCooldown || 0,
         lastRangedShotAt: getGameTime() + Math.random() * 1200,
-        reflectPercent: type.reflectPercent || 0,
+        reflectPercent: type.special === "shielded" ? 0 : (type.reflectPercent || 0),
         shieldHp: type.shieldHp ? Math.ceil(type.shieldHp * hpScaling) : 0,
         maxShieldHp: type.shieldHp ? Math.ceil(type.shieldHp * hpScaling) : 0,
         auraRadius: type.auraRadius || 0,
         auraPower: type.auraPower || 0,
         robbedGold: 0
     };
+
+    if (enemy.special === "visitor") {
+        enemy.name = "El Visitante";
+        enemy.radius = options.radius ?? 22;
+        enemy.maxHp = options.maxHp ?? Math.ceil(maxHp * 1.45);
+        enemy.hp = options.hp ?? enemy.maxHp;
+        enemy.baseSpeed = options.baseSpeed ?? Math.max(enemy.baseSpeed, 0.94);
+        enemy.originalBaseSpeed = enemy.baseSpeed;
+        enemy.speed = enemy.baseSpeed;
+        enemy.color = "#151722";
+        enemy.visitorTint = options.visitorTint || "#20232d";
+        enemy.retreating = Boolean(options.retreating);
+        enemy.retreatX = Number.isFinite(options.retreatX) ? options.retreatX : null;
+        enemy.retreatY = Number.isFinite(options.retreatY) ? options.retreatY : null;
+        enemy.visitorGold = Number(options.visitorGold) || 0;
+        enemy.visitorLevel = Number(options.visitorLevel) || 1;
+        // El Visitante empieza amenazante, pero no debe borrar la base antes de mejorarse.
+        enemy.visitorDamage = Number(options.visitorDamage) || Math.ceil(2.6 + wave * 0.045);
+        enemy.visitorShotCooldown = Number(options.visitorShotCooldown) || 1450;
+        enemy.lastVisitorShotAt = getGameTime() + 600;
+        enemy.lastVisitorUpgradeAt = getGameTime() + 1800;
+        enemy.visitorStrafeDir = Math.random() < 0.5 ? -1 : 1;
+        enemy.visitorStrafeUntil = getGameTime() + 1400;
+        enemy.deathName = "El Visitante";
+    }
 
     if (enemy.special === "doombringer") {
         const variant = options.titanVariant || pickTitanVariant();
@@ -4333,34 +4648,364 @@ function createEnemyFromType(type, options = {}) {
         enemy.titanSpecialCooldown = variant.cooldown;
         enemy.titanSplitDone = Boolean(options.titanCopy);
         enemy.titanCopy = Boolean(options.titanCopy);
-        enemy.damageToDefense = options.titanCopy ? 5 : 8;
-        enemy.attackDelay = options.titanCopy ? 1650 : 1450;
+        const earlyTitanDamageScale = wave < 35 ? 0.72 : wave < 50 ? 0.84 : 1;
+        enemy.damageToDefense = Math.max(3, Math.ceil((options.titanCopy ? 4 : 6) * earlyTitanDamageScale));
+        enemy.attackDelay = options.titanCopy ? 1850 : 1650;
         enemy.originalAttackDelay = enemy.attackDelay;
     }
 
     return enemy;
 }
 
+
+function hasLivingVisitor() {
+    return (enemies || []).some(e => e && e.special === "visitor" && e.hp > 0);
+}
+
+function shouldSpawnVisitor() {
+    if (visitorSpawnedThisWave) return false;
+    if (isRepeatingWave) return false;
+    if (wave < 25) return false;
+    if (hasLivingVisitor()) return false;
+    if (wave - lastVisitorWave < 12) return false;
+    if (wave - lastVisitorDeathWave < 14) return false;
+    const chance = Math.min(0.055, 0.012 + Math.max(0, wave - 25) * 0.00065);
+    return Math.random() < chance;
+}
+
+function spawnVisitor(options = {}) {
+    if (!enemies) enemies = [];
+    if (!options.force && hasLivingVisitor()) return null;
+    const type = specialEnemyTypes.find(t => t.special === "visitor");
+    if (!type) return null;
+    const spawnPoint = options.spawnPoint || getSpawnPointForSide(Math.floor(Math.random() * 4));
+    const visitor = createEnemyFromType(type, { spawnPoint, ignoreScaling: false });
+    visitor.special = "visitor";
+    visitor.name = "El Visitante";
+    visitor.deathName = "El Visitante";
+    enemies.push(visitor);
+    visitorSpawnedThisWave = true;
+    lastVisitorWave = wave;
+    showCenterMessage(`EL VISITANTE\nAlgo parecido a vos cruzó la niebla. No vino a morir rápido.`, 2500, "visitor");
+    showVisitorAlert("El Visitante entró a la partida.");
+    return visitor;
+}
+
+function showVisitorAlert(message) {
+    let box = document.getElementById("visitorAlertText");
+    if (!box) {
+        box = document.createElement("div");
+        box.id = "visitorAlertText";
+        document.body.appendChild(box);
+    }
+    box.textContent = message || "El Visitante se está haciendo más fuerte.";
+    box.classList.remove("hidden");
+    box.classList.remove("visitorAlertPulse");
+    void box.offsetWidth;
+    box.classList.add("visitorAlertPulse");
+    visitorAlertUntil = getGameTime() + 2300;
+}
+
+function updateVisitorAlert() {
+    const box = document.getElementById("visitorAlertText");
+    if (!box) return;
+    box.classList.toggle("hidden", getGameTime() > visitorAlertUntil);
+}
+
+function awardVisitorGold(amount = 0) {
+    const visitor = (enemies || []).find(e => e && e.special === "visitor" && e.hp > 0);
+    if (!visitor) return;
+    visitor.visitorGold = (Number(visitor.visitorGold) || 0) + Math.max(0, amount) * 0.42;
+}
+
+function getVisitorTarget(visitor) {
+    const candidates = [];
+    if (player && player.hp > 0) candidates.push({ type:"player", object:player, x:player.x, y:player.y, radius:23, score: Math.hypot(visitor.x-player.x, visitor.y-player.y) * 0.62 });
+    (towers || []).forEach(t => { if (t && t.owned && t.hp > 0) candidates.push({ type:"tower", object:t, x:t.x, y:t.y, radius:TOWER_COLLISION_RADIUS, score: Math.hypot(visitor.x-t.x, visitor.y-t.y) - (1 - (t.hp / Math.max(1, t.maxHp || t.hp))) * 110 }); });
+    (mines || []).forEach(m => { if (m && m.hp > 0) candidates.push({ type:"mine", object:m, x:m.x, y:m.y, radius:m.radius || MINE_COLLISION_RADIUS, score: Math.hypot(visitor.x-m.x, visitor.y-m.y) - 55 }); });
+    (barricades || []).forEach(b => {
+        if (!b || !b.active || b.hp <= 0 || b.isOpen) return;
+        const c = getClosestPointOnBarricade(visitor.x, visitor.y, b);
+        candidates.push({ type:"barricade", object:b, x:c.x, y:c.y, radius:12, score: Math.hypot(visitor.x-c.x, visitor.y-c.y) - 25 });
+    });
+    if (basePlaced && baseCore && baseCore.hp > 0) candidates.push({ type:"base", object:baseCore, x:baseCore.x, y:baseCore.y, radius:BASE_RADIUS, score: Math.hypot(visitor.x-baseCore.x, visitor.y-baseCore.y) + 160 });
+    candidates.sort((a,b)=>a.score-b.score);
+    return candidates[0] || null;
+}
+
+function maybeUpgradeVisitor(visitor, now) {
+    if (!visitor || now - (visitor.lastVisitorUpgradeAt || 0) < 1200) return;
+    const level = Number(visitor.visitorLevel) || 1;
+    const cost = Math.ceil(18 + level * 12 + wave * 0.8);
+    if ((visitor.visitorGold || 0) < cost) return;
+    visitor.visitorGold -= cost;
+    visitor.visitorLevel = level + 1;
+    visitor.lastVisitorUpgradeAt = now;
+    const roll = Math.random();
+    if (roll < 0.38) {
+        visitor.visitorDamage = (visitor.visitorDamage || 3) + 0.75;
+        showVisitorAlert("El Visitante se está haciendo más fuerte: daño aumentado.");
+    } else if (roll < 0.72) {
+        const gain = Math.ceil(10 + wave * 0.25);
+        visitor.maxHp += gain;
+        visitor.hp = Math.min(visitor.maxHp, visitor.hp + gain);
+        showVisitorAlert("El Visitante se está haciendo más fuerte: vida aumentada.");
+    } else {
+        visitor.baseSpeed = Math.min(1.75, (visitor.baseSpeed || 1) + 0.035);
+        visitor.speed = visitor.baseSpeed;
+        showVisitorAlert("El Visitante se está haciendo más fuerte: velocidad aumentada.");
+    }
+}
+
+function updateVisitorAI(visitor, now) {
+    if (!visitor || visitor.hp <= 0) return;
+    if (visitor.retreating) {
+        visitor.retreating = false;
+        visitor.untargetable = false;
+        visitor.retreatX = null;
+        visitor.retreatY = null;
+        visitor.visitorPlanningCenterX = null;
+        visitor.visitorPlanningCenterY = null;
+    }
+    maybeUpgradeVisitor(visitor, now);
+    const target = getVisitorTarget(visitor);
+    if (!target) return;
+    visitor.targetX = target.x;
+    visitor.targetY = target.y;
+    const dx = target.x - visitor.x;
+    const dy = target.y - visitor.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const nx = dx / dist;
+    const ny = dy / dist;
+    if (now > (visitor.visitorStrafeUntil || 0)) {
+        visitor.visitorStrafeDir = Math.random() < 0.5 ? -1 : 1;
+        visitor.visitorStrafeUntil = now + 900 + Math.random() * 1300;
+    }
+    let mx = 0;
+    let my = 0;
+    const preferred = target.type === "player" ? 300 : 255;
+    if (dist < preferred - 85) { mx -= nx; my -= ny; }
+    else if (dist > preferred + 105) { mx += nx; my += ny; }
+    mx += -ny * 0.62 * (visitor.visitorStrafeDir || 1);
+    my += nx * 0.62 * (visitor.visitorStrafeDir || 1);
+
+    let nearestProjectile = null;
+    let nearestProjectileDist = 9999;
+    (projectiles || []).forEach(p => {
+        if (!p || (p.owner !== "player" && p.owner !== "tower")) return;
+        const d = Math.hypot(p.x - visitor.x, p.y - visitor.y);
+        if (d < nearestProjectileDist) { nearestProjectileDist = d; nearestProjectile = p; }
+    });
+    if (nearestProjectile && nearestProjectileDist < 95) {
+        mx += -(nearestProjectile.dy || 0) * 1.25;
+        my += (nearestProjectile.dx || 0) * 1.25;
+    }
+    const len = Math.hypot(mx, my) || 1;
+    const move = (visitor.speed || visitor.baseSpeed || 1) * gameSpeed * frameScale;
+    const nextX = clampWorldX(visitor.x + (mx / len) * move, visitor.radius + 4);
+    const nextY = clampWorldY(visitor.y + (my / len) * move, visitor.radius + 4);
+    const oldX = visitor.x;
+    const oldY = visitor.y;
+    if (!isEnemyPositionBlockedBySolid(visitor, nextX, nextY)) {
+        visitor.x = nextX; visitor.y = nextY;
+    } else if (!isEnemyPositionBlockedBySolid(visitor, nextX, visitor.y)) {
+        visitor.x = nextX;
+    } else if (!isEnemyPositionBlockedBySolid(visitor, visitor.x, nextY)) {
+        visitor.y = nextY;
+    }
+    visitor.lastMoveX = visitor.x - oldX;
+    visitor.lastMoveY = visitor.y - oldY;
+    visitor.isMoving = Math.hypot(visitor.lastMoveX || 0, visitor.lastMoveY || 0) > 0.04;
+
+    if (dist < 470 && now - (visitor.lastVisitorShotAt || 0) >= (visitor.visitorShotCooldown || 1250)) {
+        visitor.lastVisitorShotAt = now;
+        fireEnemyProjectile(visitor, target.x, target.y, { damage: Math.max(2, visitor.visitorDamage || 4), color: "#f2f2f2", speed: 5.2, radius: 6 });
+    }
+}
+
+function getPlayerStructureAvoidPoints() {
+    const points = [];
+    if (basePlaced && baseCore && baseCore.hp > 0) points.push({ x: baseCore.x, y: baseCore.y, radius: 390, kind: "base" });
+    (towers || []).forEach(t => { if (t && t.owned && t.hp > 0) points.push({ x: t.x, y: t.y, radius: 120, kind: "tower" }); });
+    (mines || []).forEach(m => { if (m && m.hp > 0) points.push({ x: m.x, y: m.y, radius: 125, kind: "mine" }); });
+    (barricades || []).forEach(b => {
+        if (!b || !b.active || b.hp <= 0) return;
+        points.push({ x: b.x, y: b.y, radius: 145, kind: "barricade" });
+    });
+    return points;
+}
+
+function isVisitorBuildPhaseForbiddenPosition(x, y, extra = 0) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return true;
+    if (x < 90 || x > WORLD_WIDTH - 90 || y < 90 || y > WORLD_HEIGHT - 90) return true;
+    return getPlayerStructureAvoidPoints().some(p => Math.hypot(x - p.x, y - p.y) < (p.radius + extra));
+}
+
+function scoreVisitorPlanningPoint(point, visitor = null) {
+    const avoidPoints = getPlayerStructureAvoidPoints();
+    const structureDistance = avoidPoints.length
+        ? Math.min(...avoidPoints.map(p => Math.hypot(point.x - p.x, point.y - p.y) - p.radius))
+        : 999;
+    const baseDistance = baseCore ? Math.hypot(point.x - baseCore.x, point.y - baseCore.y) : structureDistance;
+    const visitorDistance = visitor ? Math.hypot(point.x - visitor.x, point.y - visitor.y) : 0;
+    // Queremos una zona lejos de tu base, pero no una carrera absurda de esquina a esquina.
+    return structureDistance * 1.4 + baseDistance * 0.6 - visitorDistance * 0.18 + Math.random() * 80;
+}
+
+function getVisitorRetreatPoint(visitor) {
+    const margin = 230;
+    const candidates = [
+        { x: margin, y: margin },
+        { x: WORLD_WIDTH - margin, y: margin },
+        { x: margin, y: WORLD_HEIGHT - margin },
+        { x: WORLD_WIDTH - margin, y: WORLD_HEIGHT - margin },
+        { x: WORLD_WIDTH / 2, y: margin },
+        { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT - margin },
+        { x: margin, y: WORLD_HEIGHT / 2 },
+        { x: WORLD_WIDTH - margin, y: WORLD_HEIGHT / 2 },
+        { x: WORLD_WIDTH * 0.27, y: WORLD_HEIGHT * 0.22 },
+        { x: WORLD_WIDTH * 0.73, y: WORLD_HEIGHT * 0.22 },
+        { x: WORLD_WIDTH * 0.27, y: WORLD_HEIGHT * 0.78 },
+        { x: WORLD_WIDTH * 0.73, y: WORLD_HEIGHT * 0.78 }
+    ].filter(p => !isVisitorBuildPhaseForbiddenPosition(p.x, p.y, 120));
+
+    const pool = candidates.length ? candidates : [
+        { x: margin, y: margin },
+        { x: WORLD_WIDTH - margin, y: WORLD_HEIGHT - margin }
+    ];
+    pool.sort((a, b) => scoreVisitorPlanningPoint(b, visitor) - scoreVisitorPlanningPoint(a, visitor));
+    return pool[0];
+}
+
+function getVisitorPlanningWanderPoint(visitor) {
+    const centerX = Number.isFinite(visitor.visitorPlanningCenterX) ? visitor.visitorPlanningCenterX : visitor.retreatX;
+    const centerY = Number.isFinite(visitor.visitorPlanningCenterY) ? visitor.visitorPlanningCenterY : visitor.retreatY;
+    const radius = 210;
+    for (let i = 0; i < 18; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const distance = 45 + Math.random() * radius;
+        const x = clampWorldX(centerX + Math.cos(angle) * distance, (visitor.radius || 22) + 8);
+        const y = clampWorldY(centerY + Math.sin(angle) * distance, (visitor.radius || 22) + 8);
+        if (!isVisitorBuildPhaseForbiddenPosition(x, y, 85) && !isEnemyPositionBlockedBySolid(visitor, x, y)) {
+            return { x, y };
+        }
+    }
+    return { x: centerX, y: centerY };
+}
+
+function beginVisitorRetreat() {
+    (enemies || []).forEach(visitor => {
+        if (!visitor || visitor.special !== "visitor" || visitor.hp <= 0) return;
+        const point = getVisitorRetreatPoint(visitor);
+        visitor.retreating = true;
+        visitor.untargetable = true;
+        visitor.visitorPlanningCenterX = point.x;
+        visitor.visitorPlanningCenterY = point.y;
+        const wander = getVisitorPlanningWanderPoint({ ...visitor, visitorPlanningCenterX: point.x, visitorPlanningCenterY: point.y, retreatX: point.x, retreatY: point.y });
+        visitor.retreatX = wander.x;
+        visitor.retreatY = wander.y;
+        visitor.targetX = wander.x;
+        visitor.targetY = wander.y;
+        visitor.visitorNextPlanningMoveAt = getGameTime() + 900 + Math.random() * 1300;
+        visitor.isMoving = true;
+    });
+}
+
+function updateVisitorRetreat(visitor) {
+    if (!visitor || visitor.hp <= 0) return;
+    if (!visitor.retreating) return;
+
+    if (!Number.isFinite(visitor.visitorPlanningCenterX) || !Number.isFinite(visitor.visitorPlanningCenterY) ||
+        isVisitorBuildPhaseForbiddenPosition(visitor.visitorPlanningCenterX, visitor.visitorPlanningCenterY, 100)) {
+        const point = getVisitorRetreatPoint(visitor);
+        visitor.visitorPlanningCenterX = point.x;
+        visitor.visitorPlanningCenterY = point.y;
+    }
+
+    if (!Number.isFinite(visitor.retreatX) || !Number.isFinite(visitor.retreatY) ||
+        isVisitorBuildPhaseForbiddenPosition(visitor.retreatX, visitor.retreatY, 75) ||
+        getGameTime() >= (visitor.visitorNextPlanningMoveAt || 0)) {
+        const point = getVisitorPlanningWanderPoint(visitor);
+        visitor.retreatX = point.x;
+        visitor.retreatY = point.y;
+        visitor.targetX = point.x;
+        visitor.targetY = point.y;
+        visitor.visitorNextPlanningMoveAt = getGameTime() + 1400 + Math.random() * 2400;
+    }
+
+    const dx = visitor.retreatX - visitor.x;
+    const dy = visitor.retreatY - visitor.y;
+    const dist = Math.hypot(dx, dy) || 1;
+
+    if (isVisitorBuildPhaseForbiddenPosition(visitor.x, visitor.y, 35)) {
+        const point = getVisitorRetreatPoint(visitor);
+        visitor.visitorPlanningCenterX = point.x;
+        visitor.visitorPlanningCenterY = point.y;
+        visitor.retreatX = point.x;
+        visitor.retreatY = point.y;
+    }
+
+    const nx = dx / dist;
+    const ny = dy / dist;
+    const oldX = visitor.x;
+    const oldY = visitor.y;
+
+    // Movimiento de planificación: más humano y sutil, no bolita de DVD.
+    const move = Math.max(0.65, Math.min(1.35, (visitor.speed || visitor.baseSpeed || 1) * 0.72)) * gameSpeed * frameScale;
+    let nextX = clampWorldX(visitor.x + nx * move, visitor.radius + 8);
+    let nextY = clampWorldY(visitor.y + ny * move, visitor.radius + 8);
+
+    if (dist <= 12 || isEnemyPositionBlockedBySolid(visitor, nextX, nextY) || isVisitorBuildPhaseForbiddenPosition(nextX, nextY, 25)) {
+        const point = getVisitorPlanningWanderPoint(visitor);
+        visitor.retreatX = point.x;
+        visitor.retreatY = point.y;
+        visitor.targetX = point.x;
+        visitor.targetY = point.y;
+        visitor.visitorNextPlanningMoveAt = getGameTime() + 1000 + Math.random() * 1900;
+    } else {
+        visitor.x = nextX;
+        visitor.y = nextY;
+    }
+
+    visitor.lastMoveX = visitor.x - oldX;
+    visitor.lastMoveY = visitor.y - oldY;
+    visitor.isMoving = Math.hypot(visitor.lastMoveX || 0, visitor.lastMoveY || 0) > 0.015;
+}
+
+function updateVisitorsDuringBuildPhase() {
+    (enemies || []).forEach(visitor => {
+        if (visitor && visitor.special === "visitor" && visitor.hp > 0) updateVisitorRetreat(visitor);
+    });
+}
+
 function shouldSpawnDoomEnemy() {
     if (doomSpawnedThisWave) return false;
     if (isRepeatingWave) return false;
-    if (wave < 30) return false;
+    if (wave < 20) return false;
     // Titán Negro: evento raro, no consecutivo y con descanso real entre apariciones.
     // Así no puede aparecer en 30/31 ni encadenarse demasiado seguido en late.
     const minGap = 6;
     if (wave - lastDoomWave < minGap) return false;
 
-    const chance = Math.min(0.075, 0.018 + Math.max(0, wave - 30) * 0.00055);
+    const chance = Math.min(0.075, 0.018 + Math.max(0, wave - 20) * 0.00055);
     return Math.random() < chance;
 }
 
 function spawnEnemy() {
     let type;
+    if (shouldSpawnVisitor()) {
+        spawnVisitor({ force: false });
+        enemiesSpawned++;
+        return;
+    }
+    let forcedTitanVariant = null;
     if (shouldSpawnDoomEnemy()) {
         type = specialEnemyTypes.find(t => t.special === "doombringer");
+        forcedTitanVariant = pickTitanVariant();
         doomSpawnedThisWave = true;
         lastDoomWave = wave;
-        showCenterMessage("¡TITÁN NEGRO!", 1100);
+        showCenterMessage(`${forcedTitanVariant.name.toUpperCase()}
+${forcedTitanVariant.intro || "La tierra se abre. Algo imposible está caminando hacia vos."}`, 2700, "titan");
     } else {
         type = getEnemyTypeForWave();
         if (type && type.special === "doombringer") type = enemyTypes[Math.floor(Math.random() * getUnlockedEnemyCount())];
@@ -4388,6 +5033,7 @@ function spawnEnemy() {
         // El Titán Negro también aparece en la zona central de jefes,
         // no desde los bordes del mapa.
         spawnOptions.spawnPoint = getBossSpawnPoint();
+        if (forcedTitanVariant) spawnOptions.titanVariant = forcedTitanVariant;
     }
 
     enemies.push(createEnemyFromType(type, spawnOptions));
@@ -4443,7 +5089,51 @@ function canSummonerCreateBatch(summoner) {
     return getActiveSummonedMinionsFor(summoner).length <= SUMMONER_MAX_ACTIVE_MINIONS - SUMMONER_BATCH_SIZE;
 }
 
+
+function createBossFromType(type) {
+    const spawnPoint = getBossSpawnPoint();
+    const hpScaling = getBossHpScaling();
+    const speedScaling = getBossSpeedScaling();
+    const boss = {
+        id: Date.now() + Math.random(),
+        x: spawnPoint.x,
+        y: spawnPoint.y,
+        radius: 30,
+        color: type.color,
+        hp: Math.ceil(type.hp * hpScaling),
+        maxHp: Math.ceil(type.hp * hpScaling),
+        baseSpeed: (type.speed + speedScaling) * ENEMY_SURVIVAL_SPEED_MULTIPLIER,
+        originalBaseSpeed: (type.speed + speedScaling) * ENEMY_SURVIVAL_SPEED_MULTIPLIER,
+        speed: (type.speed + speedScaling) * ENEMY_SURVIVAL_SPEED_MULTIPLIER,
+        reward: getEnemyRewardForWave(type.reward),
+        scoreValue: type.score + getWaveScoreBonus(),
+        damageToDefense: Math.ceil(scaleEnemyDamageForRepeat(type.damageToDefense) * getEventEnemyDamageMultiplier()),
+        attackDelay: type.attackDelay,
+        originalAttackDelay: type.attackDelay,
+        lastAttackTime: 0,
+        isAttacking: false,
+        target: null,
+        slowUntil: 0,
+        slowMultiplier: 1,
+        hitFlash: 0,
+        knockbackX: 0,
+        isBoss: true,
+        bossVariant: type.variant,
+        name: type.name,
+        lastBossSpecialTime: getGameTime() + 900,
+        bossBurstLeft: 0,
+        nextBurstShotAt: 0,
+        bossSpecialCooldown: type.specialCooldown || 2200,
+        bossBurstShots: type.burstShots || 5,
+        bossBurstDelay: type.burstDelay || 180,
+        dvdVy: (Math.random() < 0.5 ? 1 : -1) * (type.dvdVy || 1.05) * ENEMY_SURVIVAL_SPEED_MULTIPLIER,
+        spiralAngle: 0
+    };
+    return boss;
+}
+
 function spawnBoss() {
+    bossSpawnedThisWave = true;
     const type = getBossTypeForWave();
     const hpScaling = getBossHpScaling();
     const repeatStrength = getRepeatEnemyStrengthMultiplier();
@@ -4951,14 +5641,14 @@ function updateTitanVariantSpecials(enemy, now) {
         const tx = player ? player.x : enemy.x;
         const ty = player ? player.y : enemy.y;
         fireBossProjectile(enemy.x, enemy.y, tx, ty, {
-            speed: 3.8,
-            radius: 11,
-            damage: Math.max(4, Math.ceil(4 + wave * 0.08)),
-            color: "#7a1bff",
-            life: 5200,
+            speed: 3.35,
+            radius: 9,
+            damage: Math.max(3, Math.ceil(3 + wave * 0.055)),
+            color: "#8b42ff",
+            life: 4600,
             burn: true
         });
-        effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 8, maxRadius: 64, life: 18, color: "#7a1bff" });
+        effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 8, maxRadius: 48, life: 16, color: "#8b42ff" });
         return;
     }
 
@@ -4966,18 +5656,24 @@ function updateTitanVariantSpecials(enemy, now) {
         const tx = player ? player.x : enemy.x;
         const ty = player ? player.y : enemy.y;
         const angle = Math.atan2(ty - enemy.y, tx - enemy.x);
-        const distance = enemy.titanCopy ? 135 : 215;
-        enemy.x = clampWorldX(enemy.x + Math.cos(angle) * distance, enemy.radius + 4);
-        enemy.y = clampWorldY(enemy.y + Math.sin(angle) * distance, enemy.radius + 4);
+        const distance = enemy.titanCopy ? 85 : 135;
+        const oldX = enemy.x;
+        const oldY = enemy.y;
+        const wantedX = clampWorldX(enemy.x + Math.cos(angle) * distance, enemy.radius + 4);
+        const wantedY = clampWorldY(enemy.y + Math.sin(angle) * distance, enemy.radius + 4);
+        const safePoint = getSafeMythicTeleportPoint(enemy, wantedX, wantedY, oldX, oldY);
+        enemy.x = safePoint.x;
+        enemy.y = safePoint.y;
         enemy.knockbackX = 0;
-        effects.push({ type: "line", x1: enemy.x - Math.cos(angle) * distance, y1: enemy.y - Math.sin(angle) * distance, x2: enemy.x, y2: enemy.y, life: 22, color: "#222222" });
+        effects.push({ type: "line", x1: oldX, y1: oldY, x2: enemy.x, y2: enemy.y, life: 22, color: "#222222" });
         effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 14, maxRadius: 82, life: 22, color: "#050505" });
         return;
     }
 
     if (enemy.titanVariant === "split" && !enemy.titanSplitDone && !enemy.titanCopy) {
         enemy.titanSplitDone = true;
-        showCenterMessage("¡El Titán se triplica!", 900);
+        showCenterMessage(`EL TITÁN SE TRIPLICA
+La sombra aprendió a dividirse.`, 1700, "titan");
         for (let i = 0; i < 2; i++) {
             const angle = Math.PI * 2 * (i / 2) + Math.random() * 0.55;
             const cloneType = specialEnemyTypes.find(t => t.special === "doombringer");
@@ -4998,6 +5694,7 @@ function updateTitanVariantSpecials(enemy, now) {
 function updateEnemySpecials(now, defenseLineX) {
     enemies.forEach(enemy => {
         updateTitanVariantSpecials(enemy, now);
+        enforceTitanOutsidePlayerBase(enemy);
 
         if (enemy.special === "frenzy") {
             const hpPercent = enemy.hp / enemy.maxHp;
@@ -5187,12 +5884,14 @@ function updateBossSpecials(now, defenseLineX) {
         if (enemy.bossVariant === "blink") {
             const oldX = enemy.x;
             const oldY = enemy.y;
-            enemy.x = Math.max(defenseLineX + 80, enemy.x - 135);
-            enemy.y = clampWorldY(player.y + (Math.random() - 0.5) * 150, 55);
+            const wantedX = clampWorldX(Math.max(defenseLineX + 80, enemy.x - 135) + 42, 42);
+            const wantedY = clampWorldY(player.y + (Math.random() - 0.5) * 150, 55);
+            const safePoint = getSafeMythicTeleportPoint(enemy, wantedX, wantedY, oldX, oldY);
+            enemy.x = safePoint.x;
+            enemy.y = safePoint.y;
             fireBossProjectile(enemy.x, enemy.y, player.x, player.y, { speed: 5.0, radius: 8, damage: 5, color: "#d58cff" });
             fireBossProjectile(enemy.x, enemy.y, player.x, player.y, { speed: 4.6, radius: 7, damage: 4, color: "#d58cff", angleOffset: 0.18 });
             fireBossProjectile(enemy.x, enemy.y, player.x, player.y, { speed: 4.6, radius: 7, damage: 4, color: "#d58cff", angleOffset: -0.18 });
-            enemy.x = clampWorldX(enemy.x + 42, 42);
             effects.push({ type: "line", x1: oldX, y1: oldY, x2: enemy.x, y2: enemy.y, life: 18, color: "#d58cff" });
             effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 8, maxRadius: 58, life: 20, color: "#d58cff" });
         }
@@ -5389,8 +6088,10 @@ function resolveEnemyCollisions() {
 function damageTower(tower, amount, sourceEnemy = null) {
     if (!tower || tower.hp <= 0) return;
     ensureTowerEconomy(tower);
-    const finalAmount = (sourceEnemy && (sourceEnemy.isBoss || sourceEnemy.isBossProjectile)) ? amount * 1.15 : amount;
+    const isVisitorProjectile = !!(sourceEnemy && (sourceEnemy.isVisitorProjectile || sourceEnemy.sourceSpecial === "visitor"));
+    const finalAmount = isVisitorProjectile ? amount * 0.78 : ((sourceEnemy && (sourceEnemy.isBoss || sourceEnemy.isBossProjectile)) ? amount * 1.15 : amount);
     tower.hp -= finalAmount;
+    awardVisitorGold(finalAmount);
     createImpactParticles(tower.x, tower.y, sourceEnemy && sourceEnemy.color ? sourceEnemy.color : "#ff7777");
     addDamageText(tower.x, tower.y - 24, finalAmount, false, "#ff7777");
     if (tower.hp <= 0) {
@@ -5535,7 +6236,8 @@ function tryDropTitanShard(enemy) {
 function dropTitanShard(x, y, rewardWave = wave) {
     titanShards = titanShards || [];
     titanShards.push({ id: Date.now() + Math.random(), x, y, rewardWave, radius: TITAN_SHARD_RADIUS, color: "#b64dff" });
-    showCenterMessage("¡Fragmento del Titán!", 1200);
+    showCenterMessage(`FRAGMENTO DEL TITÁN
+Una astilla del Abismo quedó en el suelo.`, 1700, "titan-reward");
 }
 
 function updateTitanShards() {
@@ -5625,6 +6327,7 @@ function updateTitanRewardPanel() {
 
 
 function updateNewEnemyBehaviors(now) {
+    updateVisitorAlert();
     (enemies || []).forEach(enemy => {
         if (!enemy || enemy.hp <= 0) return;
         if (enemy.isBoss) applyExtraBossVariantBehavior(enemy, now);
@@ -5644,13 +6347,19 @@ function updateNewEnemyBehaviors(now) {
     });
 }
 
+function clearVisitorProjectiles() {
+    bossProjectiles = (bossProjectiles || []).filter(p => !(p && (p.isVisitorProjectile || p.sourceSpecial === "visitor")));
+}
+
 function fireEnemyProjectile(enemy, targetX, targetY, options = {}) {
     const angle = Math.atan2(targetY - enemy.y, targetX - enemy.x);
     bossProjectiles.push({
         x: enemy.x, y: enemy.y, radius: options.radius || 5, speed: options.speed || 4,
         dx: Math.cos(angle), dy: Math.sin(angle), color: options.color || "#ffb36b",
-        damage: options.damage || 2, bornAt: getGameTime(), maxAge: 5200,
-        isBossProjectile: true, sourceName: enemy.name, deathName: enemy.name
+        damage: options.damage || 2, bornAt: getGameTime(), maxAge: 5200, life: options.life || 5200,
+        isBossProjectile: true, sourceName: enemy.name, deathName: enemy.name,
+        sourceSpecial: enemy.special || null,
+        isVisitorProjectile: enemy.special === "visitor"
     });
 }
 function updateEnemies() {
@@ -5687,6 +6396,10 @@ function updateEnemies() {
 
     for (let i = enemies.length - 1; i >= 0; i--) {
         const enemy = enemies[i];
+        if (enemy.special === "visitor") {
+            updateVisitorAI(enemy, now);
+            continue;
+        }
         const mainTarget = getEnemyMainTarget(enemy);
 
         if (enemy.special === "healer" && updateHealerMovementOnly(enemy, mainTarget)) {
@@ -5814,7 +6527,8 @@ function updateEnemies() {
             if (player && player.immortal) {
                 createImpactParticles(enemy.x, enemy.y, "#ffe28a");
                 enemies.splice(i, 1);
-                showCenterMessage("Titán anulado", 800);
+                showCenterMessage(`TITÁN ANULADO
+El Abismo perdió el pulso por un instante.`, 1200, "titan-reward");
                 continue;
             }
             if (now - enemy.lastAttackTime >= enemy.attackDelay) {
@@ -5841,7 +6555,13 @@ function updateEnemies() {
                 damageMine(mainTarget.object, enemy.damageToDefense || 1, enemy);
                 createImpactParticles(mainTarget.x, mainTarget.y, enemy.color || "#d6a05f");
             } else {
-                ended = damagePlayer(enemy.damageToDefense, enemy, enemy.x, enemy.y, "¡Golpe bloqueado!");
+                if (enemy.special === "shielded" && (enemy.shieldHp || 0) > 0) {
+                    enemy.lastAttackTime = now;
+                    enemy.hitFlash = 1;
+                    addDamageText(enemy.x, enemy.y - enemy.radius - 12, "ESCUDO", false, "#8fa8ff");
+                } else {
+                    ended = damagePlayer(enemy.damageToDefense, enemy, enemy.x, enemy.y, "¡Golpe bloqueado!");
+                }
             }
             enemy.lastAttackTime = now;
             if (ended) return;
@@ -5935,6 +6655,7 @@ function damageEnemy(enemy, amount, isCrit = false, textColor = null, source = "
     if (enemy.special === "shielded" && (enemy.shieldHp || 0) > 0 && source !== "ability") {
         enemy.shieldHp -= finalAmount;
         enemy.hitFlash = 1;
+        enemy.lastShieldBlockAt = getGameTime();
         addDamageText(enemy.x, enemy.y - enemy.radius - 8, finalAmount, isCrit, "#8fa8ff");
         if (enemy.shieldHp <= 0) {
             enemy.shieldHp = 0;
@@ -6060,6 +6781,13 @@ function killEnemy(index) {
 
     if (enemy.special === "doombringer") {
         tryDropTitanShard(enemy);
+    }
+
+    if (enemy.special === "visitor") {
+        lastVisitorDeathWave = wave;
+        visitorSpawnedThisWave = false;
+        showVisitorAlert("El Visitante cayó. El Abismo dejó una reliquia imposible.");
+        offerRelicChoice("visitor");
     }
 
     applyBloodThirstOnKill(enemy);
@@ -6600,15 +7328,44 @@ function triggerRedFlash() {
     redFlashAlpha = 0.35;
 }
 
-function showCenterMessage(text, duration) {
-    centerMessage.textContent = text;
-    centerMessage.classList.remove("hidden");
-
+let centerMessageToken = 0;
+function showCenterMessage(text, duration = 1600, type = "default") {
+    if (!centerMessage) return;
+    const token = ++centerMessageToken;
+    const raw = String(text || "");
+    const canUseBody = ["boss", "titan", "titan-reward", "visitor"].includes(type);
+    const [firstLine, ...bodyParts] = raw.split("\n");
+    const title = canUseBody ? firstLine : raw.replace(/\s*\n\s*/g, " — ");
+    const body = canUseBody ? bodyParts.join(" ").trim() : "";
+    centerMessage.className = "centerMessageToast";
+    centerMessage.classList.add(`centerMessage-${type}`);
+    if (!canUseBody) centerMessage.classList.add("centerMessageSingleLine");
+    if (type === "minor") centerMessage.classList.add("centerMessageMinor");
+    centerMessage.innerHTML = `<strong>${escapeHtml(title || "")}</strong>${body ? `<span>${escapeHtml(body)}</span>` : ""}`;
+    centerMessage.classList.remove("hidden", "fadeOut");
+    void centerMessage.offsetWidth;
+    centerMessage.classList.add("showing");
+    const fadeAt = Math.max(250, Number(duration) - 450);
+    setTimeout(() => { if (token === centerMessageToken) centerMessage.classList.add("fadeOut"); }, fadeAt);
     setTimeout(() => {
+        if (token !== centerMessageToken) return;
         centerMessage.classList.add("hidden");
-    }, duration);
+        centerMessage.classList.remove("showing", "fadeOut");
+    }, Math.max(300, Number(duration)));
 }
 
+
+function ensureBossWaveSpawned() {
+    if (!waveInProgress || !gameRunning || isPaused) return;
+    if (!isBossWave()) return;
+    if (bossSpawnedThisWave) return;
+    if (enemies.some(e => e && e.isBoss && e.hp > 0)) {
+        bossSpawnedThisWave = true;
+        return;
+    }
+    spawnBoss();
+    showCenterMessage(`¡BOSS!\nEl Abismo corrigió la ausencia. Ahora peleá.`, 1900, "boss");
+}
 
 function updateBossPressureSpawns(now) {
     if (!isBossWave() || !enemies.some(e => e.isBoss && e.hp > 0)) return;
@@ -6623,7 +7380,7 @@ function updateBossPressureSpawns(now) {
 function checkWaveComplete() {
     if (
         enemiesSpawned >= enemiesToSpawn &&
-        enemies.length === 0 &&
+        enemies.filter(e => !(e && e.special === "visitor" && e.hp > 0)).length === 0 &&
         waveInProgress
     ) {
         completeWave();
@@ -6639,6 +7396,7 @@ function awardMineIncome(completedWave = wave) {
 
     coins = Math.min(Number.MAX_SAFE_INTEGER, coins + total);
     waveStats.gold += total;
+    if (runStats) runStats.goldEarned += total;
     activeMines.forEach(mine => {
         mine.totalGold = (Number(mine.totalGold) || 0) + perMine;
         mine.lastIncome = perMine;
@@ -6662,6 +7420,7 @@ function completeWave() {
     waveStats.score += waveBonus;
     waveStats.gold += goldBonus;
     waveStats.bonus = waveBonus;
+    if (runStats) runStats.goldEarned += goldBonus;
 
     const mineGold = awardMineIncome(completedWave);
     finishSideMission();
@@ -6686,6 +7445,9 @@ function applyCompoundInterestBonus() {
     return bonus;
 }
 function enterBuildPhase(completedWave, goldBonus = 0) {
+    clearVisitorProjectiles();
+    beginVisitorRetreat();
+    if (hasLivingVisitor()) showVisitorAlert("El Visitante se retira a preparar otro plan...");
     buildPhaseActive = true;
     buildPhaseEndsAt = performance.now() + BUILD_PHASE_DURATION;
     pausedBuildPhaseRemainingMs = 0;
@@ -6697,7 +7459,7 @@ function enterBuildPhase(completedWave, goldBonus = 0) {
     resetWaveStats();
     closeShop();
     updateBuildPhaseUI();
-    showCenterMessage(`Wave ${completedWave} completada · +${formatMoney(goldBonus)} oro · 2 minutos antes de la próxima oleada`, 1900);
+    showCenterMessage(`Wave ${completedWave} completada · +${formatMoney(goldBonus)} oro · 2 minutos antes`, 1700, "minor");
     autoSaveRun(true);
 }
 
@@ -6735,7 +7497,7 @@ function beginNextWaveFromBuildPhase(source = "timer") {
     }
 
     updateBuildPhaseUI();
-    showCenterMessage(`Oleada ${wave}`, 900);
+    showCenterMessage(`Oleada ${wave}`, 900, "minor");
     startWave();
     buildPhaseStartingWave = false;
     autoSaveRun(true);
@@ -6983,30 +7745,76 @@ function formatSurvivalTime(ms) {
     return `${m}m ${String(s).padStart(2,"0")}s`;
 }
 function getDeathFlavorLine(isRecord, w, cause) {
-    if (isRecord) return `El Abismo tuvo que respetarte. Caíste ante ${cause || "lo desconocido"} en la wave ${w}.`;
-    if (w < 10) return `El Abismo se rió bajito. Caíste ante ${cause || "lo desconocido"} en la wave ${w}.`;
-    if (w < 35) return `Tu fortaleza empezó a tener nombre, pero ${cause || "el Abismo"} la apagó en la wave ${w}.`;
-    if (w < 75) return `Resististe con furia. ${cause || "El Abismo"} te reclamó en la wave ${w}.`;
-    return `Tu caída será recordada. ${cause || "El Abismo"} apenas pudo frenarte en la wave ${w}.`;
+    const cleanCause = String(cause || "el Abismo");
+    const context = { wave: w, cause: cleanCause };
+    let pool = FINAL_DEATH_LINES.low;
+    if (/tit[aá]n/i.test(cleanCause)) pool = FINAL_DEATH_LINES.titan;
+    else if (/jefe|boss|abismo|parpadeo|orbe|mortero|corona|carcelero|devoramuros|or[aá]culo|comandante|recolector/i.test(cleanCause)) pool = FINAL_DEATH_LINES.boss;
+    else if (isRecord) pool = FINAL_DEATH_LINES.record;
+    else if (w < 10) pool = FINAL_DEATH_LINES.low;
+    else if (w < 35) pool = FINAL_DEATH_LINES.mid;
+    else if (w < 75) pool = FINAL_DEATH_LINES.high;
+    else pool = FINAL_DEATH_LINES.legendary;
+    let line = formatFinalLine(pickRandomLine(pool), context);
+    if (!/wave/i.test(line) && !isRecord) line += ` Caíste ante ${cleanCause} en la wave ${w}.`;
+    if (isRecord && !/r[eé]cord/i.test(line)) line = `¡Récord superado! ${line}`;
+    return line;
 }
 function detectMainBuild() {
     if (!runStats) return "Errante";
     const scores = [
-        ["Cazador", runStats.playerKills], ["Ingeniería", runStats.towerKills], ["Trampera", runStats.trapKills],
-        ["Arcana", runStats.abilityKills], ["Fortaleza", (barricades || []).length * 10], ["Codiciosa", (mines || []).length * 20]
+        ["Build Cazador", (runStats.playerKills || 0) * 3 + Math.floor((runStats.bossPlayerDamage || 0) / 20)],
+        ["Build Ingeniero", (runStats.towerKills || 0) * 3 + (towers || []).length * 12],
+        ["Build Fortaleza", (barricades || []).length * 18 + (runStats.barricadesLostThisWave || 0) * 2],
+        ["Build Codiciosa", (mines || []).length * 24 + Math.floor((runStats.goldEarned || 0) / 120)],
+        ["Build Arcana", (runStats.abilityKills || 0) * 4 + (runStats.abilitiesUsedThisWave || 0) * 8],
+        ["Build Trampera", (runStats.trapKills || 0) * 4 + (traps || []).length * 14],
+        ["Build Alquimista", (runStats.consumablesUsedThisWave || 0) * 18]
     ];
     scores.sort((a,b)=>b[1]-a[1]);
     return scores[0]?.[1] > 0 ? scores[0][0] : (activeClass?.name || "Errante");
 }
+let lastRunSummaryText = "";
 function renderFinalRunDetails(rawScore) {
     const box = document.getElementById("finalRunDetails");
     if (!box) return;
+    const relicText = activeRelics.length ? activeRelics.map(r=>r.name).join(", ") : "Ninguna";
+    const survivedEventsText = runStats?.survivedEvents?.length ? runStats.survivedEvents.slice(-3).join(", ") : "Ninguno";
+    const buildName = detectMainBuild();
+    const survivalText = formatSurvivalTime(totalRunTimeMs || getGameTime());
     box.innerHTML = `
+        <div><strong>Clase</strong><span>${activeClass?.name || "Errante"}</span></div>
+        <div><strong>Build</strong><span>${buildName}</span></div>
+        <div><strong>Tiempo vivo</strong><span>${survivalText}</span></div>
         <div><strong>Daño total</strong><span>${formatCompactNumber(Math.floor(runStats?.damageDealt || 0))}</span></div>
         <div><strong>Oro ganado</strong><span>${formatMoney(Math.floor(runStats?.goldEarned || 0))}</span></div>
-        <div><strong>Reliquias</strong><span>${activeRelics.length ? activeRelics.map(r=>r.name).join(", ") : "Ninguna"}</span></div>
+        <div><strong>Reliquias</strong><span>${escapeHtml(relicText)}</span></div>
         <div><strong>Misiones</strong><span>${runStats?.missionsCompleted || 0} completadas</span></div>
+        <div><strong>Eventos sobrevividos</strong><span>${escapeHtml(survivedEventsText)}</span></div>
         <div><strong>Puntaje base</strong><span>${formatCompactNumber(rawScore)}</span></div>`;
+    lastRunSummaryText = `Ardent Tower Defense
+Wave: ${wave}
+Clase: ${activeClass?.name || "Errante"}
+Build: ${buildName}
+Tiempo vivo: ${survivalText}
+Puntaje: ${formatCompactNumber(score)}
+Daño total: ${formatCompactNumber(Math.floor(runStats?.damageDealt || 0))}
+Oro ganado: ${formatMoney(Math.floor(runStats?.goldEarned || 0))}
+Reliquias: ${relicText}
+Misiones: ${runStats?.missionsCompleted || 0}
+Causa de muerte: ${lastDeathCause || "desconocida"}`;
+}
+async function copyLastRunSummary() {
+    if (!lastRunSummaryText) return;
+    try {
+        await navigator.clipboard.writeText(lastRunSummaryText);
+        showCenterMessage(`RESUMEN COPIADO
+Pegalo en Discord y presumí la run.`, 1300, "mission-success");
+    } catch (error) {
+        console.log("Copy summary error:", error);
+        showCenterMessage(`NO SE PUDO COPIAR
+El navegador bloqueó el portapapeles.`, 1300, "mission-fail");
+    }
 }
 function healOverTime(totalHeal, durationMs) {
     if (!gameStarted || !player || totalHeal <= 0) return;
@@ -7407,6 +8215,29 @@ function drawBarricadeHealthBar(b, hpPercent) {
     ctx.restore();
 }
 
+function drawAetheriteBarricadeParticles(b, width, height) {
+    const now = getGameTime();
+    const seed = Number(b.id || 1) % 997;
+    ctx.save();
+    ctx.shadowColor = "#bfa7ff";
+    ctx.shadowBlur = 10;
+    const count = 9;
+    for (let i = 0; i < count; i++) {
+        const phase = (now * 0.0012 + i * 0.73 + seed * 0.013) % 1;
+        const x = -width / 2 + ((i + 0.5) / count) * width + Math.sin(now * 0.002 + i + seed) * 3;
+        const side = i % 2 === 0 ? -1 : 1;
+        const y = side * (height / 2 + 4 + Math.sin(now * 0.003 + i * 2) * 5);
+        const alpha = 0.25 + Math.sin(phase * Math.PI) * 0.55;
+        ctx.globalAlpha = Math.max(0.18, Math.min(0.82, alpha));
+        ctx.fillStyle = i % 3 === 0 ? "#ffffff" : "#cdbbff";
+        ctx.beginPath();
+        ctx.arc(x, y, 1.5 + Math.sin(phase * Math.PI) * 1.2, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+}
+
 function drawBarricade() {
     (barricades || []).forEach(b => {
         if (!b.active || b.hp <= 0) return;
@@ -7436,6 +8267,9 @@ function drawBarricade() {
         }
         if (b.thorns) {
             drawBarricadeThornsLocal(drawWidth, drawHeight);
+        }
+        if (isAetheriteBarricade(b)) {
+            drawAetheriteBarricadeParticles(b, drawWidth, drawHeight);
         }
         ctx.restore();
 
@@ -8038,13 +8872,13 @@ function drawTitanShards() {
 function drawEnemies() {
     enemies.forEach(enemy => {
         let radius = enemy.radius;
-        if (enemy.untargetable) ctx.globalAlpha = 0.28;
+        if (enemy.untargetable && enemy.special !== "visitor") ctx.globalAlpha = 0.28;
 
         if (enemy.hitFlash > 0) {
             radius += 3;
         }
 
-        const spriteDrawn = drawEnemySprite(enemy, radius);
+        const spriteDrawn = enemy.special === "visitor" ? drawVisitorSprite(enemy) : drawEnemySprite(enemy, radius);
         if (!spriteDrawn) {
             ctx.fillStyle = enemy.hitFlash > 0 ? "white" : enemy.color;
             ctx.beginPath();
@@ -8059,13 +8893,7 @@ function drawEnemies() {
             ctx.arc(enemy.x, enemy.y, Math.min(enemy.healRadius || 0, 90), 0, Math.PI * 2);
             ctx.stroke();
         }
-        if (enemy.special === "doombringer") {
-            ctx.strokeStyle = enemy.titanVariant === "burn" ? "#7a1bff" : enemy.titanVariant === "split" ? "#b64dff" : "#ffffff";
-            ctx.lineWidth = 3;
-            ctx.beginPath();
-            ctx.arc(enemy.x, enemy.y, enemy.radius + 7, 0, Math.PI * 2);
-            ctx.stroke();
-        }
+        // Círculo decorativo del Titán removido: el nombre/barra y sus ataques ya comunican la amenaza.
 
 
         if (enemy.special === "exploder") {
@@ -8092,23 +8920,44 @@ function drawEnemies() {
             ctx.strokeStyle = "#8fa8ff"; ctx.lineWidth = 4;
             ctx.beginPath(); ctx.arc(enemy.x, enemy.y, enemy.radius + 6, -Math.PI/2, Math.PI/2); ctx.stroke();
         }
-        if (enemy.special === "mirror") {
-            ctx.strokeStyle = "rgba(255,255,255,0.65)"; ctx.lineWidth = 2;
-            ctx.beginPath(); ctx.arc(enemy.x, enemy.y, enemy.radius + 5, 0, Math.PI * 2); ctx.stroke();
+        // Círculo decorativo del Espejo removido; su reflect queda en la lógica de daño.
+        if (enemy.special === "visitor" && !enemy.retreating) {
+            ctx.save();
+            ctx.textAlign = "center";
+            ctx.font = "bold 13px Arial";
+            ctx.lineWidth = 4;
+            ctx.strokeStyle = "rgba(0,0,0,0.92)";
+            ctx.fillStyle = "#ffffff";
+            const label = "EL VISITANTE";
+            ctx.strokeText(label, enemy.x, enemy.y - enemy.radius - 36);
+            ctx.fillText(label, enemy.x, enemy.y - enemy.radius - 36);
+            const visitorBarWidth = 68;
+            const visitorBarY = enemy.y - enemy.radius - 29;
+            const visitorPct = Math.max(0, Math.min(1, enemy.hp / Math.max(1, enemy.maxHp)));
+            ctx.fillStyle = "rgba(0,0,0,0.82)";
+            ctx.fillRect(enemy.x - visitorBarWidth / 2, visitorBarY, visitorBarWidth, 6);
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(enemy.x - visitorBarWidth / 2 + 1, visitorBarY + 1, (visitorBarWidth - 2) * visitorPct, 4);
+            ctx.strokeStyle = "rgba(255,40,40,0.95)";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(enemy.x - visitorBarWidth / 2, visitorBarY, visitorBarWidth, 6);
+            ctx.restore();
         }
-        const hpBarWidth = enemy.isBoss ? 80 : 40;
-        const hpPercent = enemy.hp / enemy.maxHp;
+        if (enemy.special !== "visitor") {
+            const hpBarWidth = enemy.isBoss ? 80 : 40;
+            const hpPercent = enemy.hp / enemy.maxHp;
 
-        ctx.fillStyle = "red";
-        ctx.fillRect(enemy.x - hpBarWidth / 2, enemy.y - enemy.radius - 14, hpBarWidth, 6);
+            ctx.fillStyle = "red";
+            ctx.fillRect(enemy.x - hpBarWidth / 2, enemy.y - enemy.radius - 14, hpBarWidth, 6);
 
-        ctx.fillStyle = "lime";
-        ctx.fillRect(
-            enemy.x - hpBarWidth / 2,
-            enemy.y - enemy.radius - 14,
-            hpBarWidth * hpPercent,
-            6
-        );
+            ctx.fillStyle = "lime";
+            ctx.fillRect(
+                enemy.x - hpBarWidth / 2,
+                enemy.y - enemy.radius - 14,
+                hpBarWidth * hpPercent,
+                6
+            );
+        }
         ctx.globalAlpha = 1;
     });
 }
@@ -8720,7 +9569,7 @@ function updateHud(force = false) {
     updateBarricadeButtonState(buyDoorBarricadeBtn, "door", "doorBarricade");
     if (doorBarricadeCostText) setCostText(doorBarricadeCostText, getBarricadeBaseCost("door"), hasFreeBarricadePurchase("door"));
 
-    barricadeTierText.textContent = "Muro básico libre · click para colocar";
+    barricadeTierText.textContent = player?.unlockDeepObsidian ? "Arquitecto: Aetherita desbloqueada · click para colocar" : "Muro básico libre · click para colocar";
     updateBarricadeSlotChoiceUI();
     clampPlayerToPlayableArea();
 
@@ -8951,6 +9800,31 @@ function drawMinimap() {
     const y = Math.max(54, GAME_HEIGHT - h - bottomOffset - 12);
     ctx.save();
     ctx.setTransform(canvas.width / GAME_WIDTH, 0, 0, canvas.height / GAME_HEIGHT, 0, 0);
+    const blindMinimap = activeWaveEvent?.id === "blindness" && waveInProgress;
+
+    // Durante Ceguera del Abismo, el minimapa queda completamente inutilizable:
+    // nada de terreno, cámara, jugador, estructuras ni enemigos. Solo oscuridad y una duda enorme.
+    if (blindMinimap) {
+        ctx.fillStyle = "rgba(0,0,0,0.96)";
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = "rgba(255,77,77,0.72)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, w, h);
+
+        ctx.save();
+        ctx.shadowColor = "rgba(255,77,77,0.95)";
+        ctx.shadowBlur = 14;
+        ctx.font = `900 ${Math.max(34, Math.round(54 * scale))}px Arial`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "#ff4d4d";
+        ctx.fillText("?", x + w / 2, y + h / 2 + 1);
+        ctx.restore();
+
+        ctx.restore();
+        return;
+    }
+
     ctx.fillStyle = "rgba(0,0,0,0.72)";
     ctx.fillRect(x, y, w, h);
     ctx.strokeStyle = "rgba(255,255,255,0.45)";
@@ -8967,7 +9841,7 @@ function drawMinimap() {
         ctx.fill();
     };
     if (player) dot(player.x, player.y, "#66d9ff", 4);
-    enemies.forEach(e => dot(e.x, e.y, e.isBoss ? "#ff55ff" : "#ff3333", e.isBoss ? 3.8 : 2));
+    enemies.forEach(e => dot(e.x, e.y, e.special === "visitor" ? "#ffffff" : (e.isBoss ? "#ff55ff" : "#ff3333"), e.special === "visitor" ? 4.2 : (e.isBoss ? 3.8 : 2)));
     towers.forEach(t => dot(t.x, t.y, "#ffffff", 1.7));
     (traps || []).forEach(trap => dot(trap.x, trap.y, trap.type === "snare" ? "#9be7ff" : "#ff6b6b", 1.4));
     (mines || []).forEach(mine => { if (mine.hp > 0) dot(mine.x, mine.y, "#ffd76a", 1.7); });
@@ -9006,18 +9880,25 @@ function draw() {
     ctx.restore();
 
     drawFlyingCoins();
-    drawMinimap();
     drawWaveEventOverlay();
+    drawMinimap();
 }
 
 
 function drawWaveEventOverlay() {
     if (activeWaveEvent?.id === "blindness" && waveInProgress) {
-        const grd = ctx.createRadialGradient(GAME_WIDTH/2, GAME_HEIGHT/2, 90, GAME_WIDTH/2, GAME_HEIGHT/2, GAME_WIDTH*0.72);
+        const center = player ? getWorldToScreenPoint(player.x, player.y) : { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 };
+        const innerRadius = 118;
+        const softRadius = 238;
+        const grd = ctx.createRadialGradient(center.x, center.y, innerRadius, center.x, center.y, softRadius);
         grd.addColorStop(0, "rgba(0,0,0,0)");
-        grd.addColorStop(1, "rgba(0,0,0,0.72)");
+        grd.addColorStop(0.46, "rgba(0,0,0,0.18)");
+        grd.addColorStop(0.78, "rgba(0,0,0,0.82)");
+        grd.addColorStop(1, "rgba(0,0,0,0.96)");
+        ctx.save();
         ctx.fillStyle = grd;
-        ctx.fillRect(0,0,GAME_WIDTH,GAME_HEIGHT);
+        ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+        ctx.restore();
     }
 }
 function gameLoop() {
@@ -9056,6 +9937,7 @@ function gameLoop() {
             lastSpawnTime = now;
         }
 
+        ensureBossWaveSpawned();
         updateBossPressureSpawns(now);
 
         updatePlayerMovement();
@@ -9075,6 +9957,7 @@ function gameLoop() {
         // y construir mientras corre el contador hacia la próxima oleada.
         updatePlayerMovement();
         regenerateBarricades();
+        updateVisitorsDuringBuildPhase();
     }
 
     updateVisualEffects();
@@ -9163,6 +10046,66 @@ function forceResumeWave() {
     updateHud(true);
 }
 
+
+function getConsoleSpawnDefinitions() {
+    const entries = [];
+    enemyTypes.forEach((type, index) => entries.push({ key: `bicho${index + 1}`, aliases: [type.name.toLowerCase(), `normal${index + 1}`], type }));
+    specialEnemyTypes.forEach(type => {
+        const key = type.special || type.name.toLowerCase();
+        entries.push({ key, aliases: [type.name.toLowerCase(), key], type });
+    });
+    bossTypes.forEach((type, index) => entries.push({ key: `boss${index + 1}`, aliases: [type.name.toLowerCase(), `jefe${index + 1}`], bossType: type }));
+    entries.push({ key: "visitante", aliases: ["elvisitante", "el visitante", "visitor"], visitor: true });
+    entries.push({ key: "titan", aliases: ["titán", "titan negro", "titán negro", "doombringer"], type: specialEnemyTypes.find(t => t.special === "doombringer") });
+    return entries;
+}
+
+function normalizeSpawnName(value = "") {
+    return String(value || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[\s_-]+/g, "");
+}
+
+function getSpawnableEnemyListText() {
+    const keys = Array.from(new Set(getConsoleSpawnDefinitions().map(e => e.key))).filter(Boolean);
+    return keys.join(", ");
+}
+
+function spawnEnemyFromConsole(name) {
+    const raw = String(name || "").trim();
+    if (!raw) {
+        appendConsoleLog(`Uso: spawn enemigo. Disponibles: ${getSpawnableEnemyListText()}`);
+        return;
+    }
+    const normalized = normalizeSpawnName(raw);
+    const entry = getConsoleSpawnDefinitions().find(item => {
+        const keys = [item.key, ...(item.aliases || [])].map(normalizeSpawnName);
+        return keys.includes(normalized);
+    });
+    if (!entry) {
+        appendConsoleLog(`No encontré "${raw}". Disponibles: ${getSpawnableEnemyListText()}`);
+        return;
+    }
+    disqualifyRunFromLeaderboard("spawn");
+    let spawned = null;
+    const spawnPoint = getRandomSpawnPoint();
+    if (entry.visitor || entry.key === "visitor" || normalized === "visitante") {
+        spawned = spawnVisitor({ force: true, spawnPoint });
+    } else if (entry.bossType) {
+        spawned = createBossFromType(entry.bossType);
+        spawned.x = spawnPoint.x; spawned.y = spawnPoint.y;
+        enemies.push(spawned);
+    } else if (entry.type) {
+        const options = entry.type.special === "doombringer" ? { spawnPoint: getBossSpawnPoint() } : { spawnPoint };
+        spawned = createEnemyFromType(entry.type, options);
+        enemies.push(spawned);
+    }
+    if (spawned) {
+        appendConsoleLog(`Spawn: ${spawned.name || raw}. Esta run no entra al leaderboard normal.`);
+        showCenterMessage(`Spawn: ${spawned.name || raw}`, 900, "minor");
+        updateHud(true);
+        autoSaveRun(true);
+    }
+}
+
 function runConsoleCommand(rawCommand) {
     const command = (rawCommand || "").trim().toLowerCase();
     if (!command) return;
@@ -9228,6 +10171,17 @@ function runConsoleCommand(rawCommand) {
         showCenterMessage("BEGINNER +1K", 900);
         updateHud();
         autoSaveRun(true);
+        return;
+    }
+
+    if (command === "spawn" || command.startsWith("spawn ")) {
+        const name = command.replace(/^spawn\s*/, "").trim();
+        spawnEnemyFromConsole(name);
+        return;
+    }
+
+    if (command === "spawns" || command === "spawnlist" || command === "spawn list") {
+        appendConsoleLog(`Spawneables: ${getSpawnableEnemyListText()}`);
         return;
     }
 
@@ -9619,8 +10573,14 @@ function repairTowerSelected() {
 
 function getBarricadeRepairCost(b) {
     if (!b || b.hp >= b.maxHp) return 0;
+    ensureBarricadeEconomy(b);
     const missingRatio = Math.max(0, Math.min(1, (b.maxHp - b.hp) / Math.max(1, b.maxHp)));
-    return Math.max(1, Math.ceil((Number(b.buildCost) || getBarricadeBaseCost(b.kind)) * 0.45 * missingRatio));
+    const tier = Math.max(0, Number(b.tier) || 0);
+    const level = Math.max(0, Number(b.level) || 0);
+    // Reparar una muralla más avanzada debe doler más: evita que obsidiana + reparación infinita sea una pared gratis.
+    const upgradePressure = b.kind === "standard" ? tier * 0.22 + level * 0.18 : 0.18 + level * 0.24;
+    const repairMultiplier = 1 + Math.min(2.35, upgradePressure);
+    return Math.max(1, Math.ceil((Number(b.buildCost) || getBarricadeBaseCost(b.kind)) * 0.42 * missingRatio * repairMultiplier));
 }
 
 function getBarricadeSellRefund(b) {
@@ -10418,7 +11378,7 @@ function finishBarricadePlacement() {
     const hasFreeStarter = (kind === "standard" && getFreeBarricadeCount() > 0) || getFreeAnyConstructionCount() > 0;
     const price = hasFreeStarter ? 0 : getBarricadeBaseCost(kind);
     if (coins < price) {
-        showCenterMessage("Monedas insuficientes", 800);
+        showCenterMessage("Monedas insuficientes", 800, "minor");
         cancelBarricadePlacement(false);
         return;
     }
@@ -10456,6 +11416,18 @@ function buyOrUpgradeBarricade(kind = "standard") {
 
 
 
+function getMaxStandardBarricadeTierIndex() {
+    const lastIndex = barricadeTiers.length - 1;
+    const aetheriteIndex = barricadeTiers.findIndex(t => t && t.architectOnly);
+    if (aetheriteIndex < 0) return lastIndex;
+    return player?.unlockDeepObsidian ? lastIndex : Math.max(0, aetheriteIndex - 1);
+}
+
+function isAetheriteBarricade(b) {
+    const tier = barricadeTiers[Math.max(0, b?.tier || 0)];
+    return Boolean(tier && tier.architectOnly);
+}
+
 function upgradeBarricadeInstance(target, kind, resetKind = false) {
     const wasInactive = !target.active || target.hp <= 0;
 
@@ -10467,7 +11439,8 @@ function upgradeBarricadeInstance(target, kind, resetKind = false) {
     }
 
     if (kind === "standard") {
-        if (target.tier < barricadeTiers.length - 1) {
+        const maxTierIndex = getMaxStandardBarricadeTierIndex();
+        if (target.tier < maxTierIndex) {
             target.tier += 1;
         } else {
             target.level = (target.level || 0) + 1;
@@ -10632,7 +11605,7 @@ function finishTrapPlacement() {
     const hasFreeStarter = getFreeAnyConstructionCount() > 0;
     const price = hasFreeStarter ? 0 : getEffectiveCost(costs[def.key] ?? def.cost, "traps");
     if (coins < price) {
-        showCenterMessage("Monedas insuficientes", 800);
+        showCenterMessage("Monedas insuficientes", 800, "minor");
         cancelTrapPlacement(false);
         return;
     }
@@ -10675,7 +11648,7 @@ function beginMinePlacement() {
         showCenterMessage(`Máximo de minas alcanzado (${MINE_LIMIT})`, 900);
         return;
     }
-    const hasFreeStarter = getFreeAnyConstructionCount() > 0;
+    const hasFreeStarter = hasFreeMinePurchase();
     const price = hasFreeStarter ? 0 : getEffectiveCost(costs.mineGold ?? getMineCostForCount(), "mines");
     if (coins < price) {
         showCenterMessage(`Faltan ${formatMissingMoney(price - coins)} monedas`, 850);
@@ -10707,10 +11680,10 @@ function finishMinePlacement() {
         showCenterMessage("No se puede poner la mina ahí", 750);
         return;
     }
-    const hasFreeStarter = getFreeAnyConstructionCount() > 0;
+    const hasFreeStarter = hasFreeMinePurchase();
     const price = hasFreeStarter ? 0 : getEffectiveCost(costs.mineGold ?? getMineCostForCount(), "mines");
     if (coins < price) {
-        showCenterMessage("Monedas insuficientes", 800);
+        showCenterMessage("Monedas insuficientes", 800, "minor");
         cancelMinePlacement(false);
         return;
     }
@@ -10722,12 +11695,16 @@ function finishMinePlacement() {
     if (mines.length >= MINE_LIMIT) {
         pendingMinePlacement = null;
         showCenterMessage("Mina colocada · límite alcanzado", 850);
-    } else if (coins < (getFreeAnyConstructionCount() > 0 ? 0 : getEffectiveCost(costs.mineGold, "mines"))) {
-        pendingMinePlacement = null;
-        showCenterMessage("Mina colocada · sin monedas para otra", 850);
     } else {
-        pendingMinePlacement = { price: getFreeAnyConstructionCount() > 0 ? 0 : costs.mineGold, freeStarter: getFreeAnyConstructionCount() > 0 };
-        showCenterMessage("Mina colocada · seguí colocando o cancelá", 850);
+        const nextFreeMine = hasFreeMinePurchase();
+        const nextMinePrice = nextFreeMine ? 0 : getEffectiveCost(costs.mineGold, "mines");
+        if (coins < nextMinePrice) {
+            pendingMinePlacement = null;
+            showCenterMessage("Mina colocada · sin monedas para otra", 850);
+        } else {
+            pendingMinePlacement = { price: nextMinePrice, freeStarter: nextFreeMine };
+            showCenterMessage(nextFreeMine ? "Mina gratis colocada · seguí usando tus cargas" : "Mina colocada · seguí colocando o cancelá", 850);
+        }
     }
     updateBuildCancelUI();
     updateHud(true);
@@ -11123,3 +12100,6 @@ bestScoreMenuText.textContent = formatCompactNumber(bestScore);
 createDefaultState();
 applyAudioSettingsToUI();
 draw();
+
+
+if (copyRunSummaryBtn) copyRunSummaryBtn.addEventListener("click", copyLastRunSummary);
