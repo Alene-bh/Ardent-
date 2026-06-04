@@ -2042,7 +2042,7 @@ const towerDefinitions = [
     { key: "tower10", name: "Lucky Block", type: "lucky", cost: 240, upgradeCost: 0, damage: 0, range: 0, fireDelay: 999999, color: "#ffe28a", label: "?" },
     { key: "tower11", name: "Cuchilla", type: "blade", cost: 90, upgradeCost: 120, damage: 0.55, range: 62, fireDelay: 620, color: "#d9d9d9", label: "C", maxHp: 60 },
     { key: "tower12", name: "Lancera", type: "spear", cost: 135, upgradeCost: 165, damage: 1.05, range: 310, fireDelay: 1650, color: "#d7b06a", label: "L", maxHp: 44, laneWidth: 38 },
-    { key: "tower13", name: "Láser", type: "laser", cost: 1450, upgradeCost: 950, damage: 14, range: 255, fireDelay: 120, color: "#ff4fd8", label: "⚡", maxHp: 52, beamWidth: 5 }
+    { key: "tower13", name: "Láser", type: "laser", cost: 1810, upgradeCost: 1120, damage: 11.9, range: 230, fireDelay: 135, color: "#ff4fd8", label: "⚡", maxHp: 52, beamWidth: 5, retargetDelay: 180 }
 ];
 
 const enemyTypes = [
@@ -5585,45 +5585,62 @@ function updateSpearTower(tower) {
 function updateLaserTower(tower) {
     const now = getGameTime();
     const range = tower.range || 0;
+    const retargetDelay = Number(tower.retargetDelay) || 180;
     let target = tower.laserTarget;
+    const targetInvalid = !target || target.hp <= 0 || target.untargetable || Math.hypot(target.x - tower.x, target.y - tower.y) > range + (target.radius || 0);
 
-    if (!target || target.hp <= 0 || target.untargetable || Math.hypot(target.x - tower.x, target.y - tower.y) > range + (target.radius || 0)) {
-        target = findClosestEnemy(tower.x, tower.y, range);
-        tower.laserTarget = target;
+    if (targetInvalid) {
+        // Nerf suave: la láser ya no cambia de objetivo instantáneamente.
+        // Esto evita que encadene kills demasiado fácil ahora que la economía da más oro.
+        if (target && target.hp <= 0) {
+            const idx = enemies.indexOf(target);
+            if (idx >= 0) killEnemy(idx);
+        }
+        if (tower.laserTarget) {
+            tower.lastLaserRetargetAt = now;
+        }
+        tower.laserTarget = null;
+        target = null;
     }
 
     if (!target) {
         tower.laserCharge = Math.max(0, (tower.laserCharge || 0) - 0.08 * frameScale);
+        if (now - (tower.lastLaserRetargetAt || 0) < retargetDelay) return;
+        target = findClosestEnemy(tower.x, tower.y, range);
+        if (!target) return;
+        tower.laserTarget = target;
+        tower.lastShotTime = now;
+        tower.laserCharge = Math.max(0.2, tower.laserCharge || 0.2);
         return;
     }
 
-    const tickDelay = Math.max(55, tower.fireDelay || 120);
+    const tickDelay = Math.max(65, tower.fireDelay || 135);
     if (!tower.lastShotTime) tower.lastShotTime = now - tickDelay;
     const elapsed = Math.max(0, now - tower.lastShotTime);
 
     if (elapsed >= tickDelay) {
-        const ticks = Math.min(4, Math.floor(elapsed / tickDelay));
+        const ticks = Math.min(3, Math.floor(elapsed / tickDelay));
         const damagePerSecond = getTowerDamage(tower);
         const tickDamage = damagePerSecond * (tickDelay / 1000) * ticks;
         tower.lastShotTime += tickDelay * ticks;
-        target.hp -= tickDamage;
+        damageEnemy(target, tickDamage, false, tower.color, "tower");
         target.hitFlash = 1;
-        tower.laserCharge = Math.min(1, (tower.laserCharge || 0) + 0.16 * ticks);
+        tower.laserCharge = Math.min(1, (tower.laserCharge || 0) + 0.13 * ticks);
 
-        if (now - (tower.lastLaserTextAt || 0) >= 360) {
+        if (now - (tower.lastLaserTextAt || 0) >= 430) {
             tower.lastLaserTextAt = now;
-            addDamageText(target.x, target.y - (target.radius || 12), damagePerSecond * 0.36, false, tower.color);
+            addDamageText(target.x, target.y - (target.radius || 12), damagePerSecond * 0.30, false, tower.color);
             playHitSound();
         }
 
         if (target.hp <= 0) {
             const idx = enemies.indexOf(target);
             tower.laserTarget = null;
+            tower.lastLaserRetargetAt = now;
             if (idx >= 0) killEnemy(idx);
         }
     }
 }
-
 function updateTowers() {
     applyTowerBuffs();
 
@@ -11920,10 +11937,13 @@ function upgradeTower(index, silent = false) {
     }
 
     if (tower.type === "laser") {
-        tower.damage += 4.5;
-        tower.range += 14;
-        tower.beamWidth = Math.min(9, (tower.beamWidth || 5) + 0.35);
-        tower.fireDelay = Math.max(80, tower.fireDelay - 4);
+        // La economía nueva permite comprar más rápido; la láser conserva su fantasía
+        // de DPS sostenido, pero escala un poco más lento.
+        tower.damage += 4.0;
+        tower.range += 10;
+        tower.beamWidth = Math.min(8.5, (tower.beamWidth || 5) + 0.28);
+        tower.fireDelay = Math.max(95, tower.fireDelay - 3);
+        tower.retargetDelay = Math.max(135, (Number(tower.retargetDelay) || 180) - 4);
     }
 
     if (tower.type === "buffer") {
