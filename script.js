@@ -818,24 +818,75 @@ function stopMusicAndReset() {
     sounds.music.currentTime = 0;
 }
 
-function playSfx(src, baseVolume = 1) {
+// Pool de SFX: evita crear cientos de Audio() por segundo.
+// Antes, si el navegador no llegaba a reproducirlos a tiempo, algunos disparos quedaban
+// pendientes y después sonaban todos juntos. Ahora reutilizamos audios y descartamos
+// el exceso en vez de encolarlo.
+const sfxPools = new Map();
+const sfxLastPlayedAt = new Map();
+
+function getSfxPool(src, size = 6) {
+    if (sfxPools.has(src)) return sfxPools.get(src);
+
+    const pool = [];
+    for (let i = 0; i < size; i++) {
+        const audio = new Audio(src);
+        audio.preload = "auto";
+        pool.push(audio);
+    }
+
+    sfxPools.set(src, pool);
+    return pool;
+}
+
+function playSfx(src, baseVolume = 1, options = {}) {
     if (!soundEnabled) return;
     if (!audioSettings.sfxEnabled) return;
+    if (!src) return;
 
-    const sfx = new Audio(src);
-    sfx.volume = audioSettings.sfxVolume * baseVolume;
+    const now = performance.now();
+    const minInterval = Number(options.minIntervalMs) || 0;
+    const lastPlayedAt = sfxLastPlayedAt.get(src) || 0;
 
-    sfx.play().catch(error => {
-        console.log("SFX error:", error);
-    });
+    if (minInterval > 0 && now - lastPlayedAt < minInterval) return;
+
+    const pool = getSfxPool(src, options.poolSize || 6);
+    const sfx = pool.find(audio => audio.paused || audio.ended || audio.currentTime === 0) || null;
+
+    // Si todos los audios del pool están ocupados, saltamos este SFX.
+    // Esto evita el bug de "silencio y después metralleta de sonidos".
+    if (!sfx) return;
+
+    sfxLastPlayedAt.set(src, now);
+    sfx.volume = Math.max(0, Math.min(1, audioSettings.sfxVolume * baseVolume));
+
+    try {
+        sfx.currentTime = 0;
+    } catch (error) {
+        // Algunos navegadores pueden bloquear currentTime si el audio no está listo.
+    }
+
+    const playPromise = sfx.play();
+    if (playPromise && typeof playPromise.catch === "function") {
+        playPromise.catch(error => {
+            // No spameamos consola en cada disparo bloqueado por el navegador.
+            if (options.logErrors) console.log("SFX error:", error);
+        });
+    }
 }
 
 function playShootSound() {
-    playSfx(sounds.shoot, 0.75);
+    playSfx(sounds.shoot, 0.62, {
+        poolSize: 5,
+        minIntervalMs: 45
+    });
 }
 
 function playHitSound() {
-    playSfx(sounds.hit, 0.9);
+    playSfx(sounds.hit, 0.85, {
+        poolSize: 5,
+        minIntervalMs: 35
+    });
 }
 
 const menu = document.getElementById("menu");
@@ -5720,7 +5771,9 @@ function updateEnemySpecials(now, defenseLineX) {
             let healedSomeone = false;
 
             enemies.forEach(other => {
-                if (other === enemy || other.hp <= 0 || other.hp >= other.maxHp) return;
+                // Los curanderos NO se curan entre ellos. Si no, dos o tres juntos
+                // pueden armar una cadena casi inmortal y volver la oleada injusta.
+                if (other === enemy || other.hp <= 0 || other.hp >= other.maxHp || other.special === "healer") return;
                 const dist = Math.hypot(other.x - enemy.x, other.y - enemy.y);
 
                 if (dist <= enemy.healRadius) {
@@ -6347,6 +6400,13 @@ function updateNewEnemyBehaviors(now) {
             });
         }
     });
+}
+
+function clearCombatProjectilesForBuildPhase() {
+    // Al terminar una oleada, entramos en fase de construcción.
+    // Ninguna bala debería quedarse congelada en el aire durante el descanso.
+    projectiles = [];
+    bossProjectiles = [];
 }
 
 function clearVisitorProjectiles() {
@@ -7447,7 +7507,7 @@ function applyCompoundInterestBonus() {
     return bonus;
 }
 function enterBuildPhase(completedWave, goldBonus = 0) {
-    clearVisitorProjectiles();
+    clearCombatProjectilesForBuildPhase();
     beginVisitorRetreat();
     if (hasLivingVisitor()) showVisitorAlert("El Visitante se retira a preparar otro plan...");
     buildPhaseActive = true;
