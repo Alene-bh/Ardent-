@@ -3612,6 +3612,7 @@ function createDefaultState() {
     score = 0;
     runDisqualifiedFromLeaderboard = false;
     leaderboardDisqualificationReason = "";
+    updateDebugRunIndicator();
     beginnerCommandUsed = false;
     lastDeathCause = "desconocido";
 
@@ -4009,6 +4010,7 @@ function restoreSavedRun() {
         score = Number(data.score) || 0;
         runDisqualifiedFromLeaderboard = Boolean(data.runDisqualifiedFromLeaderboard);
         leaderboardDisqualificationReason = String(data.leaderboardDisqualificationReason || "").slice(0, 80);
+        updateDebugRunIndicator();
         beginnerCommandUsed = Boolean(data.beginnerCommandUsed);
         lastDeathCause = String(data.lastDeathCause || "desconocido").slice(0, 80);
         selectedClassKey = CLASS_DEFINITIONS[data.selectedClassKey] ? data.selectedClassKey : (CLASS_DEFINITIONS[data.player?.classKey] ? data.player.classKey : (localStorage.getItem("ardentSelectedClass") || "errante"));
@@ -7636,10 +7638,36 @@ async function loadLeaderboard() {
     }
 }
 
+function updateDebugRunIndicator() {
+    let badge = document.getElementById("debugRunBadge");
+    if (!badge) {
+        badge = document.createElement("div");
+        badge.id = "debugRunBadge";
+        badge.style.position = "fixed";
+        badge.style.right = "14px";
+        badge.style.bottom = "14px";
+        badge.style.zIndex = "9999";
+        badge.style.padding = "7px 10px";
+        badge.style.border = "1px solid rgba(255,90,90,0.85)";
+        badge.style.borderRadius = "10px";
+        badge.style.background = "rgba(25,0,0,0.82)";
+        badge.style.color = "#ffb0b0";
+        badge.style.font = "bold 12px Arial, sans-serif";
+        badge.style.textShadow = "0 1px 2px #000";
+        badge.style.pointerEvents = "none";
+        document.body.appendChild(badge);
+    }
+    const reason = leaderboardDisqualificationReason ? ` · ${leaderboardDisqualificationReason}` : "";
+    badge.textContent = `RUN DEBUG${reason}`;
+    badge.style.display = runDisqualifiedFromLeaderboard && hasActiveRun ? "block" : "none";
+}
+
 function disqualifyRunFromLeaderboard(commandName) {
     runDisqualifiedFromLeaderboard = true;
     leaderboardDisqualificationReason = commandName || "comando ilegal";
     appendConsoleLog(`Leaderboard desactivado para esta run por usar: ${leaderboardDisqualificationReason}.`);
+    showCenterMessage("RUN DEBUG · Leaderboard desactivado", 1300, "minor");
+    updateDebugRunIndicator();
     saveRunNow();
 }
 
@@ -7699,6 +7727,7 @@ function endRun() {
     clearSavedRun();
     stopMusicAndReset();
     hasActiveRun = false;
+    updateDebugRunIndicator();
     isPaused = false;
     gameRunning = false;
     waveInProgress = false;
@@ -9667,8 +9696,10 @@ function updateTowerShopVisibility() {
     updateAutoRepeatWaveButton();
 
     if (nextWaveBtn) {
-        nextWaveBtn.classList.toggle("hidden", waveInProgress);
-        nextWaveBtn.disabled = waveInProgress;
+        // Durante la fase de compra/construcción NO mostramos el botón viejo de siguiente oleada.
+        // La oleada solo puede avanzar cuando termina el timer o cuando se usa Saltar preparación.
+        nextWaveBtn.classList.toggle("hidden", waveInProgress || buildPhaseActive);
+        nextWaveBtn.disabled = waveInProgress || buildPhaseActive;
     }
 
     renderTowerSlotsPanel();
@@ -10248,22 +10279,25 @@ function runConsoleCommand(rawCommand) {
             return;
         }
 
+        disqualifyRunFromLeaderboard("waveskip");
         jumpToWave(targetWave);
-        appendConsoleLog(`Comando activado: saltaste a la oleada ${wave}.`);
+        appendConsoleLog(`Comando activado: saltaste a la oleada ${wave}. Esta run no entra al leaderboard normal.`);
         return;
     }
 
     if (command === "killall") {
+        disqualifyRunFromLeaderboard("killall");
         const killed = killAllEnemiesFromConsole();
-        appendConsoleLog(`Comando activado: ${killed} enemigos eliminados.`);
+        appendConsoleLog(`Comando activado: ${killed} enemigos eliminados. Esta run no entra al leaderboard normal.`);
         showCenterMessage("KILL ALL", 800);
         updateHud();
         return;
     }
 
     if (command === "reset") {
+        disqualifyRunFromLeaderboard("reset");
         resetRunFromConsole();
-        appendConsoleLog("Run reiniciada desde 0.");
+        appendConsoleLog("Run reiniciada desde 0. Esta run no entra al leaderboard normal.");
         return;
     }
 
@@ -12065,8 +12099,10 @@ if (autoRepeatWaveBtn) {
 
 
 nextWaveBtn.addEventListener("click", () => {
-    if (waveInProgress) return;
-    wave++;
+    // Botón legado: fuera de build phase inicia la oleada actual.
+    // En build phase se ignora para evitar el bug de saltar una wave doble
+    // (completeWave ya dejó wave = completedWave + 1).
+    if (waveInProgress || buildPhaseActive) return;
     autoRepeatWaveMode = false;
     isRepeatingWave = false;
     currentGoldMultiplier = 1;
