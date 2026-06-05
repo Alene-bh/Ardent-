@@ -11,8 +11,12 @@ const WORLD_WIDTH = 3400;
 const WORLD_HEIGHT = 2300;
 const BUILD_GRID_SIZE = 25;
 const TOWER_COLLISION_RADIUS = 26;
-const BARRICADE_LENGTH = 110;
+const BARRICADE_LENGTH = 120;
 const BARRICADE_THICKNESS = 24;
+// Colisión algo más fina que el sprite: permite cerrar muros casi pegados
+// sin que aparezcan cajas invisibles gigantes, también en diagonales.
+const BARRICADE_COLLISION_THICKNESS = 18;
+const BARRICADE_BUILD_MIN_GAP = 2;
 const BASE_RADIUS = 34;
 const PLAYER_SURVIVAL_SPEED = 1.75;
 const ENEMY_SURVIVAL_SPEED_MULTIPLIER = 0.72;
@@ -47,12 +51,29 @@ let camera = {
     y: 0,
     zoom: Math.max(CAMERA_MIN_ZOOM, Math.min(CAMERA_MAX_ZOOM, Number(localStorage.getItem("tdCameraZoom")) || 1))
 };
+
+// Exploración estilo RTS: el mundo arranca oculto y se revela al caminar.
+// Minimap libre: clic sostenido para inspeccionar cualquier zona, sin niebla de guerra.
+const FOG_CELL_SIZE = 80;
+// Campo de visión RTS: ya no es un círculo alrededor del jugador.
+// Se revela y se considera visible todo el rectángulo completo de la cámara.
+const FOG_SCREEN_REVEAL_PADDING = 18;
+const FOG_REVEAL_RADIUS = 285; // fallback/compatibilidad con saves viejos
+const FOG_CURRENT_VISION_RADIUS = 335; // fallback para Ceguera del Abismo
+let fogCols = Math.ceil(WORLD_WIDTH / FOG_CELL_SIZE);
+let fogRows = Math.ceil(WORLD_HEIGHT / FOG_CELL_SIZE);
+let exploredMapCells = new Uint8Array(fogCols * fogRows);
+let minimapInspectActive = false;
+let minimapInspectStartedOnMap = false;
+let minimapInspectWasShooting = false;
+let minimapInspectLastWorld = null;
 let baseCore = null;
 let basePlaced = false;
 let pendingBasePlacement = false;
 let pendingBarricadePlacement = null;
 let pendingTrapPlacement = null;
 let pendingMinePlacement = null;
+let pendingCorePlacement = null;
 // Ciclo de rotación de barricadas: | → / → - → \ → |.
 // En canvas, diagonalUp = / y diagonalDown = \.
 const BARRICADE_BUILD_ORIENTATIONS = ["vertical", "diagonalUp", "horizontal", "diagonalDown"];
@@ -476,12 +497,19 @@ function getTintedEnemySprite(color) {
     return canvasCopy;
 }
 
+function getEnemyDisplayColor(enemy) {
+    if (activeWaveEvent?.id === "midas" && waveInProgress && enemy && !enemy.isBoss && enemy.special !== "doombringer" && enemy.special !== "visitor" && !isVisitorStructure(enemy)) {
+        return "#ffd84a";
+    }
+    return enemy?.color || "#ffffff";
+}
+
 function drawEnemySprite(enemy, drawRadius) {
     if (!enemy || enemy.isBoss || enemy.special === "doombringer") return false;
     const frameData = getEnemySpriteFrameData();
     if (!frameData) return false;
 
-    const sprite = enemy.hitFlash > 0 ? getTintedEnemySprite("#ffffff") : getTintedEnemySprite(enemy.color);
+    const sprite = enemy.hitFlash > 0 ? getTintedEnemySprite("#ffffff") : getTintedEnemySprite(getEnemyDisplayColor(enemy));
     if (!sprite) return false;
 
     const { frameWidth, frameHeight, columns, validFrames, frameBounds } = frameData;
@@ -657,7 +685,12 @@ function codeToLabel(code) {
 }
 
 function getAbilityIdByCode(code) {
-    return ["bomb", "freeze", "tsunami", "lightning", "meteor", "eclipse", "blink"].find(id => controlBindings[id] === code) || null;
+    if (!code) return null;
+    ensureAbilityLoadout();
+    const slotIndex = ABILITY_SLOT_ACTIONS.findIndex(action => controlBindings[action] === code);
+    if (slotIndex < 0) return null;
+    const id = abilityLoadout[slotIndex];
+    return abilities && abilities[id] && abilities[id].owned ? id : null;
 }
 
 function isControlCode(code) {
@@ -665,11 +698,7 @@ function isControlCode(code) {
 }
 
 function applyControlsToAbilities() {
-    if (!abilities) return;
-
-    ["bomb", "freeze", "tsunami", "lightning", "meteor", "eclipse", "blink"].forEach(id => {
-        if (abilities[id]) abilities[id].key = codeToLabel(controlBindings[id]);
-    });
+    updateAbilityKeysFromLoadout();
 }
 
 function updateControlsUI() {
@@ -718,6 +747,7 @@ function resetControlBindings() {
     pressedKeys.clear();
     isSpaceDown = false;
     isShiftDown = false;
+    if (minimapInspectActive) stopMinimapInspect(false);
     updateControlsUI();
     updateHud();
 }
@@ -890,9 +920,20 @@ function playHitSound() {
 }
 
 const menu = document.getElementById("menu");
+const menuLayout = document.getElementById("menuLayout");
 const gameArea = document.getElementById("gameArea");
 const startGameBtn = document.getElementById("startGameBtn");
 const playerNameInput = document.getElementById("playerNameInput");
+
+function showMainMenuLayout() {
+    if (menuLayout) menuLayout.classList.remove("hidden");
+    if (menu) menu.classList.remove("hidden");
+}
+
+function hideMainMenuLayout() {
+    if (menuLayout) menuLayout.classList.add("hidden");
+    if (menu) menu.classList.add("hidden");
+}
 
 const waveText = document.getElementById("waveText");
 const hpText = document.getElementById("hpText");
@@ -909,6 +950,18 @@ const abilitySlots = {
     eclipse: document.getElementById("abilityEclipseSlot"),
     blink: document.getElementById("abilityBlinkSlot")
 };
+const abilitySlotElements = [
+    document.getElementById("abilityBombSlot"),
+    document.getElementById("abilityFreezeSlot"),
+    document.getElementById("abilityTsunamiSlot"),
+    document.getElementById("abilityLightningSlot"),
+    document.getElementById("abilityMeteorSlot"),
+    document.getElementById("abilityEclipseSlot"),
+    document.getElementById("abilityBlinkSlot")
+];
+const abilityLoadoutPanel = document.getElementById("abilityLoadoutPanel");
+const ABILITY_SLOT_ACTIONS = ["bomb", "freeze", "tsunami", "lightning", "meteor", "eclipse", "blink"];
+let abilityLoadout = [];
 
 const inventorySlotsPanel = document.getElementById("inventorySlots");
 const inventoryCooldownText = document.getElementById("inventoryCooldownText");
@@ -1086,6 +1139,21 @@ const trapSnareCostText = document.getElementById("trapSnareCostText");
 const trapBleedCostText = document.getElementById("trapBleedCostText");
 const mineGoldCostText = document.getElementById("mineGoldCostText");
 const mineLimitText = document.getElementById("mineLimitText");
+const coreButtons = {
+    military: document.getElementById("buyCoreMilitaryBtn"),
+    economic: document.getElementById("buyCoreEconomicBtn"),
+    arcane: document.getElementById("buyCoreArcaneBtn"),
+    fortress: document.getElementById("buyCoreFortressBtn"),
+    cursed: document.getElementById("buyCoreCursedBtn")
+};
+const coreCostTexts = {
+    military: document.getElementById("coreMilitaryCostText"),
+    economic: document.getElementById("coreEconomicCostText"),
+    arcane: document.getElementById("coreArcaneCostText"),
+    fortress: document.getElementById("coreFortressCostText"),
+    cursed: document.getElementById("coreCursedCostText")
+};
+const coreLimitText = document.getElementById("coreLimitText");
 const buyTrapSnareBtn = document.getElementById("buyTrapSnareBtn");
 const buyTrapBleedBtn = document.getElementById("buyTrapBleedBtn");
 const buyMineGoldBtn = document.getElementById("buyMineGoldBtn");
@@ -1213,6 +1281,14 @@ let visitorSpawnedThisWave = false;
 let lastVisitorWave = -999;
 let lastVisitorDeathWave = -999;
 let visitorAlertUntil = 0;
+let visitorHudPanel = null;
+// Estado del aviso de territorio del Visitante durante fase de construcción.
+// En 1.0.8.3 estas variables no estaban declaradas y podían romper el loop
+// al entrar a su territorio, dejando la pantalla en blanco al recargar una run guardada ahí.
+let visitorTerritoryWarningStartedAt = 0;
+let visitorTerritoryWarningRealStartedAt = 0;
+let visitorTerritoryLastDamageAt = 0;
+let visitorTerritoryWarned = false;
 
 
 const alphaTesterCommands = {
@@ -1245,6 +1321,7 @@ let particles;
 let effects;
 let traps;
 let mines;
+let cores;
 let titanShards;
 let pendingTitanReward = null;
 let inventory;
@@ -1352,11 +1429,12 @@ const CLASS_DEFINITIONS = {
         apply() { player.maxHp = Math.max(1, Math.floor(player.maxHp * 0.75)); player.hp = player.maxHp; player.abilityPowerMultiplier = 1.25; player.abilityCooldownMultiplier = 0.85; player.classCostMultipliers.abilities = 0.85; if (abilities.bomb) abilities.bomb.owned = true; }
     },
     novato: {
-        name: "Novato", color: "#ffe28a", short: "La puerta amable al infierno.",
-        lore: "El Novato todavía no sabe cuánto odia el Abismo a los confiados. Por suerte, el mundo le da una mano.",
-        grants: "Gana más oro y los enemigos arrancan más suaves.",
-        drawback: "Su puntaje queda marcado como modo Novato y no compite igual en récords.",
-        apply() { player.goldBonusMultiplier *= 1.2; player.enemyHpMultiplier = 0.85; player.scoreMultiplier = 0.65; runDisqualifiedFromLeaderboard = true; leaderboardDisqualificationReason = "Clase Novato"; }
+        name: "Sendero Verde", color: "#78f09b", short: "Modo chill para probar builds sin que el Abismo te muerda la yugular.",
+        lore: "El Sendero Verde es la versión amable de Ardent: más respiro, más oro y menos sustos. Ideal para aprender, testear y disfrutar la run.",
+        grants: "Enemigos con menos vida, menos especiales, más oro, bosses más livianos y oleadas más cortas.",
+        drawback: "El Visitante no aparece y compite en un leaderboard de novatos separado.",
+        beginnerLeague: true,
+        apply() { player.goldBonusMultiplier *= 1.45; player.enemyHpMultiplier *= 0.72; player.enemySpeedMultiplier *= 0.92; player.enemyCountMultiplier *= 0.82; player.specialEnemyChanceMultiplier *= 0.55; player.bossHpMultiplier *= 0.72; player.visitorDisabled = true; player.scoreMultiplier = 0.75; beginnerCommandUsed = true; leaderboardDisqualificationReason = "Sendero Verde"; }
     },
     minero: {
         name: "Minero", color: "#d8a447", short: "Escarba oro donde otros ven muerte.",
@@ -1443,6 +1521,11 @@ function getFreeAnyConstructionCount() {
     return Math.max(0, Math.floor(Number(player?.freeAnyConstructionPlacements) || 0));
 }
 
+function addRandomConsumableReward(count = 1) {
+    const ids = ["smallPotion", "mediumPotion", "shieldPotion", "attackSpeedPotion", "doubleShotPotion", "lifeStealPotion"];
+    for (let i = 0; i < count; i++) addConsumableToInventory(ids[Math.floor(Math.random() * ids.length)]);
+}
+
 function consumeFreeAnyConstruction() {
     if (!player || getFreeAnyConstructionCount() <= 0) return false;
     player.freeAnyConstructionPlacements -= 1;
@@ -1464,22 +1547,28 @@ function consumeFreeConstructionCharge(kind = "any", defKey = "") {
 }
 
 const RELIC_DEFINITIONS = [
-    { id:"worker", name:"Obrero Determinado", family:"constructor", desc:"Construcciones 25% más baratas.", downside:"Stats del jugador al 50%, incluso mejoras futuras.", apply(){ player.structureCostMultiplier *= 0.75; player.statPowerMultiplier *= 0.5; player.damage *= 0.5; player.maxHp = Math.max(1, Math.floor(player.maxHp * 0.5)); player.hp = Math.min(player.hp, player.maxHp); } },
-    { id:"blood_thirst", name:"Sed de Sangre", family:"sangre", desc:"Matar cerca del jugador cura 0.2 HP; exceso = escudo temporal.", downside:"Aparecen 10% más enemigos.", apply(){ player.bloodThirst = (player.bloodThirst || 0) + 0.2; player.enemyCountMultiplier *= 1.10; } },
-    { id:"greed_curse", name:"Maldición del Codicioso", family:"codicia", desc:"Las minas generan el doble de oro.", downside:"Atraen ladrones y enemigos especiales priorizan minas.", apply(){ player.mineIncomeMultiplier *= 2; player.minesAttractEnemies = true; } },
-    { id:"crystal_pact", name:"Pacto de Cristal", family:"arcana", desc:"Habilidades +35% daño y -15% cooldown.", downside:"Vida máxima -25%.", apply(){ player.abilityPowerMultiplier *= 1.35; player.abilityCooldownMultiplier *= 0.85; player.maxHp = Math.max(1, Math.floor(player.maxHp * 0.75)); player.hp = Math.min(player.hp, player.maxHp); } },
-    { id:"hungry_wall", name:"Muralla Hambrienta", family:"constructor", desc:"Barricadas +40% vida y reflejan daño.", downside:"Repararlas cuesta 35% más.", apply(){ player.barricadeHpMultiplier *= 1.4; player.barricadeReflectPercent = (player.barricadeReflectPercent || 0) + 0.12; player.repairCostMultiplier *= 1.35; buffExistingBarricades(1.4); } },
-    { id:"compound", name:"Interés Compuesto", family:"codicia", desc:"Al terminar oleada ganás interés por oro no gastado.", downside:"Enemigos +8% vida.", apply(){ player.compoundInterest = true; player.enemyHpMultiplier *= 1.08; } },
-    { id:"obsidian_heart", name:"Corazón de Obsidiana", family:"sangre", desc:"Bajo 35% vida ganás daño y movimiento.", downside:"Curaciones 30% menos efectivas.", apply(){ player.obsidianHeart = true; player.healingMultiplier *= 0.7; } },
-    { id:"cursed_architecture", name:"Arquitectura Maldita", family:"constructor", desc:"Torres cerca de barricadas ganan rango y daño.", downside:"Si cae esa barricada, esas torres se debilitan esa oleada.", apply(){ player.cursedArchitecture = true; } },
-    { id:"abyss_tithe", name:"Diezmo del Abismo", family:"arcana", desc:"Habilidades dan oro por enemigos golpeados.", downside:"Usarlas cuesta un poco de vida.", apply(){ player.abyssTithe = true; } },
-    { id:"siege_crown", name:"Corona del Asedio", family:"neutral", desc:"Bosses dan recompensa extra.", downside:"Mientras vivan, la oleada sigue presionando.", apply(){ player.siegeCrown = true; } }
+    { id:"worker", name:"Obrero Determinado", family:"constructor", desc:"Construcciones 25% más baratas: ideal para levantar bases enormes rápido.", downside:"Stats del jugador al 50%, incluso mejoras futuras.", apply(){ player.structureCostMultiplier *= 0.75; player.statPowerMultiplier *= 0.5; player.damage *= 0.5; player.maxHp = Math.max(1, Math.floor(player.maxHp * 0.5)); player.hp = Math.min(player.hp, player.maxHp); } },
+    { id:"blood_thirst", name:"Sed de Sangre", family:"sangre", desc:"Matar cerca del jugador cura 0.2 HP; si te pasás de vida, crea escudo temporal.", downside:"Aparecen 10% más enemigos.", apply(){ player.bloodThirst = (player.bloodThirst || 0) + 0.2; player.enemyCountMultiplier *= 1.10; } },
+    { id:"greed_curse", name:"Maldición del Codicioso", family:"codicia", desc:"Las minas generan el doble de oro: excelente si podés defenderlas.", downside:"Atraen ladrones y enemigos especiales priorizan minas.", apply(){ player.mineIncomeMultiplier *= 2; player.minesAttractEnemies = true; } },
+    { id:"crystal_pact", name:"Pacto de Cristal", family:"arcana", desc:"Habilidades +35% poder y -15% cooldown: más magia, más seguido.", downside:"Vida máxima -25%.", apply(){ player.abilityPowerMultiplier *= 1.35; player.abilityCooldownMultiplier *= 0.85; player.maxHp = Math.max(1, Math.floor(player.maxHp * 0.75)); player.hp = Math.min(player.hp, player.maxHp); } },
+    { id:"hungry_wall", name:"Muralla Hambrienta", family:"constructor", desc:"Barricadas +40% vida y reflejan daño al atacante.", downside:"Repararlas cuesta 35% más.", apply(){ player.barricadeHpMultiplier *= 1.4; player.barricadeReflectPercent = (player.barricadeReflectPercent || 0) + 0.12; player.repairCostMultiplier *= 1.35; buffExistingBarricades(1.4); } },
+    { id:"compound", name:"Interés Compuesto", family:"codicia", desc:"Al terminar cada oleada ganás interés por el oro que no gastaste.", downside:"Enemigos +8% vida.", apply(){ player.compoundInterest = true; player.enemyHpMultiplier *= 1.08; } },
+    { id:"obsidian_heart", name:"Corazón de Obsidiana", family:"sangre", desc:"Por debajo de 35% de vida ganás daño y velocidad de movimiento.", downside:"Curaciones 30% menos efectivas.", apply(){ player.obsidianHeart = true; player.healingMultiplier *= 0.7; } },
+    { id:"cursed_architecture", name:"Arquitectura Maldita", family:"constructor", desc:"Torres cerca de barricadas ganan rango y daño: premia bases compactas.", downside:"Si cae esa barricada, esas torres se debilitan esa oleada.", apply(){ player.cursedArchitecture = true; } },
+    { id:"abyss_tithe", name:"Diezmo del Abismo", family:"arcana", desc:"Las habilidades generan oro por enemigos golpeados.", downside:"Usarlas cuesta un poco de vida.", apply(){ player.abyssTithe = true; } },
+    { id:"siege_crown", name:"Corona del Asedio", family:"neutral", desc:"Los bosses dan recompensa extra al morir.", downside:"Mientras vivan, la oleada sigue presionando.", apply(){ player.siegeCrown = true; } }
 ];
 
 const VISITOR_RELICS = [
-    { id:"visitor_eye", name:"Ojo del Visitante", family:"visitante", desc:"Ves mejor a los especiales y les hacés +10% daño.", downside:"El Abismo te recuerda.", apply(){ player.specialDamageMultiplier *= 1.1; } },
-    { id:"stolen_hand", name:"Mano Robada", family:"visitante", desc:"Tu próxima construcción cuesta 0; luego vuelve cada 3 oleadas.", downside:"Solo una carga por ciclo.", apply(){ player.freeBuildEvery = 3; grantFreeAnyConstruction(1); } },
-    { id:"broken_contract", name:"Contrato Roto", family:"visitante", desc:"Una vez por run, al morir quedás en 1 HP y explotás alrededor.", downside:"Luego el pacto se rompe.", apply(){ player.deathSaveAvailable = true; } }
+    { id:"visitor_eye", name:"Ojo del Visitante", family:"visitante", desc:"Marca especiales, revela invisibles y les hacés +10% daño con el jugador.", downside:"El Visitante vuelve un poco antes: el Abismo te recuerda.", apply(){ player.specialDamageMultiplier *= 1.1; player.visitorEye = true; player.visitorRemembers = true; lastVisitorDeathWave = Math.min(lastVisitorDeathWave, wave - 9); } },
+    { id:"stolen_hand", name:"Mano Robada", family:"visitante", desc:"Te da 1 carga de construcción gratis ahora. Cada 3 oleadas recuperás otra.", downside:"No acumula más de una carga gratis por ciclo.", apply(){ player.freeBuildEvery = 3; grantFreeAnyConstruction(1); } },
+    { id:"broken_contract", name:"Contrato Roto", family:"visitante", desc:"Una vez por run, al morir quedás en 1 HP y explotás alrededor.", downside:"Luego el pacto se rompe.", apply(){ player.deathSaveAvailable = true; } },
+    { id:"visitor_map", name:"Mapa Usurpado", family:"visitante", desc:"Revela una franja enorme del mundo y te da +1 slot de torre por la información robada.", downside:"Los especiales ganan +4% de velocidad.", apply(){ revealFogAround(player.x, player.y, 780); towerSlotLimit = clampTowerSlotLimit(towerSlotLimit + 1); player.enemySpeedMultiplier *= 1.04; } },
+    { id:"visitor_cache", name:"Alijo del Rival", family:"visitante", desc:"Recibís una gran bolsa de oro y 2 consumibles aleatorios por saquear sus reservas.", downside:"Los próximos enemigos normales tienen +6% de vida.", apply(){ const g = getGoldAmount(650 + wave * 38); coins += g; addDamageText(player.x, player.y - 45, `+${formatMoney(g)} alijo`, false, "#ffd84a"); addRandomConsumableReward(2); player.enemyHpMultiplier *= 1.06; } },
+    { id:"visitor_engineer", name:"Planos Hostiles", family:"visitante", desc:"Tus torres cuestan 10% menos y las existentes ganan una reparación gratis.", downside:"Tus mejoras de daño personal cuestan 8% más.", apply(){ player.classCostMultipliers.towers *= 0.90; (towers || []).forEach(t => { if (t && t.owned) t.hp = t.maxHp; }); player.classCostMultipliers.damage *= 1.08; } },
+    { id:"visitor_shell", name:"Coraza del Usurpador", family:"visitante", desc:"Tu base y barricadas reciben +18% de vida máxima inmediata.", downside:"Correr consume un poco más de stamina.", apply(){ if (baseCore) { baseCore.maxHp = Math.ceil(baseCore.maxHp * 1.18); baseCore.hp = Math.min(baseCore.maxHp, baseCore.hp + 12); } buffExistingBarricades(1.18); player.staminaDrainMultiplier = (player.staminaDrainMultiplier || 1) * 1.08; } },
+    { id:"visitor_focus", name:"Instinto de Cacería", family:"visitante", desc:"+8% daño del jugador y +3% crítico permanente contra amenazas grandes.", downside:"Las curaciones son 8% menos efectivas.", apply(){ player.damage *= 1.08; player.critChance = Math.min(0.75, (player.critChance || 0) + 0.03); player.healingMultiplier *= 0.92; } },
+    { id:"visitor_gate_key", name:"Llave de Compuerta", family:"visitante", desc:"Te da Blink si no lo tenías; si ya lo tenías, reduce cooldown de habilidades 8%.", downside:"El Abismo aumenta levemente la cantidad de enemigos.", apply(){ if (abilities?.blink && !abilities.blink.owned) unlockAbility("blink", { autoEquip:true }); else player.abilityCooldownMultiplier *= 0.92; player.enemyCountMultiplier *= 1.04; } }
 ];
 
 const WAVE_EVENTS = [
@@ -1492,26 +1581,26 @@ const WAVE_EVENTS = [
 ];
 
 const SIDE_MISSIONS = [
-    { id:"player_kills", title:"Cazador eficiente", desc:"Matá enemigos con el jugador", type:"playerKills", target:25 },
-    { id:"tower_kills", title:"Defensa automática", desc:"Matá enemigos con torres", type:"towerKills", target:30 },
-    { id:"no_magic", title:"Sin magia", desc:"Completá la oleada sin usar habilidades", type:"noAbilities", target:1 },
-    { id:"no_potions", title:"Sin pociones", desc:"Completá la oleada sin usar consumibles", type:"noConsumables", target:1 },
-    { id:"protect_mines", title:"Protegé la mina", desc:"Ninguna mina debe recibir daño", type:"minesSafe", target:1 },
-    { id:"wall_intact", title:"Muralla intacta", desc:"No pierdas barricadas esta oleada", type:"barricadesSafe", target:1 },
-    { id:"special_priority", title:"Prioridad especial", desc:"Matá enemigos especiales", type:"specialKills", target:3 },
-    { id:"trapper", title:"Trampero", desc:"Matá enemigos con trampas/sangrado", type:"trapKills", target:15 },
-    { id:"boss_duel", title:"Duelo personal", desc:"Hacé daño directo al boss con el jugador", type:"bossPlayerDamage", target:80 },
-    { id:"clean_wave", title:"Oleada limpia", desc:"Terminá con más del 75% de vida", type:"highHpEnd", target:1 },
-    { id:"save_gold", title:"Ahorro peligroso", desc:"Terminá con oro guardado", type:"saveGold", target:1 },
-    { id:"crowd_control", title:"Control de masas", desc:"Afectá enemigos con control", type:"ccHits", target:20 },
-    { id:"ram_punish", title:"Castigo al Carnero", desc:"Matá un Carnero antes de que rompa estructuras", type:"ramKills", target:1 },
-    { id:"near_base", title:"Zona segura", desc:"Evitá invasiones cerca del núcleo", type:"baseSafe", target:1 },
-    { id:"fast_clear", title:"Limpieza total", desc:"Matá rápido durante la oleada", type:"fastKills", target:50 },
-    { id:"low_hp_kills", title:"Sangre fría", desc:"Matá con menos del 50% de vida", type:"lowHpKills", target:10 },
-    { id:"mine_income", title:"Economía viva", desc:"Generá oro con minas y no pierdas ninguna", type:"mineIncomeSafe", target:1 },
-    { id:"last_spell", title:"Último golpe", desc:"Matá al boss con una habilidad", type:"bossAbilityKill", target:1 },
-    { id:"build_phase", title:"Ingeniería rápida", desc:"Construí o mejorá algo antes de la próxima oleada", type:"buildAction", target:1 },
-    { id:"survive_no_damage", title:"No retrocedas", desc:"No recibas daño durante esta oleada", type:"noPlayerDamage", target:1 }
+    { id:"player_kills", title:"Cazador eficiente", desc:"Matá enemigos con tus disparos, no solo con torres.", type:"playerKills", target:25 },
+    { id:"tower_kills", title:"Defensa automática", desc:"Dejá que tus torres hagan el trabajo sucio.", type:"towerKills", target:30 },
+    { id:"no_magic", title:"Sin magia", desc:"Aguantá toda la oleada sin apretar habilidades.", type:"noAbilities", target:1 },
+    { id:"no_potions", title:"Sin pociones", desc:"No uses pociones ni objetos durante esta oleada.", type:"noConsumables", target:1 },
+    { id:"protect_mines", title:"Protegé la mina", desc:"Terminá la oleada sin que ninguna mina sea golpeada.", type:"minesSafe", target:1 },
+    { id:"wall_intact", title:"Muralla intacta", desc:"Terminá sin que se destruya ninguna barricada.", type:"barricadesSafe", target:1 },
+    { id:"special_priority", title:"Prioridad especial", desc:"Eliminá enemigos especiales antes de que desarmen tu defensa.", type:"specialKills", target:3 },
+    { id:"trapper", title:"Trampero", desc:"Usá trampas o sangrado para cerrar kills.", type:"trapKills", target:15 },
+    { id:"boss_duel", title:"Duelo personal", desc:"Pegale al boss con tus disparos personales.", type:"bossPlayerDamage", target:80 },
+    { id:"clean_wave", title:"Oleada limpia", desc:"Cerrá la oleada con más del 75% de tu vida.", type:"highHpEnd", target:1 },
+    { id:"save_gold", title:"Ahorro peligroso", desc:"Terminá la oleada sin gastar todo tu oro.", type:"saveGold", target:1 },
+    { id:"crowd_control", title:"Control de masas", desc:"Ralentizá, congelá, empujá o controlá enemigos.", type:"ccHits", target:20 },
+    { id:"ram_punish", title:"Castigo al Carnero", desc:"Eliminá un Carnero antes de que destruya tus defensas.", type:"ramKills", target:1 },
+    { id:"near_base", title:"Zona segura", desc:"Que ningún enemigo llegue a la zona de tu núcleo principal.", type:"baseSafe", target:1 },
+    { id:"fast_clear", title:"Limpieza total", desc:"Encadená bajas rápido para limpiar con ritmo.", type:"fastKills", target:50 },
+    { id:"low_hp_kills", title:"Sangre fría", desc:"Con poca vida, seguí peleando y cerrá kills.", type:"lowHpKills", target:10 },
+    { id:"mine_income", title:"Economía viva", desc:"Cobrá oro de minas y protegé toda la red minera.", type:"mineIncomeSafe", target:1 },
+    { id:"last_spell", title:"Último golpe", desc:"Rematá al boss usando una habilidad.", type:"bossAbilityKill", target:1 },
+    { id:"build_phase", title:"Ingeniería rápida", desc:"Usá la fase de construcción para colocar o mejorar defensas.", type:"buildAction", target:1 },
+    { id:"survive_no_damage", title:"No retrocedas", desc:"Evitá que el jugador reciba daño directo.", type:"noPlayerDamage", target:1 }
 ];
 
 
@@ -1570,6 +1659,7 @@ let pendingTowerPurchase = null;
 let pendingTowerMoveIndex = null;
 let selectedStructureIds = [];
 let selectedStructureType = null;
+let areaSelectionDrag = null;
 
 const BARRICADE_BUILD_COSTS = {
     standard: 62,
@@ -1598,8 +1688,20 @@ const MINE_COST_MULTIPLIER = 1.62;
 const mineDefinitions = {
     gold: { key: "mineGold", name: "Mina de eco", cost: FIRST_MINE_COST, color: "#ffd76a", radius: MINE_COLLISION_RADIUS }
 };
+
+const CORE_COST = 10000;
+const CORE_RADIUS = 42;
+const CORE_EFFECT_RADIUS = 430;
+const CORE_MIN_DISTANCE = 760;
+const coreDefinitions = {
+    military: { name: "Núcleo Militar", color: "#ff5f45", label: "M", desc: "Base ofensiva: las torres dentro del aura disparan mejor, pegan más fuerte y resisten un poco más." },
+    economic: { name: "Núcleo Económico", color: "#ffd76a", label: "$", desc: "Base minera: las minas dentro del aura producen mucho más oro y aguantan mejor los ataques." },
+    arcane: { name: "Núcleo Arcano", color: "#b78cff", label: "A", desc: "Base mágica: mientras estés dentro del aura, tus habilidades pegan más y vuelven antes." },
+    fortress: { name: "Núcleo Fortaleza", color: "#73ff9f", label: "F", desc: "Base defensiva: las barricadas dentro del aura reciben menos daño, regeneran y son más baratas de reparar." },
+    cursed: { name: "Núcleo Maldito", color: "#d022ff", label: "!", global: true, desc: "Pacto global: te potencia estés donde estés, pero hace que el Abismo mande más amenazas especiales." }
+};
 const BARRICADE_UNLOCK_WAVE = 1;
-const TOWER_REPAIR_COST_FACTOR = 0.28;
+const TOWER_REPAIR_COST_FACTOR = 0.40;
 const TITAN_SHARD_RADIUS = 15;
 const TITAN_REWARD_OPTION_COUNT = 3;
 const TITAN_VARIANTS = [
@@ -1672,12 +1774,12 @@ function getBarricadeDimensions(orientation = barricadeBuildOrientation) {
     orientation = BARRICADE_BUILD_ORIENTATIONS.includes(orientation) ? orientation : "horizontal";
     const isDiagonal = orientation === "diagonalDown" || orientation === "diagonalUp";
     if (isDiagonal) {
-        const bound = Math.abs(Math.cos(Math.PI / 4)) * BARRICADE_LENGTH + Math.abs(Math.sin(Math.PI / 4)) * BARRICADE_THICKNESS;
+        const bound = Math.abs(Math.cos(Math.PI / 4)) * BARRICADE_LENGTH + Math.abs(Math.sin(Math.PI / 4)) * BARRICADE_COLLISION_THICKNESS;
         return { width: bound, height: bound };
     }
     return orientation === "vertical"
-        ? { width: BARRICADE_THICKNESS, height: BARRICADE_LENGTH }
-        : { width: BARRICADE_LENGTH, height: BARRICADE_THICKNESS };
+        ? { width: BARRICADE_COLLISION_THICKNESS, height: BARRICADE_LENGTH }
+        : { width: BARRICADE_LENGTH, height: BARRICADE_COLLISION_THICKNESS };
 }
 
 function getBarricadeAngle(orientation = "horizontal") {
@@ -1814,20 +1916,20 @@ function barricadesIntersect(a, b, padding = 0) {
     const sb = getBarricadeSegment(b);
     // Dos cápsulas chocan cuando sus segmentos centrales están más cerca que
     // la suma de sus medios grosores. Funciona para vertical, horizontal y diagonales.
-    return distanceSegmentToSegment(sa.x1, sa.y1, sa.x2, sa.y2, sb.x1, sb.y1, sb.x2, sb.y2) <= BARRICADE_THICKNESS + padding;
+    return distanceSegmentToSegment(sa.x1, sa.y1, sa.x2, sa.y2, sb.x1, sb.y1, sb.x2, sb.y2) < Math.max(0, BARRICADE_BUILD_MIN_GAP + padding);
 }
 
 function circleIntersectsBarricade(cx, cy, radius, barricade, padding = 0) {
     const seg = getBarricadeSegment(barricade);
     const info = distancePointToSegment(cx, cy, seg.x1, seg.y1, seg.x2, seg.y2);
-    return info.distance <= radius + BARRICADE_THICKNESS / 2 + padding;
+    return info.distance <= radius + BARRICADE_COLLISION_THICKNESS / 2 + padding;
 }
 
 function barricadeIntersectsRect(barricade, rect, padding = 0) {
     // Colisión real de barricada: cápsula fina siguiendo la madera en la
     // orientación guardada al colocarla: |, /, - o \.
     const seg = getBarricadeSegment(barricade);
-    return distanceSegmentToRect(seg.x1, seg.y1, seg.x2, seg.y2, rect) <= BARRICADE_THICKNESS / 2 + padding;
+    return distanceSegmentToRect(seg.x1, seg.y1, seg.x2, seg.y2, rect) <= BARRICADE_COLLISION_THICKNESS / 2 + padding;
 }
 
 function getBarricadeBaseCost(kind = "standard") {
@@ -1848,11 +1950,15 @@ function getBarricadeUpgradeMultiplier(kind = "standard") {
     return BARRICADE_SPECIAL_UPGRADE_MULTIPLIER;
 }
 
+function barricadeUsesTierProgression(kind = "standard") {
+    return kind === "standard" || kind === "door";
+}
+
 function getMinimumBarricadeUpgradeCost(b) {
     const baseCost = getBarricadeBaseCost(b?.kind || "standard");
     const level = Math.max(0, Number(b?.level) || 0);
     const tier = Math.max(0, Number(b?.tier) || 0);
-    const steps = (b?.kind === "standard" ? tier + level : level) + 1;
+    const steps = (barricadeUsesTierProgression(b?.kind) ? tier + level : level) + 1;
     const multiplier = getBarricadeUpgradeMultiplier(b?.kind || "standard");
     return Math.ceil((baseCost * Math.pow(multiplier, Math.max(0, steps - 1))) / 5) * 5;
 }
@@ -2001,7 +2107,7 @@ function isBarricadePositionValid(x, y, orientation = barricadeBuildOrientation,
     // Las barricadas NO consumen slots de torre.
     // Usamos la forma real de la barricada —también en diagonal— para evitar paredes invisibles.
     if ((towers || []).some(t => barricadeIntersectsRect(testBarricade, getEntityRect({ x: t.x, y: t.y, radius: TOWER_COLLISION_RADIUS + 2 }), 0))) return false;
-    if ((barricades || []).some(b => b !== ignoredBarricade && b.active && b.hp > 0 && !b.isOpen && barricadesIntersect(testBarricade, b, 2))) return false;
+    if ((barricades || []).some(b => b !== ignoredBarricade && b.active && b.hp > 0 && !b.isOpen && barricadesIntersect(testBarricade, b, 0))) return false;
     if ((traps || []).some(trap => circleIntersectsBarricade(trap.x, trap.y, TRAP_COLLISION_RADIUS + 6, testBarricade, 0))) return false;
     if ((mines || []).some(mine => circleIntersectsBarricade(mine.x, mine.y, MINE_COLLISION_RADIUS + 8, testBarricade, 0))) return false;
     return true;
@@ -2017,8 +2123,11 @@ function isTrapPositionValid(x, y) {
     if ((barricades || []).some(b => b.active && b.hp > 0 && !b.isOpen && circleIntersectsBarricade(x, y, TRAP_COLLISION_RADIUS + 4, b, 0))) return false;
     if ((traps || []).some(trap => Math.hypot(trap.x - x, trap.y - y) < TRAP_COLLISION_RADIUS * 2 + 4)) return false;
     if ((mines || []).some(mine => Math.hypot(mine.x - x, mine.y - y) < MINE_COLLISION_RADIUS + TRAP_COLLISION_RADIUS + 6)) return false;
+    if ((cores || []).some(core => core && Math.hypot(core.x - x, core.y - y) < CORE_RADIUS + TRAP_COLLISION_RADIUS + 8)) return false;
     return true;
 }
+
+
 
 function getTowerTileAt(x, y) {
     const point = getSnappedBuildPoint(x, y);
@@ -2030,20 +2139,400 @@ function isTowerTileOccupied(tile, ignoredTower = null) {
 }
 
 const towerDefinitions = [
-    { key: "tower1", name: "Básica", type: "basic", cost: 70, upgradeCost: 100, damage: 0.75, range: 230, fireDelay: 900, color: "cyan", label: "B" },
-    { key: "tower2", name: "Rápida", type: "rapid", cost: 40, upgradeCost: 80, damage: 0.30, range: 205, fireDelay: 315, color: "#b9ff7a", label: "R", maxHp: 22 },
-    { key: "tower3", name: "Perforante", type: "pierce", cost: 160, upgradeCost: 180, damage: 2.2, range: 250, fireDelay: 1200, color: "#ffdf6b", label: "P" },
-    { key: "tower4", name: "Hielo", type: "slow", cost: 220, upgradeCost: 240, damage: 0, range: 260, fireDelay: 2600, color: "#9be7ff", label: "H", slowAmount: 0.45, slowDuration: 1600, areaRadius: 58 },
-    { key: "tower5", name: "Doble", type: "double", cost: 260, upgradeCost: 300, damage: 0.65, range: 235, fireDelay: 1050, color: "#ff8bd1", label: "D" },
-    { key: "tower6", name: "Veneno", type: "poison", cost: 310, upgradeCost: 350, damage: 2.45, range: 248, fireDelay: 2850, color: "#8cff4a", label: "V", areaRadius: 58, poisonDuration: 3200, tickDelay: 650 },
-    { key: "tower7", name: "Ballesta", type: "ballista", cost: 360, upgradeCost: 420, damage: 9.5, range: 320, fireDelay: 2850, color: "#c58b4b", label: "X" },
-    { key: "tower8", name: "Sanguijuela", type: "siphon", cost: 420, upgradeCost: 460, damage: 0.12, drainAmount: 3.2, range: 245, fireDelay: 850, color: "#b81444", label: "S" },
-    { key: "tower9", name: "Buffer", type: "buffer", cost: 620, upgradeCost: 600, damage: 0, range: 180, fireDelay: 999999, color: "#b78cff", label: "+", buffDamage: 0.10, buffSpeed: 0.10 },
+    { key: "tower1", name: "Básica", type: "basic", cost: 70, upgradeCost: 100, damage: 0.75, range: 205, fireDelay: 900, color: "cyan", label: "B" },
+    { key: "tower2", name: "Rápida", type: "rapid", cost: 40, upgradeCost: 80, damage: 0.30, range: 185, fireDelay: 315, color: "#b9ff7a", label: "R", maxHp: 22 },
+    { key: "tower3", name: "Perforante", type: "pierce", cost: 160, upgradeCost: 180, damage: 2.2, range: 225, fireDelay: 1200, color: "#ffdf6b", label: "P" },
+    { key: "tower4", name: "Hielo", type: "slow", cost: 220, upgradeCost: 240, damage: 0, range: 235, fireDelay: 2600, color: "#9be7ff", label: "H", slowAmount: 0.45, slowDuration: 1600, areaRadius: 58 },
+    { key: "tower5", name: "Doble", type: "double", cost: 260, upgradeCost: 300, damage: 0.65, range: 212, fireDelay: 1050, color: "#ff8bd1", label: "D" },
+    { key: "tower6", name: "Veneno", type: "poison", cost: 310, upgradeCost: 350, damage: 2.45, range: 225, fireDelay: 2850, color: "#8cff4a", label: "V", areaRadius: 58, poisonDuration: 3200, tickDelay: 650 },
+    { key: "tower7", name: "Ballesta", type: "ballista", cost: 360, upgradeCost: 420, damage: 9.5, range: 285, fireDelay: 2850, color: "#c58b4b", label: "X" },
+    { key: "tower8", name: "Sanguijuela", type: "siphon", cost: 420, upgradeCost: 460, damage: 0.10, drainAmount: 1.75, range: 210, fireDelay: 980, color: "#b81444", label: "S" },
+    { key: "tower9", name: "Buffer", type: "buffer", cost: 620, upgradeCost: 600, damage: 0, range: 165, fireDelay: 999999, color: "#b78cff", label: "+", buffDamage: 0.10, buffSpeed: 0.10 },
     { key: "tower10", name: "Lucky Block", type: "lucky", cost: 240, upgradeCost: 0, damage: 0, range: 0, fireDelay: 999999, color: "#ffe28a", label: "?" },
-    { key: "tower11", name: "Cuchilla", type: "blade", cost: 90, upgradeCost: 120, damage: 0.55, range: 62, fireDelay: 620, color: "#d9d9d9", label: "C", maxHp: 60 },
-    { key: "tower12", name: "Lancera", type: "spear", cost: 135, upgradeCost: 165, damage: 1.05, range: 310, fireDelay: 1650, color: "#d7b06a", label: "L", maxHp: 44, laneWidth: 38 },
-    { key: "tower13", name: "Láser", type: "laser", cost: 1450, upgradeCost: 950, damage: 14, range: 255, fireDelay: 120, color: "#ff4fd8", label: "⚡", maxHp: 52, beamWidth: 5 }
+    { key: "tower11", name: "Cuchilla", type: "blade", cost: 90, upgradeCost: 120, damage: 0.55, range: 58, fireDelay: 620, color: "#d9d9d9", label: "C", maxHp: 60 },
+    { key: "tower12", name: "Lancera", type: "spear", cost: 135, upgradeCost: 165, damage: 1.05, range: 275, fireDelay: 1650, color: "#d7b06a", label: "L", maxHp: 44, laneWidth: 38 },
+    { key: "tower13", name: "Láser", type: "laser", cost: 1450, upgradeCost: 950, damage: 14, range: 230, fireDelay: 120, color: "#ff4fd8", label: "⚡", maxHp: 52, beamWidth: 5 }
 ];
+
+// Límite duro de rango: evita que una sola torre domine medio mapa en late game.
+// Las evoluciones siguen siendo fuertes por su mecánica, no por tener alcance infinito.
+const TOWER_RANGE_CAPS = {
+    basic: 360, rapid: 310, pierce: 390, slow: 380, double: 350, poison: 370,
+    ballista: 430, siphon: 370, buffer: 285, blade: 135, spear: 430, laser: 360
+};
+
+function getTowerRangeCap(tower) {
+    if (!tower) return Infinity;
+    let cap = TOWER_RANGE_CAPS[tower.type] || 360;
+    if (tower.evolutionId === "slow_mist") cap = Math.max(cap, 405);
+    if (tower.evolutionId === "spear_wanderer" || tower.evolutionId === "spear_hunter") cap = Math.max(cap, 440);
+    if (tower.evolutionId === "laser_judgement" || tower.evolutionId === "laser_prism") cap = Math.min(cap, 380);
+    return cap;
+}
+
+function clampTowerRange(tower) {
+    if (!tower || !Number.isFinite(Number(tower.range))) return;
+    tower.range = Math.min(Number(tower.range) || 0, getTowerRangeCap(tower));
+    if (Number.isFinite(Number(tower.mistRadius))) tower.mistRadius = Math.min(Number(tower.mistRadius) || 0, Math.min(250, getTowerRangeCap(tower) * 0.68));
+    if (Number.isFinite(Number(tower.prismRange))) tower.prismRange = Math.min(Number(tower.prismRange) || 0, 135);
+}
+
+
+
+const TOWER_EVOLUTION_LEVEL = 25;
+const TOWER_EVOLUTION_COST_MULTIPLIER = 7;
+const TOWER_EVOLUTION_DEFINITIONS = {
+    tower1: [
+        { id: "basic_echo", name: "Torre Eco", short: "Marcado de eco", color: "#5ee8ff", label: "E", description: "Los enemigos golpeados quedan marcados. Si mueren rápido, liberan una onda que daña enemigos cercanos.", note: "Limpieza de grupos sin copiar a la ballesta ni al cañón." },
+        { id: "basic_oath", name: "Torre Juramentada", short: "Prioridad a amenazas", color: "#fff1a8", label: "J", description: "Prioriza enemigos especiales, bosses y objetivos peligrosos. Hace más daño contra amenazas importantes.", note: "Defensa inteligente anti-especiales." }
+    ],
+    tower4: [
+        { id: "slow_glacier", name: "Glaciar", short: "Control fuerte", color: "#bff7ff", label: "G", description: "Dispara más lento, pero aplica ralentización más fuerte y duradera en una zona compacta.", note: "Ideal para frenar tanques, bosses y amenazas grandes." },
+        { id: "slow_mist", name: "Niebla Helada", short: "Aura de slow", color: "#d9fbff", label: "N", description: "Genera una niebla alrededor de la torre que ralentiza enemigos cercanos. Su disparo controla menos, pero cubre mejor el terreno.", note: "Ideal para chokepoints y bases defensivas." }
+    ],
+    tower2: [
+        { id: "rapid_splinters", name: "Aguja de Astillas", short: "Daño acumulativo", color: "#ffb36b", label: "A", description: "Sus impactos clavan astillas. Cada varios golpes aplican sangrado acumulativo al objetivo.", note: "Muchos impactos chicos que construyen daño con el tiempo." },
+        { id: "rapid_turbine", name: "Turbina Inestable", short: "Ráfagas", color: "#d7ff6b", label: "T", description: "Dispara en ráfagas extremadamente rápidas y luego entra en una breve pausa de enfriamiento.", note: "Explota en ciclos: presión brutal, descanso corto." }
+    ],
+    tower6: [
+        { id: "poison_plague", name: "Plaga Viva", short: "Contagio", color: "#67ff7a", label: "P", description: "Cuando un enemigo envenenado muere, contagia parte del veneno a enemigos cercanos.", note: "Ideal contra oleadas densas y enemigos agrupados." },
+        { id: "poison_acid", name: "Ácido Negro", short: "Anti-tanque", color: "#45c85b", label: "Á", description: "El veneno corroe al enemigo: mientras esté afectado, recibe más daño de todas las fuentes.", note: "Soporte ofensivo contra bosses, Titanes y objetivos duros." }
+    ],
+    tower3: [
+        { id: "pierce_astral", name: "Lanza Astral", short: "Línea creciente", color: "#ffe78a", label: "A", description: "Sus proyectiles atraviesan más enemigos y ganan daño por cada enemigo perforado.", note: "Ideal para líneas largas y oleadas apiladas." },
+        { id: "pierce_ruin", name: "Punzón de Ruina", short: "Marca física", color: "#ffb64f", label: "R", description: "Atraviesa menos, pero marca enemigos para que reciban más daño de proyectiles físicos.", note: "Soporte anti-tanque para builds de balas." }
+    ],
+    tower5: [
+        { id: "double_sync", name: "Gemelas Sincrónicas", short: "Foco doble", color: "#ff9fe0", label: "S", description: "Sus dos disparos se concentran mejor en objetivos peligrosos y ganan daño contra especiales y bosses.", note: "Dos cañones, un solo juicio." },
+        { id: "double_crossfire", name: "Fuego Cruzado", short: "Doble cobertura", color: "#ff72c6", label: "F", description: "Cada disparo busca enemigos distintos cuando puede, cubriendo mejor oleadas numerosas.", note: "Limpieza y cobertura de área." }
+    ],
+    tower11: [
+        { id: "blade_saw", name: "Sierra Circular", short: "Picadora", color: "#f0f0f0", label: "S", description: "Gana radio y golpea más seguido, pero cada corte individual hace menos daño.", note: "Zona de control para chokepoints." },
+        { id: "blade_guillotine", name: "Guillotina", short: "Corte brutal", color: "#ffeded", label: "G", description: "Golpea más lento, pero cada corte pega mucho más fuerte contra enemigos resistentes.", note: "Anti-tanque de corto alcance." }
+    ],
+    tower12: [
+        { id: "spear_wanderer", name: "Lanza Errante", short: "Lanza autónoma", color: "#ffe29a", label: "E", description: "Invoca una lanza móvil que se desplaza entre enemigos dentro del rango de la torre.", note: "La lanza deja de ser una línea fija y empieza a cazar." },
+        { id: "spear_hunter", name: "Lanza Cazadora", short: "Pinchazo móvil", color: "#ffd06b", label: "C", description: "La lanza apunta automáticamente hacia enemigos cercanos y pincha en esa dirección.", note: "Mantiene la idea de línea, pero ya no depende de una rotación fija." }
+    ],
+    tower8: [
+        { id: "siphon_heart", name: "Corazón Carmesí", short: "Drenaje protector", color: "#ff4f7f", label: "♥", description: "Drena más fuerte. Parte de la curación repara defensas cercanas y el exceso puede convertirse en escudo de sangre.", note: "Sustain defensivo para bases que aguantan a fuerza de sangre." },
+        { id: "siphon_parasite", name: "Parásito Abisal", short: "Infección", color: "#c9154d", label: "Ω", description: "Infecta al enemigo con daño en el tiempo. Si muere infectado, libera una curación alrededor de la torre.", note: "Menos curación inmediata, más valor contra enemigos que sobreviven." }
+    ],
+    tower9: [
+        { id: "buffer_warbanner", name: "Estandarte de Guerra", short: "Buff ofensivo", color: "#a6ff8f", label: "⚔", description: "Las torres cercanas reciben más daño y velocidad de ataque que con un Buffer normal.", note: "Soporte ofensivo para torres evolucionadas y chokepoints." },
+        { id: "buffer_sanctuary", name: "Santuario de Defensa", short: "Buff defensivo", color: "#73ff9f", label: "✚", description: "Torres y barricadas cercanas reciben menos daño y se reparan lentamente. El buff ofensivo es menor.", note: "Soporte defensivo para mantener viva la base." }
+    ],
+    tower13: [
+        { id: "laser_judgement", name: "Rayo de Juicio", short: "Single target", color: "#fff2ff", label: "J", description: "El rayo acumula poder mientras sostiene el mismo objetivo. Si cambia de blanco, pierde la carga.", note: "Especialista anti-boss y anti-Titán." },
+        { id: "laser_prism", name: "Prisma Fracturado", short: "Rayos secundarios", color: "#ff9cf4", label: "Ψ", description: "El rayo principal hace menos daño, pero se ramifica hacia enemigos cercanos con daño reducido.", note: "Sacrifica foco para limpiar grupos." }
+    ]
+};
+let towerEvolutionChoices = {};
+
+function getTowerBaseKey(towerOrKey) {
+    if (!towerOrKey) return "";
+    if (typeof towerOrKey === "string") return towerOrKey;
+    return towerOrKey.baseKey || towerOrKey.originalKey || towerOrKey.key || "";
+}
+
+function getTowerEvolutionOptions(baseKey) {
+    return TOWER_EVOLUTION_DEFINITIONS[baseKey] || [];
+}
+
+function getTowerEvolutionChoice(baseKey) {
+    return towerEvolutionChoices?.[baseKey] || null;
+}
+
+function getTowerEvolutionDef(baseKey, evolutionId = getTowerEvolutionChoice(baseKey)) {
+    return getTowerEvolutionOptions(baseKey).find(evo => evo.id === evolutionId) || null;
+}
+
+function estimateTowerUpgradeCostAtLevel(baseKey, targetLevel = TOWER_EVOLUTION_LEVEL) {
+    const def = getTowerDefinition(baseKey);
+    let upgradeCost = Number(def?.upgradeCost) || Math.max(80, Math.ceil((Number(def?.cost) || 100) * 1.35));
+
+    for (let level = 1; level < Math.max(1, targetLevel); level++) {
+        upgradeCost = scaleTowerUpgradeCost(upgradeCost);
+    }
+
+    return Math.max(1, Math.floor(upgradeCost));
+}
+
+function estimateTowerUpgradeInvestmentToLevel(baseKey, targetLevel = TOWER_EVOLUTION_LEVEL) {
+    const def = getTowerDefinition(baseKey);
+    let upgradeCost = Number(def?.upgradeCost) || Math.max(80, Math.ceil((Number(def?.cost) || 100) * 1.35));
+    let total = 0;
+
+    for (let level = 1; level < Math.max(1, targetLevel); level++) {
+        total += upgradeCost;
+        upgradeCost = scaleTowerUpgradeCost(upgradeCost);
+    }
+
+    return Math.max(0, Math.floor(total));
+}
+
+function getTowerEvolutionCost(baseKey) {
+    const def = getTowerDefinition(baseKey);
+    const baseCost = Number(def?.cost) || 0;
+    const minimum = Math.floor(baseCost * TOWER_EVOLUTION_COST_MULTIPLIER);
+    const lateUpgradeCost = estimateTowerUpgradeCostAtLevel(baseKey, TOWER_EVOLUTION_LEVEL);
+    const totalInvestment = estimateTowerUpgradeInvestmentToLevel(baseKey, TOWER_EVOLUTION_LEVEL);
+
+    // El costo base x7 era demasiado bajo para torres que ya exigieron una inversión enorme
+    // para llegar a nivel 25. La evolución es una decisión de build global, así que escala
+    // con la inversión real de la torre, sin volverse tan cara como subir otros 25 niveles.
+    return Math.max(minimum, Math.ceil(lateUpgradeCost * 0.35), Math.ceil(totalInvestment * 0.08));
+}
+
+function isTowerEvolutionSystemAvailable(tower) {
+    return !!tower && getTowerEvolutionOptions(getTowerBaseKey(tower)).length > 0;
+}
+
+function canTowerPromptEvolution(tower) {
+    if (!isTowerEvolutionSystemAvailable(tower)) return false;
+    if ((Number(tower.level) || 1) < TOWER_EVOLUTION_LEVEL) return false;
+    return !getTowerEvolutionChoice(getTowerBaseKey(tower));
+}
+
+function isTowerEvolutionLockedAtCap(tower) {
+    return Boolean(tower && isTowerEvolutionSystemAvailable(tower) && (Number(tower.level) || 1) >= TOWER_EVOLUTION_LEVEL && !getTowerEvolutionChoice(getTowerBaseKey(tower)));
+}
+
+function getEvolutionEligibleBaseKeyFromSelection(selected = getSelectedStructures()) {
+    if (selectedStructureType !== "tower" || !selected || !selected.length) return "";
+
+    const eligible = selected.filter(tower => isTowerEvolutionSystemAvailable(tower) && (Number(tower.level) || 1) >= TOWER_EVOLUTION_LEVEL);
+    if (!eligible.length) return "";
+
+    const baseKey = getTowerBaseKey(eligible[0]);
+    if (!baseKey) return "";
+    if (!selected.every(tower => getTowerBaseKey(tower) === baseKey)) return "";
+
+    return baseKey;
+}
+
+function getTowerEvolutionPanelHtmlForSelection(selected = getSelectedStructures()) {
+    const baseKey = getEvolutionEligibleBaseKeyFromSelection(selected);
+    if (!baseKey) return "";
+    const sample = selected.find(tower => getTowerBaseKey(tower) === baseKey && (Number(tower.level) || 1) >= TOWER_EVOLUTION_LEVEL);
+    return getTowerEvolutionPanelHtml(sample, selected.length);
+}
+
+function applyTowerEvolution(tower, force = false, overrideBaseKey = null) {
+    if (!tower) return false;
+    const baseKey = overrideBaseKey || getTowerBaseKey(tower);
+    const choiceId = getTowerEvolutionChoice(baseKey);
+    const evo = getTowerEvolutionDef(baseKey, choiceId);
+    if (!evo || (Number(tower.level) || 1) < TOWER_EVOLUTION_LEVEL) return false;
+    if (!force && tower.evolutionId === evo.id) return false;
+
+    // Importante: la evolución es GLOBAL por tipo de torre en la run.
+    // Guardamos el baseKey canónico para que todas las torres futuras y guardadas
+    // pertenezcan a la misma familia aunque ya hayan cambiado de nombre/color.
+    tower.baseKey = baseKey;
+    tower.evolutionId = evo.id;
+    tower.evolutionName = evo.name;
+    tower.name = evo.name;
+    tower.color = evo.color || tower.color;
+    tower.label = evo.label || tower.label;
+
+    if (evo.id === "basic_echo") {
+        tower.echoExplosionRadius = Math.max(Number(tower.echoExplosionRadius) || 0, 66);
+        tower.echoExplosionDamage = Math.max(Number(tower.echoExplosionDamage) || 0, Math.max(2.5, (tower.damage || 1) * 1.15));
+    }
+    if (evo.id === "basic_oath") {
+        tower.oathSpecialMultiplier = Math.max(Number(tower.oathSpecialMultiplier) || 0, 1.35);
+        tower.oathThreatFocus = true;
+    }
+    if (evo.id === "slow_glacier") {
+        tower.slowAmount = Math.min(Number(tower.slowAmount) || 0.45, 0.28);
+        tower.slowDuration = Math.max(Number(tower.slowDuration) || 0, 2450);
+        tower.areaRadius = Math.max(36, Math.min(Number(tower.areaRadius) || 58, 48));
+        tower.fireDelay = Math.max(Number(tower.fireDelay) || 2600, 2850);
+    }
+    if (evo.id === "slow_mist") {
+        tower.mistRadius = Math.max(Number(tower.mistRadius) || 0, 132);
+        tower.mistSlowAmount = Math.min(Number(tower.mistSlowAmount) || 0.62, 0.62);
+        tower.mistSlowDuration = Math.max(Number(tower.mistSlowDuration) || 0, 520);
+        tower.slowAmount = Math.max(Number(tower.slowAmount) || 0.45, 0.55);
+        tower.areaRadius = Math.max(Number(tower.areaRadius) || 58, 70);
+    }
+    if (evo.id === "rapid_splinters") {
+        tower.splinterHitsRequired = Math.max(Number(tower.splinterHitsRequired) || 0, 4);
+        tower.splinterPower = Math.max(Number(tower.splinterPower) || 0, 0.65);
+        tower.splinterDuration = Math.max(Number(tower.splinterDuration) || 0, 2600);
+        tower.fireDelay = Math.max(155, Number(tower.fireDelay) || 315);
+    }
+    if (evo.id === "rapid_turbine") {
+        tower.turbineBurstDuration = Math.max(Number(tower.turbineBurstDuration) || 0, 1550);
+        tower.turbineRestDuration = Math.max(Number(tower.turbineRestDuration) || 0, 900);
+        tower.turbineCycleStartedAt = tower.turbineCycleStartedAt || getGameTime();
+        tower.turbineBurstDelayMultiplier = Math.min(Number(tower.turbineBurstDelayMultiplier) || 0.48, 0.48);
+        tower.turbineRestDelayMultiplier = Math.max(Number(tower.turbineRestDelayMultiplier) || 2.15, 2.15);
+    }
+    if (evo.id === "poison_plague") {
+        tower.plagueSpreadRadius = Math.max(Number(tower.plagueSpreadRadius) || 0, 92);
+        tower.plagueSpreadDamageMultiplier = Math.max(Number(tower.plagueSpreadDamageMultiplier) || 0, 0.42);
+        tower.plagueSpreadDurationMultiplier = Math.max(Number(tower.plagueSpreadDurationMultiplier) || 0, 0.48);
+        tower.areaRadius = Math.max(Number(tower.areaRadius) || 58, 64);
+    }
+    if (evo.id === "poison_acid") {
+        tower.acidVulnerabilityMultiplier = Math.max(Number(tower.acidVulnerabilityMultiplier) || 0, 1.16);
+        tower.acidVulnerabilityDuration = Math.max(Number(tower.acidVulnerabilityDuration) || 0, 2200);
+        tower.areaRadius = Math.max(Number(tower.areaRadius) || 58, 60);
+    }
+    if (evo.id === "pierce_astral") {
+        tower.astralPierceHits = Math.max(Number(tower.astralPierceHits) || 0, 5);
+        tower.astralDamageGrowth = Math.max(Number(tower.astralDamageGrowth) || 0, 0.13);
+        tower.fireDelay = Math.max(980, Number(tower.fireDelay) || 1200);
+    }
+    if (evo.id === "pierce_ruin") {
+        tower.ruinDamageMultiplier = Math.max(Number(tower.ruinDamageMultiplier) || 0, 1.15);
+        tower.ruinDuration = Math.max(Number(tower.ruinDuration) || 0, 2600);
+        tower.fireDelay = Math.max(1050, Number(tower.fireDelay) || 1200);
+    }
+    if (evo.id === "double_sync") {
+        tower.syncThreatMultiplier = Math.max(Number(tower.syncThreatMultiplier) || 0, 1.32);
+        tower.syncNormalMultiplier = Math.max(Number(tower.syncNormalMultiplier) || 0, 0.92);
+        tower.range = Math.max(Number(tower.range) || 0, 250);
+    }
+    if (evo.id === "double_crossfire") {
+        tower.crossfireDamageMultiplier = Math.max(Number(tower.crossfireDamageMultiplier) || 0, 0.92);
+        tower.crossfireSecondTargetRange = Math.max(Number(tower.crossfireSecondTargetRange) || 0, 260);
+        tower.fireDelay = Math.max(830, Number(tower.fireDelay) || 1050);
+    }
+    if (evo.id === "blade_saw") {
+        tower.bladeSawDamageMultiplier = Math.max(Number(tower.bladeSawDamageMultiplier) || 0, 0.72);
+        tower.range = Math.max(Number(tower.range) || 0, 92);
+        tower.fireDelay = Math.min(Number(tower.fireDelay) || 620, 430);
+    }
+    if (evo.id === "blade_guillotine") {
+        tower.guillotineMultiplier = Math.max(Number(tower.guillotineMultiplier) || 0, 2.25);
+        tower.guillotineHeavyThreshold = Math.max(Number(tower.guillotineHeavyThreshold) || 0, 0.42);
+        tower.fireDelay = Math.max(Number(tower.fireDelay) || 620, 980);
+        tower.range = Math.max(Number(tower.range) || 0, 76);
+    }
+    if (evo.id === "spear_wanderer") {
+        tower.roamingSpear = null;
+        tower.roamingSpearSpeed = Math.max(Number(tower.roamingSpearSpeed) || 0, 6.0);
+        tower.roamingSpearDamageMultiplier = Math.max(Number(tower.roamingSpearDamageMultiplier) || 0, 0.82);
+        tower.roamingSpearHitDelay = Math.max(Number(tower.roamingSpearHitDelay) || 0, 210);
+        tower.range = Math.max(Number(tower.range) || 0, 335);
+    }
+    if (evo.id === "spear_hunter") {
+        tower.hunterSpearDamageMultiplier = Math.max(Number(tower.hunterSpearDamageMultiplier) || 0, 1.12);
+        tower.hunterSpearLaneWidth = Math.max(Number(tower.hunterSpearLaneWidth) || 0, 48);
+        tower.fireDelay = Math.max(900, Math.min(Number(tower.fireDelay) || 1650, 1280));
+        tower.range = Math.max(Number(tower.range) || 0, 335);
+    }
+    if (evo.id === "laser_judgement") {
+        tower.judgementMaxCharge = Math.max(Number(tower.judgementMaxCharge) || 0, 2.15);
+        tower.judgementChargeGain = Math.max(Number(tower.judgementChargeGain) || 0, 0.085);
+        tower.judgementCharge = Math.max(1, Number(tower.judgementCharge) || 1);
+        tower.fireDelay = Math.max(110, Number(tower.fireDelay) || 135);
+    }
+    if (evo.id === "laser_prism") {
+        tower.prismBranches = Math.max(Number(tower.prismBranches) || 0, 2);
+        tower.prismDamageMultiplier = Math.max(Number(tower.prismDamageMultiplier) || 0, 0.34);
+        tower.prismRange = Math.max(Number(tower.prismRange) || 0, 120);
+        tower.damage *= 0.88;
+    }
+    if (evo.id === "siphon_heart") {
+        tower.crimsonHeartHealMultiplier = Math.max(Number(tower.crimsonHeartHealMultiplier) || 0, 1.18);
+        tower.drainAmount *= 1.08;
+        tower.range = Math.max(Number(tower.range) || 0, 265);
+        tower.fireDelay = Math.max(560, Math.min(Number(tower.fireDelay) || 850, 720));
+    }
+    if (evo.id === "siphon_parasite") {
+        tower.parasiteDamageMultiplier = Math.max(Number(tower.parasiteDamageMultiplier) || 0, 0.34);
+        tower.parasiteDuration = Math.max(Number(tower.parasiteDuration) || 0, 3600);
+        tower.range = Math.max(Number(tower.range) || 0, 275);
+        tower.fireDelay = Math.max(620, Number(tower.fireDelay) || 850);
+    }
+    if (evo.id === "buffer_warbanner") {
+        tower.buffDamage *= 1.18;
+        tower.buffSpeed *= 1.10;
+        tower.range = Math.max(Number(tower.range) || 0, 205);
+    }
+    if (evo.id === "buffer_sanctuary") {
+        tower.sanctuaryDefense = Math.max(Number(tower.sanctuaryDefense) || 0, 0.18);
+        tower.sanctuaryRegenPerSecond = Math.max(Number(tower.sanctuaryRegenPerSecond) || 0, 0.28);
+        tower.range = Math.max(Number(tower.range) || 0, 215);
+    }
+    clampTowerRange(tower);
+    return true;
+}
+
+function applyKnownEvolutionToTower(tower) {
+    if (!tower) return false;
+    const baseKey = getTowerBaseKey(tower);
+    if (!getTowerEvolutionChoice(baseKey)) return false;
+    return applyTowerEvolution(tower);
+}
+
+function isTowerFromEvolutionBase(tower, baseKey) {
+    if (!tower || !baseKey) return false;
+    if (getTowerBaseKey(tower) === baseKey) return true;
+
+    // Fallback robusto para torres viejas/cargadas o torres que ya cambiaron nombre:
+    // si comparten el type de la definición base, pertenecen a la misma familia.
+    const baseDef = getTowerDefinition(baseKey);
+    return Boolean(baseDef && tower.type && tower.type === baseDef.type);
+}
+
+function applyTowerEvolutionChoiceToAll(baseKey) {
+    let evolvedCount = 0;
+    (towers || []).forEach(tower => {
+        if (isTowerFromEvolutionBase(tower, baseKey) && (Number(tower.level) || 1) >= TOWER_EVOLUTION_LEVEL) {
+            if (applyTowerEvolution(tower, true, baseKey)) evolvedCount++;
+        }
+    });
+    return evolvedCount;
+}
+
+function chooseTowerEvolutionForBase(baseKey, evolutionId) {
+    const options = getTowerEvolutionOptions(baseKey);
+    const evo = options.find(option => option.id === evolutionId);
+    if (!evo) return false;
+    if (getTowerEvolutionChoice(baseKey)) {
+        showCenterMessage("Esa torre ya tiene evolución elegida", 950, "minor");
+        return false;
+    }
+    const cost = getTowerEvolutionCost(baseKey);
+    if (coins < cost) {
+        showCenterMessage(`Faltan ${formatMissingMoney(cost - coins)} monedas`, 850, "minor");
+        updateStructurePanel();
+        return false;
+    }
+    coins -= cost;
+    towerEvolutionChoices[baseKey] = evolutionId;
+    const evolvedCount = applyTowerEvolutionChoiceToAll(baseKey);
+    const baseDef = getTowerDefinition(baseKey);
+    const countText = evolvedCount > 1 ? ` · ${evolvedCount} torres evolucionadas` : evolvedCount === 1 ? " · 1 torre evolucionada" : "";
+    showCenterMessage(`${baseDef?.name || "Torre"} evolucionará a ${evo.name}${countText}`, 1500, "event");
+    updateHud(true);
+    updateStructurePanel();
+    autoSaveRun(true);
+    return true;
+}
+
+function getTowerEvolutionPanelHtml(tower, selectionCount = 1) {
+    if (!tower || selectedStructureType !== "tower") return "";
+    if ((Number(tower.level) || 1) < TOWER_EVOLUTION_LEVEL || !isTowerEvolutionSystemAvailable(tower)) return "";
+    const baseKey = getTowerBaseKey(tower);
+    const chosen = getTowerEvolutionChoice(baseKey);
+    const baseDef = getTowerDefinition(baseKey);
+
+    if (chosen) {
+        const evo = getTowerEvolutionDef(baseKey, chosen);
+        return `<div class="towerEvolutionInfo"><strong>Evolución de ${baseDef?.name || "torre"}: ${evo?.name || chosen}</strong><br><small>Todas las torres de este tipo evolucionan a esta rama al llegar a nivel ${TOWER_EVOLUTION_LEVEL}.</small></div>`;
+    }
+
+    const cost = getTowerEvolutionCost(baseKey);
+    const options = getTowerEvolutionOptions(baseKey);
+    if (!options.length) return "";
+    return `<div class="towerEvolutionInfo"><strong>Evolución disponible · ${baseDef?.name || "Torre"}</strong><br><small>${selectionCount > 1 ? `${selectionCount} torres seleccionadas · ` : ""}Elegís una vez para toda la run. Costo: ${formatMoney(cost)} monedas.</small><div class="towerEvolutionActions">${options.map(evo => `<button type="button" data-structure-action="evolve:${evo.id}" ${coins < cost ? "disabled" : ""}><strong>${evo.name}</strong><br><small>${evo.description}</small></button>`).join("")}</div></div>`;
+}
 
 const enemyTypes = [
     {
@@ -2348,6 +2837,1166 @@ function getBossTypeForWave() {
 }
 
 
+const VISITOR_STRUCTURE_SPECIALS = new Set(["visitor_wall", "visitor_gate", "visitor_door", "visitor_tower", "visitor_mine"]);
+
+function isVisitorGateStructure(structure) {
+    return Boolean(structure && (structure.visitorStructureType === "door" || structure.special === "visitor_gate" || structure.special === "visitor_door"));
+}
+const VISITOR_WALL_TIERS = [
+    { name: "Muro del Visitante", color: "#2b2d38", hp: 48 },
+    { name: "Muro de Piedra del Visitante", color: "#4a4d5a", hp: 78 },
+    { name: "Muro de Hierro del Visitante", color: "#5f6472", hp: 122 },
+    { name: "Muro de Obsidiana del Visitante", color: "#171923", hp: 180 }
+];
+const VISITOR_MAX_WALLS = 56;
+const VISITOR_MAX_TOWERS = 10;
+const VISITOR_MAX_MINES = 6;
+const VISITOR_MAX_OUTPOSTS = 4;
+
+function isVisitorStructure(enemy) {
+    return Boolean(enemy && (enemy.visitorStructure || VISITOR_STRUCTURE_SPECIALS.has(enemy.special)));
+}
+
+function getLivingVisitor() {
+    return (enemies || []).find(e => e && e.special === "visitor" && e.hp > 0) || null;
+}
+
+function getVisitorStructures(kind = null) {
+    return (enemies || []).filter(e => e && e.hp > 0 && isVisitorStructure(e) && (!kind || e.visitorStructureType === kind));
+}
+
+function getVisitorPlanningCenter(visitor = getLivingVisitor()) {
+    const structures = getVisitorStructures();
+    if (structures.length) {
+        const sum = structures.reduce((acc, s) => ({ x: acc.x + s.x, y: acc.y + s.y }), { x: 0, y: 0 });
+        return { x: sum.x / structures.length, y: sum.y / structures.length };
+    }
+    if (visitor && Number.isFinite(visitor.visitorPlanningCenterX) && Number.isFinite(visitor.visitorPlanningCenterY)) {
+        return { x: visitor.visitorPlanningCenterX, y: visitor.visitorPlanningCenterY };
+    }
+    if (visitor) return { x: visitor.x, y: visitor.y };
+    return { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 };
+}
+
+function isVisitorStructurePositionBlocked(x, y, radius = 32) {
+    if (isVisitorBuildPhaseForbiddenPosition(x, y, radius + 55)) return true;
+    return getVisitorStructures().some(s => Math.hypot(s.x - x, s.y - y) < ((s.radius || 22) + radius + 18));
+}
+
+function getVisitorBaseDirection(center) {
+    const target = basePlaced && baseCore ? baseCore : player;
+    if (!target) return 0;
+    return Math.atan2(target.y - center.y, target.x - center.x);
+}
+
+function getVisitorCardinalBaseVectors(center, visitor = null) {
+    // La orientación de la base también tiene que quedar fija.
+    // Si la recalculamos según dónde está el player en cada tick, la plantilla gira
+    // y termina construyendo pedazos de varias bases distintas.
+    if (visitor && Number.isFinite(visitor.visitorBaseForwardX) && Number.isFinite(visitor.visitorBaseForwardY)) {
+        const fx = visitor.visitorBaseForwardX;
+        const fy = visitor.visitorBaseForwardY;
+        return {
+            f: { x: fx, y: fy, angle: Math.atan2(fy, fx) },
+            r: { x: -fy, y: fx, angle: Math.atan2(fx, -fy) }
+        };
+    }
+
+    const angle = getVisitorBaseDirection(center);
+    const dirs = [
+        { x: 1, y: 0, angle: 0 },
+        { x: 0, y: 1, angle: Math.PI / 2 },
+        { x: -1, y: 0, angle: Math.PI },
+        { x: 0, y: -1, angle: -Math.PI / 2 }
+    ];
+    let best = dirs[0];
+    let bestDot = -Infinity;
+    const ax = Math.cos(angle);
+    const ay = Math.sin(angle);
+    dirs.forEach(dir => {
+        const dot = ax * dir.x + ay * dir.y;
+        if (dot > bestDot) { bestDot = dot; best = dir; }
+    });
+
+    if (visitor) {
+        visitor.visitorBaseForwardX = best.x;
+        visitor.visitorBaseForwardY = best.y;
+    }
+
+    return {
+        f: { x: best.x, y: best.y, angle: best.angle },
+        r: { x: -best.y, y: best.x, angle: best.angle + Math.PI / 2 }
+    };
+}
+
+const VISITOR_BASE_TEMPLATES = [
+    // Coordenadas locales:
+    // lx = frente/atrás respecto al jugador, ly = derecha/izquierda.
+    // angle = orientación local del muro: 0 sigue el eje frontal, PI/2 sigue el eje lateral.
+    // v13: plantillas más amplias y legibles. Menos amontonamiento, puerta centrada en el frente
+    // y torres interiores. La idea es que parezca una base armada, no piezas sueltas.
+    {
+        id: "square",
+        name: "Cuadrado compacto",
+        slots: [
+            // frente: puerta en el centro y dos muros laterales dejando un hueco claro
+            { type: "door", lx: 184, ly: 0, angle: Math.PI / 2, radius: 34 },
+            { type: "wall", lx: 184, ly: -132, angle: Math.PI / 2, radius: 32 },
+            { type: "wall", lx: 184, ly: 132, angle: Math.PI / 2, radius: 32 },
+            // laterales
+            { type: "wall", lx: 72, ly: -198, angle: 0, radius: 32 },
+            { type: "wall", lx: -52, ly: -198, angle: 0, radius: 32 },
+            { type: "wall", lx: -176, ly: -198, angle: 0, radius: 32 },
+            { type: "wall", lx: 72, ly: 198, angle: 0, radius: 32 },
+            { type: "wall", lx: -52, ly: 198, angle: 0, radius: 32 },
+            { type: "wall", lx: -176, ly: 198, angle: 0, radius: 32 },
+            // fondo
+            { type: "wall", lx: -248, ly: -132, angle: Math.PI / 2, radius: 32 },
+            { type: "wall", lx: -248, ly: 0, angle: Math.PI / 2, radius: 32 },
+            { type: "wall", lx: -248, ly: 132, angle: Math.PI / 2, radius: 32 },
+            // torres dentro, no tapando paredes
+            { type: "tower", lx: 56, ly: -82, angle: 0, radius: 36 },
+            { type: "tower", lx: 56, ly: 82, angle: 0, radius: 36 },
+            { type: "tower", lx: -120, ly: 0, angle: 0, radius: 36 }
+        ]
+    },
+    {
+        id: "octagon",
+        name: "Octágono defensivo",
+        slots: [
+            { type: "door", lx: 214, ly: 0, angle: Math.PI / 2, radius: 34 },
+            { type: "wall", lx: 214, ly: -132, angle: Math.PI / 2, radius: 32 },
+            { type: "wall", lx: 214, ly: 132, angle: Math.PI / 2, radius: 32 },
+            { type: "wall", lx: 130, ly: -226, angle: Math.PI / 4, radius: 32 },
+            { type: "wall", lx: -8, ly: -264, angle: 0, radius: 32 },
+            { type: "wall", lx: -146, ly: -226, angle: -Math.PI / 4, radius: 32 },
+            { type: "wall", lx: -230, ly: -132, angle: Math.PI / 2, radius: 32 },
+            { type: "wall", lx: -230, ly: 0, angle: Math.PI / 2, radius: 32 },
+            { type: "wall", lx: -230, ly: 132, angle: Math.PI / 2, radius: 32 },
+            { type: "wall", lx: -146, ly: 226, angle: Math.PI / 4, radius: 32 },
+            { type: "wall", lx: -8, ly: 264, angle: 0, radius: 32 },
+            { type: "wall", lx: 130, ly: 226, angle: -Math.PI / 4, radius: 32 },
+            { type: "tower", lx: 64, ly: -82, angle: 0, radius: 36 },
+            { type: "tower", lx: 64, ly: 82, angle: 0, radius: 36 },
+            { type: "tower", lx: -104, ly: 0, angle: 0, radius: 36 }
+        ]
+    },
+    {
+        id: "rectangle",
+        name: "Rectángulo cerrado",
+        slots: [
+            { type: "door", lx: 220, ly: 0, angle: Math.PI / 2, radius: 34 },
+            { type: "wall", lx: 220, ly: -138, angle: Math.PI / 2, radius: 32 },
+            { type: "wall", lx: 220, ly: 138, angle: Math.PI / 2, radius: 32 },
+            { type: "wall", lx: 94, ly: -210, angle: 0, radius: 32 },
+            { type: "wall", lx: -32, ly: -210, angle: 0, radius: 32 },
+            { type: "wall", lx: -158, ly: -210, angle: 0, radius: 32 },
+            { type: "wall", lx: -284, ly: -138, angle: Math.PI / 2, radius: 32 },
+            { type: "wall", lx: -284, ly: 0, angle: Math.PI / 2, radius: 32 },
+            { type: "wall", lx: -284, ly: 138, angle: Math.PI / 2, radius: 32 },
+            { type: "wall", lx: -158, ly: 210, angle: 0, radius: 32 },
+            { type: "wall", lx: -32, ly: 210, angle: 0, radius: 32 },
+            { type: "wall", lx: 94, ly: 210, angle: 0, radius: 32 },
+            { type: "tower", lx: 72, ly: -86, angle: 0, radius: 36 },
+            { type: "tower", lx: 72, ly: 86, angle: 0, radius: 36 },
+            { type: "tower", lx: -142, ly: 0, angle: 0, radius: 36 }
+        ]
+    },
+    {
+        id: "triangle",
+        name: "Triángulo de asedio",
+        slots: [
+            { type: "door", lx: 204, ly: 0, angle: Math.PI / 2, radius: 34 },
+            { type: "wall", lx: 204, ly: -132, angle: Math.PI / 2, radius: 32 },
+            { type: "wall", lx: 204, ly: 132, angle: Math.PI / 2, radius: 32 },
+            { type: "wall", lx: 108, ly: -200, angle: -Math.PI / 4, radius: 32 },
+            { type: "wall", lx: 8, ly: -300, angle: -Math.PI / 4, radius: 32 },
+            { type: "wall", lx: -92, ly: -400, angle: -Math.PI / 4, radius: 32 },
+            { type: "wall", lx: 108, ly: 200, angle: Math.PI / 4, radius: 32 },
+            { type: "wall", lx: 8, ly: 300, angle: Math.PI / 4, radius: 32 },
+            { type: "wall", lx: -92, ly: 400, angle: Math.PI / 4, radius: 32 },
+            { type: "wall", lx: -216, ly: -132, angle: Math.PI / 2, radius: 32 },
+            { type: "wall", lx: -216, ly: 0, angle: Math.PI / 2, radius: 32 },
+            { type: "wall", lx: -216, ly: 132, angle: Math.PI / 2, radius: 32 },
+            { type: "tower", lx: 70, ly: -86, angle: 0, radius: 36 },
+            { type: "tower", lx: 70, ly: 86, angle: 0, radius: 36 },
+            { type: "tower", lx: -74, ly: 0, angle: 0, radius: 36 }
+        ]
+    }
+];
+
+function getVisitorTemplateLocalAngle(vectors, angleOrDir = "horizontal") {
+    if (Number.isFinite(angleOrDir)) {
+        const ca = Math.cos(angleOrDir);
+        const sa = Math.sin(angleOrDir);
+        return Math.atan2(vectors.f.y * ca + vectors.r.y * sa, vectors.f.x * ca + vectors.r.x * sa);
+    }
+    const dir = angleOrDir;
+    if (dir === "vertical") return Math.atan2(vectors.f.y, vectors.f.x);
+    if (dir === "diagFR") return Math.atan2(vectors.f.y + vectors.r.y, vectors.f.x + vectors.r.x);
+    if (dir === "diagFL") return Math.atan2(vectors.f.y - vectors.r.y, vectors.f.x - vectors.r.x);
+    if (dir === "diagBR") return Math.atan2(-vectors.f.y + vectors.r.y, -vectors.f.x + vectors.r.x);
+    if (dir === "diagBL") return Math.atan2(-vectors.f.y - vectors.r.y, -vectors.f.x - vectors.r.x);
+    return Math.atan2(vectors.r.y, vectors.r.x);
+}
+
+function makeVisitorTemplateSlot(anchor, vectors, slot) {
+    const pad = slot.pad || 95;
+    const localFront = Number.isFinite(slot.lx) ? slot.lx : (Number(slot.f) || 0);
+    const localRight = Number.isFinite(slot.ly) ? slot.ly : (Number(slot.r) || 0);
+    const x = clampWorldX(anchor.x + vectors.f.x * localFront + vectors.r.x * localRight, pad);
+    const y = clampWorldY(anchor.y + vectors.f.y * localFront + vectors.r.y * localRight, pad);
+    return {
+        ...slot,
+        x,
+        y,
+        orientation: getVisitorTemplateLocalAngle(vectors, Number.isFinite(slot.angle) ? slot.angle : (slot.dir || "horizontal")),
+        radius: slot.radius || (slot.type === "tower" ? 36 : 32)
+    };
+}
+
+function estimatePlayerThreatScore() {
+    const towerThreat = (towers || []).reduce((sum, t) => sum + (t && t.owned && t.hp > 0 ? 1.2 + (Number(t.level) || 1) * 0.9 : 0), 0);
+    const barricadeThreat = (barricades || []).reduce((sum, b) => sum + (b && b.active && b.hp > 0 ? 0.35 + (Number(b.tier) || 0) * 0.55 + (Number(b.level) || 0) * 0.12 : 0), 0);
+    const baseThreat = basePlaced && baseCore && baseCore.hp > 0 ? 4.5 : 0;
+    const playerThreat = Math.max(2, ((Number(player?.damage) || 1) * 1.15) + ((Number(player?.critChance) || 0) * 12) + ((Number(player?.maxHp) || 20) / 18));
+    return towerThreat + barricadeThreat + baseThreat + playerThreat + wave * 0.08;
+}
+
+function estimateVisitorPresenceScore(visitor) {
+    if (!visitor) return 0;
+    const structureThreat = getVisitorStructures().reduce((sum, s) => sum + (s.visitorStructureType === "tower" ? 3.6 : s.visitorStructureType === "mine" ? 1.8 : s.visitorStructureType === "door" ? 1.6 : 1.2 + (s.visitorTier || 0) * 0.8), 0);
+    const hpThreat = ((Number(visitor.maxHp) || Number(visitor.hp) || 70) / 18) * Math.max(0.45, (Number(visitor.hp) || 0) / Math.max(1, Number(visitor.maxHp) || Number(visitor.hp) || 1));
+    return structureThreat + hpThreat + (Number(visitor.visitorLevel) || 1) * 2.6 + (Number(visitor.visitorDamage) || 2.5) * 1.2;
+}
+
+
+function getVisitorTemplateById(id) {
+    return VISITOR_BASE_TEMPLATES.find(t => t.id === id) || VISITOR_BASE_TEMPLATES[0];
+}
+
+function makeVisitorTemplateSlotAtAnchor(anchor, vectors, slot, templateId = "tmp", index = 0, section = "main") {
+    return { ...makeVisitorTemplateSlot(anchor, vectors, slot), slotIndex: index, slotKey: `${templateId}:${section}:${index}`, templateId };
+}
+
+function getVisitorShellSlotsForAnchor(anchor, visitor = null, template = null) {
+    const usedTemplate = template || getVisitorTemplateById(visitor?.visitorBaseTemplateId);
+    const vectors = getVisitorCardinalBaseVectors(anchor, visitor);
+    return (usedTemplate?.slots || [])
+        .map((slot, index) => makeVisitorTemplateSlotAtAnchor(anchor, vectors, slot, usedTemplate.id, index, "main"))
+        .filter(slot => slot.type !== "tower");
+}
+
+function isVisitorBaseAnchorViable(anchor, visitor = null, template = null) {
+    if (!anchor || !Number.isFinite(anchor.x) || !Number.isFinite(anchor.y)) return false;
+    if (isVisitorBuildPhaseForbiddenPosition(anchor.x, anchor.y, 210)) return false;
+    const shellSlots = getVisitorShellSlotsForAnchor(anchor, visitor, template);
+    if (!shellSlots.length) return false;
+    let blockedSlots = 0;
+    for (const slot of shellSlots) {
+        if (slot.x < 95 || slot.x > WORLD_WIDTH - 95 || slot.y < 95 || slot.y > WORLD_HEIGHT - 95) return false;
+        if (isVisitorBuildPhaseForbiddenPosition(slot.x, slot.y, 90)) blockedSlots++;
+    }
+    return blockedSlots === 0;
+}
+
+function findVisitorViableBaseAnchor(visitor = null) {
+    const template = chooseVisitorBaseTemplate(visitor);
+    const margin = 360;
+    const candidates = [
+        { x: margin, y: margin },
+        { x: WORLD_WIDTH - margin, y: margin },
+        { x: margin, y: WORLD_HEIGHT - margin },
+        { x: WORLD_WIDTH - margin, y: WORLD_HEIGHT - margin },
+        { x: WORLD_WIDTH / 2, y: margin },
+        { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT - margin },
+        { x: margin, y: WORLD_HEIGHT / 2 },
+        { x: WORLD_WIDTH - margin, y: WORLD_HEIGHT / 2 },
+        { x: WORLD_WIDTH * 0.24, y: WORLD_HEIGHT * 0.24 },
+        { x: WORLD_WIDTH * 0.76, y: WORLD_HEIGHT * 0.24 },
+        { x: WORLD_WIDTH * 0.24, y: WORLD_HEIGHT * 0.76 },
+        { x: WORLD_WIDTH * 0.76, y: WORLD_HEIGHT * 0.76 }
+    ];
+    if (visitor) {
+        for (let i = 0; i < 12; i++) {
+            const angle = (Math.PI * 2 * i) / 12;
+            candidates.push({
+                x: clampWorldX(visitor.x + Math.cos(angle) * (520 + (i % 3) * 160), margin),
+                y: clampWorldY(visitor.y + Math.sin(angle) * (520 + (i % 3) * 160), margin)
+            });
+        }
+    }
+    const viable = candidates.filter(c => isVisitorBaseAnchorViable(c, visitor, template));
+    const pool = viable.length ? viable : candidates.filter(c => !isVisitorBuildPhaseForbiddenPosition(c.x, c.y, 260));
+    const selectedPool = pool.length ? pool : candidates;
+    selectedPool.sort((a, b) => scoreVisitorPlanningPoint(b, visitor) - scoreVisitorPlanningPoint(a, visitor));
+    return selectedPool[0] || { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 };
+}
+
+function chooseVisitorBaseTemplate(visitor) {
+    const threat = estimatePlayerThreatScore();
+    const doorCount = getVisitorStructures("door").length;
+    const structureCount = getVisitorStructures().length;
+    if (visitor?.visitorBaseTemplateId && (structureCount > 0 || doorCount > 0)) {
+        return VISITOR_BASE_TEMPLATES.find(t => t.id === visitor.visitorBaseTemplateId) || VISITOR_BASE_TEMPLATES[1];
+    }
+    let chosen = VISITOR_BASE_TEMPLATES[0];
+    if (threat < 24 && wave < 24) chosen = Math.random() < 0.75 ? VISITOR_BASE_TEMPLATES[0] : VISITOR_BASE_TEMPLATES[2];
+    else if (threat < 38) chosen = Math.random() < 0.55 ? VISITOR_BASE_TEMPLATES[1] : VISITOR_BASE_TEMPLATES[2];
+    else if (threat < 52) chosen = Math.random() < 0.60 ? VISITOR_BASE_TEMPLATES[1] : VISITOR_BASE_TEMPLATES[3];
+    else chosen = VISITOR_BASE_TEMPLATES[1];
+    if (visitor) visitor.visitorBaseTemplateId = chosen.id;
+    return chosen;
+}
+
+function getVisitorTemplateAnchor(visitor) {
+    if (visitor && Number.isFinite(visitor.visitorBaseAnchorX) && Number.isFinite(visitor.visitorBaseAnchorY)) {
+        return { x: visitor.visitorBaseAnchorX, y: visitor.visitorBaseAnchorY };
+    }
+
+    // La base del Visitante necesita espacio real para cerrar la plantilla entera.
+    // Si el ancla cae cerca de la base del jugador, después se queda chocando contra muros/torres.
+    let center = visitor ? findVisitorViableBaseAnchor(visitor) : null;
+    if (!center) center = { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 };
+
+    if (visitor) {
+        visitor.visitorBaseAnchorX = clampWorldX(center.x, 180);
+        visitor.visitorBaseAnchorY = clampWorldY(center.y, 180);
+        visitor.visitorPlanningCenterX = visitor.visitorBaseAnchorX;
+        visitor.visitorPlanningCenterY = visitor.visitorBaseAnchorY;
+    }
+    return { x: visitor ? visitor.visitorBaseAnchorX : center.x, y: visitor ? visitor.visitorBaseAnchorY : center.y };
+}
+
+function getVisitorOutpostAnchors(visitor, anchor = null, vectors = null) {
+    if (!visitor) return [];
+    anchor = anchor || getVisitorTemplateAnchor(visitor);
+    vectors = vectors || getVisitorCardinalBaseVectors(anchor, visitor);
+    const count = Math.max(0, Math.min(VISITOR_MAX_OUTPOSTS, 1 + Math.floor(Math.max(0, wave - 26) / 10)));
+    if (count <= 0) return [];
+
+    const anchors = [];
+    const baseToPlayerAngle = player ? Math.atan2(player.y - anchor.y, player.x - anchor.x) : vectors.f.angle;
+    const forwardCandidates = [
+        { f: 330, r: 0 },
+        { f: 510, r: -150 },
+        { f: 510, r: 150 },
+        { f: 700, r: 0 }
+    ];
+
+    for (let i = 0; i < count; i++) {
+        const c = forwardCandidates[i] || { f: 360 + i * 145, r: (i % 2 ? -1 : 1) * 170 };
+        let x = anchor.x + vectors.f.x * c.f + vectors.r.x * c.r;
+        let y = anchor.y + vectors.f.y * c.f + vectors.r.y * c.r;
+
+        // Si el jugador/base está en un ángulo claro, el outpost se sesga un poco hacia ese frente.
+        if (player && i > 0) {
+            x += Math.cos(baseToPlayerAngle) * Math.min(170, 55 + i * 35);
+            y += Math.sin(baseToPlayerAngle) * Math.min(170, 55 + i * 35);
+        }
+
+        const candidate = { x: clampWorldX(x, 125), y: clampWorldY(y, 125), index: i };
+        if (!isVisitorBuildPhaseForbiddenPosition(candidate.x, candidate.y, 125) && isVisitorBaseAnchorViable(candidate, visitor)) {
+            anchors.push(candidate);
+        }
+    }
+    return anchors;
+}
+
+function getVisitorTemplateSlots(visitor, options = {}) {
+    const template = chooseVisitorBaseTemplate(visitor);
+    const anchor = getVisitorTemplateAnchor(visitor);
+    const vectors = getVisitorCardinalBaseVectors(anchor, visitor);
+    const slots = (template?.slots || []).map((slot, index) => ({ ...makeVisitorTemplateSlot(anchor, vectors, slot), slotIndex: index, slotKey: `${template.id}:main:${index}`, templateId: template.id, visitorZone: "main" }));
+    if (!options.includeOutposts) return slots;
+
+    const mainCompletion = getVisitorTemplateCompletion(visitor, slots);
+    // Las mini-bases adelantadas recién aparecen cuando la base principal está realmente cerrada.
+    if (mainCompletion.ratio < 0.98 || wave < 26) return slots;
+
+    const economicSlots = [
+        { type: "mine", lx: -34, ly: -82, angle: 0, radius: 30 },
+        { type: "mine", lx: -34, ly: 82, angle: 0, radius: 30 },
+        { type: "mine", lx: -150, ly: -82, angle: 0, radius: 30 },
+        { type: "mine", lx: -150, ly: 82, angle: 0, radius: 30 },
+        { type: "mine", lx: -238, ly: -82, angle: 0, radius: 30 },
+        { type: "mine", lx: -238, ly: 82, angle: 0, radius: 30 }
+    ].map((slot, index) => ({ ...makeVisitorTemplateSlot(anchor, vectors, slot), slotIndex: 700 + index, slotKey: `${template.id}:mine:${index}`, templateId: template.id, visitorZone: "economy" }));
+
+    const outpostBlueprint = [
+        // Mini-base 2x2: puerta frontal, tres paredes y dos torres internas.
+        { type: "door", f: 74, r: 0, dir: "horizontal", radius: 32, outpost: true },
+        { type: "wall", f: 74, r: -82, dir: "horizontal", radius: 30, outpost: true },
+        { type: "wall", f: 74, r: 82, dir: "horizontal", radius: 30, outpost: true },
+        { type: "wall", f: -74, r: -82, dir: "vertical", radius: 30, outpost: true },
+        { type: "wall", f: -74, r: 82, dir: "vertical", radius: 30, outpost: true },
+        { type: "wall", f: -148, r: 0, dir: "horizontal", radius: 30, outpost: true },
+        { type: "tower", f: -26, r: -30, dir: "vertical", radius: 34, outpost: true },
+        { type: "tower", f: -26, r: 30, dir: "vertical", radius: 34, outpost: true }
+    ];
+
+    const outpostSlots = [];
+    getVisitorOutpostAnchors(visitor, anchor, vectors).forEach((outpostAnchor, outpostIndex) => {
+        outpostBlueprint.forEach((slot, index) => {
+            outpostSlots.push({
+                ...makeVisitorTemplateSlot(outpostAnchor, vectors, slot),
+                slotIndex: 1000 + outpostIndex * 100 + index,
+                slotKey: `${template.id}:outpost${outpostIndex}:${index}`,
+                templateId: template.id,
+                visitorOutpostIndex: outpostIndex,
+                visitorZone: "outpost"
+            });
+        });
+    });
+
+    return slots.concat(economicSlots, outpostSlots);
+}
+
+function getVisitorStructureForSlot(slot) {
+    if (!slot) return null;
+    const type = slot.type === "tower" ? "tower" : slot.type === "mine" ? "mine" : slot.type === "door" ? "door" : "wall";
+    const pool = getVisitorStructures(type);
+    if (slot.slotKey) {
+        const exact = pool.find(s => s && s.visitorSlotKey === slot.slotKey);
+        if (exact) return exact;
+        // Si ya estamos usando el sistema nuevo, no hacemos matching por cercanía:
+        // un muro largo cerca podía contar como 2-3 slots y la IA creía que la base estaba completa.
+        if (pool.some(s => s && s.visitorSlotKey)) return null;
+    }
+    return pool.find(s => s && !s.visitorSlotKey && Math.hypot((s.x || 0) - slot.x, (s.y || 0) - slot.y) <= (slot.radius || 32) + 16) || null;
+}
+
+function getVisitorTemplateCompletion(visitor, slots = null) {
+    const activeSlots = slots || getVisitorTemplateSlots(visitor, { includeOutposts: false });
+    const built = activeSlots.filter(slot => getVisitorStructureForSlot(slot)).length;
+    const total = Math.max(1, activeSlots.length);
+    return { built, total, ratio: built / total, missing: total - built };
+}
+
+function getVisitorOutstandingBaseReserve(visitor) {
+    const slots = getVisitorTemplateSlots(visitor, { includeOutposts: true });
+    const missingSlots = slots.filter(slot => !getVisitorStructureForSlot(slot));
+    let reserve = 0;
+    let considered = 0;
+    missingSlots.forEach(slot => {
+        if (considered >= 5) return;
+        reserve += getVisitorConstructionCost(slot.type === "door" ? "door" : slot.type === "tower" ? "tower" : "wall", visitor);
+        considered++;
+    });
+    if (getVisitorStructures("wall").some(w => (w.visitorTier || 0) < 2)) {
+        reserve += Math.ceil(getVisitorConstructionCost("upgradeWall", visitor) * 1.35);
+    }
+    return reserve;
+}
+
+function shouldVisitorSaveForBase(visitor) {
+    if (!visitor || visitor.hp <= 0) return false;
+    const threat = estimatePlayerThreatScore();
+    const presence = estimateVisitorPresenceScore(visitor);
+    const mainCompletion = getVisitorTemplateCompletion(visitor, getVisitorTemplateSlots(visitor, { includeOutposts: false })).ratio;
+    return mainCompletion < 0.92 || threat > presence * 0.98;
+}
+
+function isVisitorTemplateSlotBlocked(slot, visitor = null) {
+    if (!slot) return true;
+    if (isVisitorBuildPhaseForbiddenPosition(slot.x, slot.y, (slot.radius || 32) + 22)) return true;
+
+    // En una plantilla, las piezas DEBEN poder quedar cerca para formar paredes conectadas.
+    // Por eso no usamos isVisitorStructurePositionBlocked(), que era demasiado conservadora
+    // y saltaba slots vecinos, dejando bases rotas y desperdigadas.
+    return getVisitorStructures().some(s => {
+        if (!s || s.hp <= 0) return false;
+        if (slot.slotKey && s.visitorSlotKey === slot.slotKey) return true;
+        const dist = Math.hypot((s.x || 0) - slot.x, (s.y || 0) - slot.y);
+        if (dist <= 30) return true; // mismo slot / superposición real
+        if (slot.type === "tower" && s.visitorStructureType === "tower" && dist < 68) return true;
+        if (slot.type === "mine" && s.visitorStructureType === "mine" && dist < 62) return true;
+        return false;
+    });
+}
+
+function getVisitorMainShellSlots(visitor) {
+    return getVisitorTemplateSlots(visitor, { includeOutposts: false }).filter(slot => slot.type !== "tower" && slot.type !== "mine");
+}
+
+function getVisitorMainShellCompletion(visitor) {
+    const shellSlots = getVisitorMainShellSlots(visitor);
+    const built = shellSlots.filter(slot => getVisitorStructureForSlot(slot)).length;
+    const total = Math.max(1, shellSlots.length);
+    return { built, total, ratio: built / total, missing: total - built, complete: built >= total };
+}
+
+function getVisitorFirstMissingShellType(visitor) {
+    const shellSlots = getVisitorMainShellSlots(visitor).sort((a, b) => (Number(a.slotIndex) || 0) - (Number(b.slotIndex) || 0));
+    const missing = shellSlots.find(slot => !getVisitorStructureForSlot(slot));
+    return missing ? missing.type : null;
+}
+
+function getVisitorMainDoor(visitor = getLivingVisitor()) {
+    const bySlot = getVisitorStructures("door").find(d => d && d.hp > 0 && d.visitorSlotKey && /:main:/.test(d.visitorSlotKey));
+    return bySlot || getVisitorStructures("door").find(d => d && d.hp > 0 && !d.visitorOutpost) || getVisitorStructures("door")[0] || null;
+}
+
+function getVisitorDoorPassPoints(visitor = getLivingVisitor(), preferredDoor = null) {
+    const door = preferredDoor || getVisitorMainDoor(visitor);
+    if (!door || !visitor) return null;
+    const anchor = getVisitorTemplateAnchor(visitor);
+    const vectors = getVisitorCardinalBaseVectors(anchor, visitor);
+    const isOutpost = Boolean(door.visitorOutpost);
+    const localCenter = isOutpost
+        ? { x: clampWorldX(door.x - vectors.f.x * 74, 95), y: clampWorldY(door.y - vectors.f.y * 74, 95) }
+        : anchor;
+    return {
+        door,
+        outside: { x: clampWorldX(door.x + vectors.f.x * 92, 95), y: clampWorldY(door.y + vectors.f.y * 92, 95) },
+        inside: { x: clampWorldX(door.x - vectors.f.x * 96, 95), y: clampWorldY(door.y - vectors.f.y * 96, 95) },
+        center: { x: localCenter.x, y: localCenter.y },
+        f: vectors.f,
+        outpost: isOutpost
+    };
+}
+
+function getVisitorBestDoorPass(visitor = getLivingVisitor(), targetX = null, targetY = null) {
+    const doors = getVisitorStructures("door").filter(d => d && d.hp > 0);
+    if (!visitor || !doors.length) return null;
+    const tx = Number.isFinite(targetX) ? targetX : visitor.x;
+    const ty = Number.isFinite(targetY) ? targetY : visitor.y;
+    doors.sort((a, b) => {
+        const aMain = /:main:/.test(a.visitorSlotKey || "") ? -90 : 0;
+        const bMain = /:main:/.test(b.visitorSlotKey || "") ? -90 : 0;
+        const aScore = Math.hypot(visitor.x - a.x, visitor.y - a.y) + Math.hypot(tx - a.x, ty - a.y) * 0.55 + aMain;
+        const bScore = Math.hypot(visitor.x - b.x, visitor.y - b.y) + Math.hypot(tx - b.x, ty - b.y) * 0.55 + bMain;
+        return aScore - bScore;
+    });
+    return getVisitorDoorPassPoints(visitor, doors[0]);
+}
+
+function isVisitorInsideOwnBase(visitor) {
+    if (!visitor || !Number.isFinite(visitor.visitorBaseAnchorX) || !Number.isFinite(visitor.visitorBaseAnchorY)) return false;
+    const anchor = getVisitorTemplateAnchor(visitor);
+    const vectors = getVisitorCardinalBaseVectors(anchor, visitor);
+    const dx = visitor.x - anchor.x;
+    const dy = visitor.y - anchor.y;
+    const front = dx * vectors.f.x + dy * vectors.f.y;
+    const side = dx * vectors.r.x + dy * vectors.r.y;
+    return front < 175 && front > -310 && Math.abs(side) < 255;
+}
+
+function updateVisitorDoorAutomation(visitor, targetX = null, targetY = null) {
+    if (!visitor) return;
+    const doors = getVisitorStructures("door").filter(d => d && d.hp > 0);
+    if (!doors.length) return;
+    const now = getGameTime();
+    doors.forEach(door => {
+        const distVisitor = Math.hypot(visitor.x - door.x, visitor.y - door.y);
+        const distTarget = Number.isFinite(targetX) && Number.isFinite(targetY) ? Math.hypot(targetX - door.x, targetY - door.y) : Infinity;
+
+        // Hotfix salida: para el Visitante, la puerta propia no debe comportarse como
+        // una pared cerrada justo cuando está intentando entrar/salir. La abrimos antes
+        // de que llegue al rectángulo de colisión y la mantenemos abierta lo suficiente
+        // para que cruce sin quedarse vibrando contra el marco.
+        const wantsPass = Boolean(
+            visitor.visitorPassingDoor ||
+            visitor.visitorReturningToBase ||
+            visitor.visitorLeavingBase ||
+            visitor.visitorWantsShelter ||
+            distVisitor < 132 ||
+            distTarget < 150
+        );
+
+        if (wantsPass && distVisitor < 205) {
+            door.isOpen = true;
+            door.openedByVisitorUntil = now + 2400;
+        }
+
+        const playerNear = player && player.hp > 0 && Math.hypot(player.x - door.x, player.y - door.y) < 128;
+        const visitorNear = distVisitor < 152;
+        if (door.isOpen && now > (door.openedByVisitorUntil || 0) && !visitorNear && !playerNear) {
+            door.isOpen = false;
+        }
+    });
+}
+
+function closeVisitorDoorIfSafe(visitor = getLivingVisitor()) {
+    getVisitorStructures("door").forEach(door => {
+        if (!door || door.hp <= 0) return;
+        const visitorNear = visitor && Math.hypot(visitor.x - door.x, visitor.y - door.y) < 152;
+        const playerNear = player && player.hp > 0 && Math.hypot(player.x - door.x, player.y - door.y) < 138;
+        if (!visitorNear && !playerNear && getGameTime() > (door.openedByVisitorUntil || 0)) door.isOpen = false;
+    });
+}
+
+function getVisitorDoorRouteTarget(visitor, desiredX, desiredY) {
+    if (!visitor || !Number.isFinite(desiredX) || !Number.isFinite(desiredY)) return null;
+    if (getVisitorMainShellCompletion(visitor).ratio <= 0.55) return null;
+
+    const pass = getVisitorBestDoorPass(visitor, desiredX, desiredY);
+    if (!pass || !pass.door) return null;
+
+    const insideMainBase = isVisitorInsideOwnBase(visitor);
+    if (!insideMainBase) {
+        visitor.visitorLeavingBase = false;
+        return null;
+    }
+
+    const distToInside = Math.hypot(visitor.x - pass.inside.x, visitor.y - pass.inside.y);
+    const distToOutside = Math.hypot(visitor.x - pass.outside.x, visitor.y - pass.outside.y);
+    const distDesiredToInside = Math.hypot(desiredX - pass.inside.x, desiredY - pass.inside.y);
+    const distDesiredToOutside = Math.hypot(desiredX - pass.outside.x, desiredY - pass.outside.y);
+
+    // Si el objetivo queda más cerca del lado externo de la puerta, el Visitante
+    // no intenta ir en línea recta atravesando paredes: primero se alinea con la puerta,
+    // luego cruza al lado de afuera, y recién después continúa su plan.
+    if (distDesiredToOutside + 30 < distDesiredToInside || distToOutside > 95) {
+        visitor.visitorLeavingBase = true;
+        visitor.visitorPassingDoor = true;
+        pass.door.isOpen = true;
+        pass.door.openedByVisitorUntil = getGameTime() + 2600;
+        updateVisitorDoorAutomation(visitor, pass.outside.x, pass.outside.y);
+
+        if (distToInside > 34) {
+            return { x: pass.inside.x, y: pass.inside.y, door: pass.door, phase: "align_inside" };
+        }
+        return { x: pass.outside.x, y: pass.outside.y, door: pass.door, phase: "cross_outside" };
+    }
+
+    visitor.visitorLeavingBase = false;
+    return null;
+}
+
+function getVisitorBuildPoint(visitor, type = "wall") {
+    const shell = getVisitorMainShellCompletion(visitor);
+    // Hasta que cierre la base principal, no busca torres ni outposts.
+    // Y si falta puerta, la puerta tiene prioridad absoluta.
+    if (!shell.complete) {
+        const missingType = getVisitorFirstMissingShellType(visitor);
+        if (missingType && type !== missingType) return null;
+    }
+
+    const allSlots = getVisitorTemplateSlots(visitor, { includeOutposts: shell.complete });
+    const preferred = allSlots.filter(slot => slot.type === type && (shell.complete || !slot.outpost));
+    const ordered = preferred.sort((a, b) => {
+        const aBuilt = getVisitorStructureForSlot(a) ? 1 : 0;
+        const bBuilt = getVisitorStructureForSlot(b) ? 1 : 0;
+        if (aBuilt !== bBuilt) return aBuilt - bBuilt;
+        if (Boolean(a.outpost) !== Boolean(b.outpost)) return Number(Boolean(a.outpost)) - Number(Boolean(b.outpost));
+        return (Number(a.slotIndex) || 0) - (Number(b.slotIndex) || 0);
+    });
+
+    for (const slot of ordered) {
+        if (getVisitorStructureForSlot(slot)) continue;
+        if (!isVisitorTemplateSlotBlocked(slot, visitor)) {
+            return { x: slot.x, y: slot.y, orientation: slot.orientation, outpost: Boolean(slot.outpost), radius: slot.radius || 32, slotKey: slot.slotKey, templateId: slot.templateId, visitorOutpostIndex: slot.visitorOutpostIndex };
+        }
+    }
+    return null;
+}
+
+
+function getVisitorNextMissingTerritorySlot(visitor, options = {}) {
+    if (!visitor || visitor.hp <= 0) return null;
+    const includeOutposts = options.includeOutposts !== false;
+    const shell = getVisitorMainShellCompletion(visitor);
+    const slots = getVisitorTemplateSlots(visitor, { includeOutposts: includeOutposts && shell.complete });
+    const ordered = slots
+        .filter(slot => slot && (!slot.outpost || shell.complete))
+        .sort((a, b) => (Number(a.slotIndex) || 0) - (Number(b.slotIndex) || 0));
+
+    for (const slot of ordered) {
+        if (getVisitorStructureForSlot(slot)) continue;
+        if (slot.type === "wall" && getVisitorStructures("wall").length >= VISITOR_MAX_WALLS) continue;
+        if (slot.type === "tower" && getVisitorStructures("tower").length >= VISITOR_MAX_TOWERS) continue;
+        if (slot.type === "mine" && getVisitorStructures("mine").length >= VISITOR_MAX_MINES) continue;
+        if (slot.type === "door" && getVisitorStructures("door").length >= 1 + VISITOR_MAX_OUTPOSTS) continue;
+        if (!isVisitorTemplateSlotBlocked(slot, visitor)) return slot;
+    }
+    return null;
+}
+
+function getVisitorExpansionCompletion(visitor) {
+    if (!visitor) return { built: 0, total: 0, missing: 0, ratio: 1 };
+    const shell = getVisitorMainShellCompletion(visitor);
+    const slots = getVisitorTemplateSlots(visitor, { includeOutposts: shell.complete });
+    const relevant = slots.filter(slot => slot && (!slot.outpost || shell.complete));
+    const built = relevant.filter(slot => getVisitorStructureForSlot(slot)).length;
+    const total = relevant.length;
+    return { built, total, missing: Math.max(0, total - built), ratio: total ? built / total : 1 };
+}
+
+function shouldVisitorPrioritizeTerritoryBuild(visitor, target = null) {
+    if (!visitor || visitor.hp <= 0) return false;
+    const shell = getVisitorMainShellCompletion(visitor);
+    if (!shell.complete) return true;
+    const nextSlot = getVisitorNextMissingTerritorySlot(visitor, { includeOutposts: true });
+    if (!nextSlot) return false;
+    const cost = getVisitorConstructionCost(nextSlot.type === "door" ? "door" : nextSlot.type, visitor);
+    if ((visitor.visitorGold || 0) < cost) return false;
+    if (target?.openingAssault && isVisitorInsideOwnBase(visitor)) return false;
+
+    // Si el jugador está encima o hay un objetivo realmente cercano, pelea.
+    // Si el objetivo está lejos, usa ese oro para expandirse primero.
+    if (!target || target.type === "outpost_observe") return true;
+    if (target.type === "player") return Math.hypot(visitor.x - target.x, visitor.y - target.y) > 470;
+    const dist = Math.hypot(visitor.x - target.x, visitor.y - target.y);
+    return dist > 560;
+}
+
+function tryVisitorTerritoryBuildAction(visitor, target = null) {
+    if (!visitor || visitor.hp <= 0) return false;
+    const now = getGameTime();
+    if (now < (visitor.nextVisitorBuildAt || 0)) return false;
+    if (!shouldVisitorPrioritizeTerritoryBuild(visitor, target)) return false;
+
+    const nextSlot = getVisitorNextMissingTerritorySlot(visitor, { includeOutposts: true });
+    if (!nextSlot) return false;
+    visitor.visitorLastPlan = nextSlot.outpost
+        ? `Expandiendo outpost ${1 + (Number(nextSlot.visitorOutpostIndex) || 0)}`
+        : "Terminando fortaleza principal";
+    const didPlace = tryVisitorBuildStructure(visitor, nextSlot.type === "door" ? "door" : nextSlot.type);
+    // Aunque todavía no haya colocado la pieza, si ya eligió slot y está caminando/pausando,
+    // esta acción ocupa su intención actual. Así no cancela la construcción para irse a disparar.
+    return Boolean(didPlace || visitor.visitorMovingToBuildSlot || visitor.visitorPendingBuild || getGameTime() < (visitor.visitorActionLockUntil || 0));
+}
+
+function getVisitorIntentionalShotTarget(visitor, target, routeActive = false) {
+    if (!visitor || !target || routeActive) return null;
+    if (target.type === "visitor_base" || target.type === "outpost_observe") return null;
+    if (visitor.visitorMovingToBuildSlot || visitor.visitorPendingBuild || visitor.visitorPendingUpgradeWall) return null;
+    if (getGameTime() < (visitor.visitorActionLockUntil || 0)) return null;
+    if (target.openingAssault && (isVisitorInsideOwnBase(visitor) || visitor.visitorLeavingBase || visitor.visitorPassingDoor)) return null;
+
+    let shot = null;
+    if (target.type === "player" && player && player.hp > 0) {
+        shot = { x: player.x, y: player.y, radius: 23, type: "player" };
+    } else if (target.object && target.object.hp > 0) {
+        shot = { x: target.x, y: target.y, radius: target.radius || target.object.radius || 20, type: target.type };
+    }
+    if (!shot) return null;
+
+    const dist = Math.hypot(shot.x - visitor.x, shot.y - visitor.y);
+    const maxRange = target.type === "player" ? 520 : 470;
+    if (dist > maxRange || dist < 42) return null;
+
+    // Evita el bug de girar/disparar a puntos de ruta dentro de su base.
+    const aimDrift = Math.hypot((visitor.targetX || shot.x) - shot.x, (visitor.targetY || shot.y) - shot.y);
+    if (aimDrift > 180 && target.type !== "player") return null;
+    return shot;
+}
+
+function createVisitorStructure(type, x, y, options = {}) {
+    const now = getGameTime();
+    let data = { name: "Estructura del Visitante", special: "visitor_wall", radius: 24, hp: 70, color: "#2b2d38", reward: 18, score: 24 };
+    if (type === "door") {
+        // Puerta propia del Visitante: NO reutiliza la puerta/barricada del jugador.
+        // Es una compuerta independiente, liviana para su IA y sin colisión contra su dueño.
+        data = { name: "Compuerta del Visitante", special: "visitor_gate", radius: 30, hp: 150, color: "#11131c", reward: 28, score: 42 };
+    } else if (type === "tower") {
+        data = { name: "Torre Umbral", special: "visitor_tower", radius: 26, hp: 120, color: "#37214f", reward: 38, score: 70 };
+    } else if (type === "mine") {
+        data = { name: "Mina Umbral", special: "visitor_mine", radius: 22, hp: 95, color: "#161018", reward: 34, score: 50 };
+    } else {
+        const tier = Math.max(0, Math.min(3, Number(options.tier) || 0));
+        const tierData = VISITOR_WALL_TIERS[tier];
+        data = { name: tierData.name, special: "visitor_wall", radius: 25, hp: tierData.hp, color: tierData.color, reward: 16 + tier * 8, score: 28 + tier * 14, tier };
+    }
+    const maxHp = Math.ceil((Number(options.maxHp) || data.hp) * (options.hpMultiplier || 1));
+    return {
+        id: Date.now() + Math.random(),
+        name: data.name,
+        deathName: data.name,
+        color: data.color,
+        x, y,
+        radius: data.radius,
+        hp: maxHp,
+        maxHp,
+        speed: 0,
+        baseSpeed: 0,
+        originalBaseSpeed: 0,
+        reward: data.reward,
+        scoreValue: data.score,
+        damageToDefense: 0,
+        attackDelay: 999999,
+        lastAttackTime: now,
+        hitFlash: 0,
+        knockbackX: 0,
+        special: data.special,
+        visitorStructure: true,
+        visitorStructureType: type,
+        visitorOwnerId: options.visitorOwnerId || null,
+        visitorSlotKey: options.visitorSlotKey || null,
+        visitorTemplateId: options.visitorTemplateId || null,
+        visitorOutpost: Boolean(options.visitorOutpost),
+        visitorOutpostIndex: Number.isFinite(options.visitorOutpostIndex) ? options.visitorOutpostIndex : null,
+        orientation: Number.isFinite(options.orientation) ? options.orientation : 0,
+        visitorTier: data.tier || 0,
+        lastVisitorTowerShotAt: now + 500 + Math.random() * 900,
+        visitorTowerDamage: type === "tower" ? Math.max(2.2, 2.4 + wave * 0.025) : 0,
+        visitorTowerRange: type === "tower" ? 410 : 0,
+        visitorTowerCooldown: type === "tower" ? 1850 : 0,
+        visitorMineIncomePerMinute: type === "mine" ? Math.ceil(38 + wave * 1.6) : 0,
+        lastVisitorMineIncomeAt: now,
+        isOpen: false,
+        openedByVisitorUntil: 0,
+        visitorBuiltAt: now,
+        spawnWave: wave,
+        untargetable: false,
+        isBoss: false
+    };
+}
+
+function getVisitorConstructionCost(type, visitor = getLivingVisitor()) {
+    const level = Math.max(1, Number(visitor?.visitorLevel) || 1);
+    // v14: la prioridad del Visitante es terminar una fortaleza legible.
+    // Si cada muro cuesta demasiado, se gasta todo en stats y nunca cierra la base.
+    if (type === "wall") return Math.ceil(12 + wave * 0.62 + level * 1.9);
+    if (type === "door") return Math.ceil(48 + wave * 1.25 + level * 5.2);
+    if (type === "tower") return Math.ceil(88 + wave * 2.35 + level * 8.5);
+    if (type === "mine") return Math.ceil(70 + wave * 1.9 + level * 6.5);
+    if (type === "upgradeWall") return Math.ceil(24 + wave * 0.95 + level * 3.8);
+    return 38;
+}
+
+function spendVisitorGold(visitor, amount) {
+    if (!visitor || (visitor.visitorGold || 0) < amount) return false;
+    visitor.visitorGold -= amount;
+    return true;
+}
+
+function getHypotheticalVisitorStructureShape(type, x, y, orientation = 0) {
+    if (type === "tower" || type === "mine") return { type: "circle", x, y, radius: type === "mine" ? 27 : 31 };
+    return { type: "rect", x, y, width: type === "door" ? 86 : 108, height: type === "door" ? 32 : 24, angle: orientation || 0 };
+}
+
+function pointBlockedByHypotheticalVisitorStructure(px, py, buildType, buildX, buildY, orientation = 0, padding = 0) {
+    const shape = getHypotheticalVisitorStructureShape(buildType, buildX, buildY, orientation);
+    if (shape.type === "circle") return Math.hypot(px - shape.x, py - shape.y) <= shape.radius + padding;
+    return pointIntersectsOrientedRect(px, py, shape, padding);
+}
+
+function getVisitorBuildStandingPoint(visitor, point, type = "wall") {
+    if (!visitor || !point) return point;
+    const orientation = point.orientation || 0;
+    const along = { x: Math.cos(orientation), y: Math.sin(orientation) };
+    const normal = { x: -Math.sin(orientation), y: Math.cos(orientation) };
+    const visitorRadius = (visitor.radius || 22) + 8;
+    const sideDistance = type === "tower" || type === "mine" ? 58 : 52;
+    const endDistance = type === "tower" || type === "mine" ? 58 : 72;
+    const candidates = [];
+
+    const pushCandidate = (x, y, label = "") => {
+        candidates.push({ x: clampWorldX(x, visitorRadius + 8), y: clampWorldY(y, visitorRadius + 8), label });
+    };
+
+    if (type === "tower" || type === "mine") {
+        const angleToVisitor = Math.atan2(visitor.y - point.y, visitor.x - point.x);
+        for (let i = 0; i < 8; i++) {
+            const a = angleToVisitor + (i % 2 === 0 ? 1 : -1) * Math.ceil(i / 2) * (Math.PI / 5);
+            pushCandidate(point.x + Math.cos(a) * sideDistance, point.y + Math.sin(a) * sideDistance, "circle");
+        }
+    } else {
+        // No camina al centro del muro/puerta: se para al costado o en una punta.
+        // Esto evita el loop de "construyo encima mío -> quedo trabado -> vendo".
+        const sides = [1, -1].sort((a, b) => {
+            const ax = point.x + normal.x * sideDistance * a;
+            const ay = point.y + normal.y * sideDistance * a;
+            const bx = point.x + normal.x * sideDistance * b;
+            const by = point.y + normal.y * sideDistance * b;
+            return Math.hypot(visitor.x - ax, visitor.y - ay) - Math.hypot(visitor.x - bx, visitor.y - by);
+        });
+        sides.forEach(side => {
+            pushCandidate(point.x + normal.x * sideDistance * side, point.y + normal.y * sideDistance * side, "side");
+            pushCandidate(point.x + normal.x * sideDistance * side + along.x * endDistance, point.y + normal.y * sideDistance * side + along.y * endDistance, "sideEndA");
+            pushCandidate(point.x + normal.x * sideDistance * side - along.x * endDistance, point.y + normal.y * sideDistance * side - along.y * endDistance, "sideEndB");
+        });
+    }
+
+    candidates.sort((a, b) => Math.hypot(visitor.x - a.x, visitor.y - a.y) - Math.hypot(visitor.x - b.x, visitor.y - b.y));
+    for (const c of candidates) {
+        if (pointBlockedByHypotheticalVisitorStructure(c.x, c.y, type, point.x, point.y, orientation, visitorRadius + 2)) continue;
+        if (isVisitorBuildPhaseForbiddenPosition(c.x, c.y, 24)) continue;
+        if (isEnemyPositionBlockedBySolid(visitor, c.x, c.y)) continue;
+        return { ...point, standX: c.x, standY: c.y, standLabel: c.label };
+    }
+
+    // Fallback: lo mandamos a una punta alejada del bloque en vez de al centro sólido.
+    const fallback = {
+        ...point,
+        standX: clampWorldX(point.x + normal.x * sideDistance + along.x * endDistance, visitorRadius + 8),
+        standY: clampWorldY(point.y + normal.y * sideDistance + along.y * endDistance, visitorRadius + 8),
+        standLabel: "fallback"
+    };
+    return fallback;
+}
+
+function tryVisitorBuildStructure(visitor, type) {
+    if (!visitor || visitor.hp <= 0) return false;
+    if (type === "wall" && getVisitorStructures("wall").length >= VISITOR_MAX_WALLS) return false;
+    if (type === "tower" && getVisitorStructures("tower").length >= VISITOR_MAX_TOWERS) return false;
+    if (type === "mine" && getVisitorStructures("mine").length >= VISITOR_MAX_MINES) return false;
+    if (type === "door" && getVisitorStructures("door").length >= 1 + VISITOR_MAX_OUTPOSTS) return false;
+
+    const now = getGameTime();
+    const pending = visitor.visitorPendingBuild;
+    if (pending && pending.type === type && now < (visitor.visitorActionLockUntil || 0)) {
+        visitor.visitorLastPlan = pending.label || "Construyendo...";
+        visitor.isMoving = false;
+        return false;
+    }
+
+    let point = null;
+    if (pending && pending.type === type && Number.isFinite(pending.x) && Number.isFinite(pending.y)) {
+        point = { ...pending };
+    } else {
+        point = getVisitorBuildPoint(visitor, type);
+        if (!point) return false;
+        point = getVisitorBuildStandingPoint(visitor, point, type);
+    }
+
+    // Antes de caminar hasta un slot, mira si le alcanza el oro.
+    // Si no llega, no hace el baile nervioso sobre la pared: patrulla y ahorra dentro de su zona.
+    const cost = getVisitorConstructionCost(type, visitor);
+    if ((visitor.visitorGold || 0) < cost) {
+        visitor.visitorPendingBuild = null;
+        visitor.visitorMovingToBuildSlot = false;
+        visitor.visitorLastPlan = `Ahorrando para ${type === "mine" ? "mina" : type === "tower" ? "torre" : type === "door" ? "puerta" : "barricada"}`;
+        if (now >= (visitor.visitorNextPlanningMoveAt || 0) || !Number.isFinite(visitor.retreatX) || !Number.isFinite(visitor.retreatY)) {
+            const patrol = getVisitorPlanningWanderPoint(visitor);
+            setVisitorHumanGoal(visitor, patrol.x, patrol.y, "Patrullando mientras reúne oro", { arriveRadius: 24, state: "patrol" });
+            visitor.visitorNextPlanningMoveAt = now + VISITOR_PATROL_REPATH_MS + Math.random() * 2600;
+        }
+        return false;
+    }
+
+    // El Visitante no camina al centro de la construcción: se para a un costado/punta
+    // y desde ahí coloca el bloque. Así no queda pegado dentro de su propia barricada.
+    const standX = Number.isFinite(point.standX) ? point.standX : point.x;
+    const standY = Number.isFinite(point.standY) ? point.standY : point.y;
+    const distanceToStandPoint = Math.hypot(visitor.x - standX, visitor.y - standY);
+    if (distanceToStandPoint > 22) {
+        setVisitorHumanGoal(
+            visitor,
+            standX,
+            standY,
+            type === "mine" ? "Yendo a colocar mina" : type === "tower" ? "Yendo a colocar torre" : type === "door" ? "Yendo a colocar puerta" : "Yendo a colocar barricada",
+            { arriveRadius: 22, state: "build_move" }
+        );
+        visitor.visitorMovingToBuildSlot = true;
+        visitor.visitorPendingBuild = { ...point, type, standX, standY };
+        visitor.visitorNextPlanningMoveAt = now + 9000;
+        return false;
+    }
+
+    // Pausa humana: llegó al punto, se queda quieto un instante y recién después coloca.
+    if (!pending || pending.type !== type || !pending.readyToPlace) {
+        visitor.visitorPendingBuild = { ...point, type, standX, standY, readyToPlace: true, label: "Construyendo..." };
+        visitor.visitorActionLockUntil = now + VISITOR_BUILD_PAUSE_MS;
+        visitor.visitorLastPlan = type === "mine" ? "Plantando mina" : type === "tower" ? "Montando torre" : type === "door" ? "Colocando puerta" : "Levantando barricada";
+        visitor.visitorMovingToBuildSlot = false;
+        visitor.isMoving = false;
+        return false;
+    }
+
+    if (!spendVisitorGold(visitor, cost)) {
+        visitor.visitorPendingBuild = null;
+        return false;
+    }
+
+    const structure = createVisitorStructure(type, point.x, point.y, {
+        visitorOwnerId: visitor.id,
+        orientation: point.orientation || 0,
+        visitorSlotKey: point.slotKey || null,
+        visitorTemplateId: point.templateId || visitor.visitorBaseTemplateId || null,
+        visitorOutpost: Boolean(point.outpost),
+        visitorOutpostIndex: Number.isFinite(point.visitorOutpostIndex) ? point.visitorOutpostIndex : null
+    });
+    visitor.retreatX = standX;
+    visitor.retreatY = standY;
+    visitor.targetX = standX;
+    visitor.targetY = standY;
+    visitor.x = clampWorldX(visitor.x, (visitor.radius || 22) + 8);
+    visitor.y = clampWorldY(visitor.y, (visitor.radius || 22) + 8);
+    enemies.push(structure);
+    effects.push({ type: "circle", x: point.x, y: point.y, radius: 8, maxRadius: 54, life: 20, color: structure.color });
+    showVisitorAlert(type === "mine" ? "El Visitante construyó una Mina Umbral." : type === "tower" ? "El Visitante construyó una Torre Umbral." : type === "door" ? "El Visitante instaló una compuerta propia." : "El Visitante reforzó su base con barricadas.");
+    visitor.visitorPendingBuild = null;
+    visitor.visitorMovingToBuildSlot = false;
+    visitor.visitorLastPlan = type === "mine" ? "Construyó Mina Umbral" : type === "tower" ? "Construyó Torre Umbral" : type === "door" ? "Construyó compuerta" : "Construyó barricada";
+    visitor.nextVisitorBuildAt = now + 1250 + Math.random() * 900;
+    visitor.visitorNextPlanningMoveAt = now + 850;
+    clearVisitorHumanGoal(visitor);
+    return true;
+}
+
+function tryVisitorUpgradeWall(visitor) {
+    if (!visitor || visitor.hp <= 0) return false;
+    const now = getGameTime();
+    const pending = visitor.visitorPendingUpgradeWall;
+
+    const wall = pending?.wall && pending.wall.hp > 0 && (pending.wall.visitorTier || 0) < 3
+        ? pending.wall
+        : getVisitorStructures("wall").filter(w => (w.visitorTier || 0) < 3).sort((a, b) => {
+            const tierDiff = (a.visitorTier || 0) - (b.visitorTier || 0);
+            if (tierDiff !== 0) return tierDiff;
+            return Math.hypot(visitor.x - a.x, visitor.y - a.y) - Math.hypot(visitor.x - b.x, visitor.y - b.y);
+        })[0];
+    if (!wall) {
+        visitor.visitorPendingUpgradeWall = null;
+        return false;
+    }
+
+    const cost = Math.ceil(getVisitorConstructionCost("upgradeWall", visitor) * (1 + (wall.visitorTier || 0) * 0.55));
+    if ((visitor.visitorGold || 0) < cost) {
+        visitor.visitorPendingUpgradeWall = null;
+        visitor.visitorLastPlan = "Ahorrando para mejorar muros";
+        if (now >= (visitor.visitorNextPlanningMoveAt || 0) || !Number.isFinite(visitor.retreatX) || !Number.isFinite(visitor.retreatY)) {
+            const patrol = getVisitorPlanningWanderPoint(visitor);
+            setVisitorHumanGoal(visitor, patrol.x, patrol.y, "Patrullando dentro de su base", { arriveRadius: 24, state: "patrol" });
+            visitor.visitorNextPlanningMoveAt = now + VISITOR_PATROL_REPATH_MS + Math.random() * 2600;
+        }
+        return false;
+    }
+
+    const stand = getVisitorStructureStandingPoint(visitor, wall, 66) || { x: wall.x, y: wall.y };
+    const distToStand = Math.hypot(visitor.x - stand.x, visitor.y - stand.y);
+    if (distToStand > 24) {
+        visitor.visitorPendingUpgradeWall = { wall, standX: stand.x, standY: stand.y };
+        visitor.visitorMovingToBuildSlot = true;
+        setVisitorHumanGoal(visitor, stand.x, stand.y, "Yendo a mejorar muro", { arriveRadius: 24, state: "upgrade_move" });
+        visitor.visitorNextPlanningMoveAt = now + 8000;
+        return false;
+    }
+
+    if (!pending || pending.wall !== wall || !pending.readyToUpgrade) {
+        visitor.visitorPendingUpgradeWall = { wall, standX: stand.x, standY: stand.y, readyToUpgrade: true };
+        visitor.visitorActionLockUntil = now + VISITOR_UPGRADE_PAUSE_MS;
+        visitor.visitorLastPlan = "Reforzando muro";
+        visitor.visitorMovingToBuildSlot = false;
+        visitor.isMoving = false;
+        return false;
+    }
+
+    if (!spendVisitorGold(visitor, cost)) {
+        visitor.visitorPendingUpgradeWall = null;
+        return false;
+    }
+
+    wall.visitorTier = Math.min(3, (wall.visitorTier || 0) + 1);
+    const tierData = VISITOR_WALL_TIERS[wall.visitorTier];
+    const oldMax = wall.maxHp || 1;
+    wall.name = tierData.name;
+    wall.deathName = tierData.name;
+    wall.color = tierData.color;
+    wall.maxHp = Math.ceil(tierData.hp);
+    wall.hp = Math.min(wall.maxHp, wall.hp + Math.max(0, wall.maxHp - oldMax));
+    effects.push({ type: "circle", x: wall.x, y: wall.y, radius: 8, maxRadius: 52, life: 18, color: wall.color });
+    showVisitorAlert("El Visitante mejoró sus barricadas.");
+    visitor.visitorLastPlan = "Mejoró barricadas";
+    visitor.visitorPendingUpgradeWall = null;
+    visitor.nextVisitorBuildAt = now + 950 + Math.random() * 600;
+    visitor.visitorNextPlanningMoveAt = now + 900;
+    clearVisitorHumanGoal(visitor);
+    return true;
+}
+
+function tryVisitorBuySurvival(visitor) {
+    if (!visitor) return false;
+    const cost = Math.ceil(38 + (Number(visitor.visitorLevel) || 1) * 9 + wave * 1.35);
+    if (!spendVisitorGold(visitor, cost)) return false;
+    const heal = Math.ceil(56 + wave * 0.9 + (Number(visitor.visitorLevel) || 1) * 5);
+    visitor.hp = Math.min(visitor.maxHp || visitor.hp, (visitor.hp || 0) + heal);
+    showVisitorAlert("El Visitante compró una poción de vida.");
+    visitor.visitorLastPlan = "Compró poción de vida";
+    return true;
+}
+
+function updateVisitorPlanningEconomy(visitor, now) {
+    if (!visitor || !visitor.retreating || visitor.hp <= 0) return;
+    awardVisitorPlanningIncome(visitor, "planning");
+
+    if (now < (visitor.nextVisitorBuildAt || 0)) return;
+    visitor.nextVisitorBuildAt = now + 650 + Math.random() * 650;
+    visitor.visitorLastPlan = "Planeando";
+
+    const planningCenter = getVisitorPlanningCenter(visitor);
+    if (Math.hypot(visitor.x - planningCenter.x, visitor.y - planningCenter.y) > VISITOR_BUILD_VISION_RANGE) {
+        visitor.retreatX = planningCenter.x;
+        visitor.retreatY = planningCenter.y;
+        visitor.targetX = planningCenter.x;
+        visitor.targetY = planningCenter.y;
+        visitor.visitorLastPlan = "Volviendo a su base";
+        return;
+    }
+
+    const hpPct = visitor.hp / Math.max(1, visitor.maxHp || visitor.hp);
+    if (hpPct < 0.35 && tryVisitorBuySurvival(visitor)) return;
+
+    const shell = getVisitorMainShellCompletion(visitor);
+    const wallCount = getVisitorStructures("wall").length;
+    const towerCount = getVisitorStructures("tower").length;
+
+    // Primero cierra la estructura. Nada de torres/upgrades/stats antes de cerrar.
+    if (!shell.complete) {
+        const missingType = getVisitorFirstMissingShellType(visitor);
+        visitor.visitorLastPlan = `Cerrando base ${shell.built}/${shell.total}`;
+        if (missingType && tryVisitorBuildStructure(visitor, missingType)) return;
+        // Si justo no pudo construir el slot que tocaba, espera/ahorra. No se distrae con stats.
+        return;
+    }
+
+    const nextTerritorySlot = getVisitorNextMissingTerritorySlot(visitor, { includeOutposts: true });
+    if (nextTerritorySlot) {
+        visitor.visitorLastPlan = nextTerritorySlot.outpost
+            ? `Expandiendo outpost ${1 + (Number(nextTerritorySlot.visitorOutpostIndex) || 0)}`
+            : "Completando fortaleza principal";
+        if (tryVisitorBuildStructure(visitor, nextTerritorySlot.type === "door" ? "door" : nextTerritorySlot.type)) return;
+        return;
+    }
+
+    if (Math.random() < 0.50 && tryVisitorUpgradeWall(visitor)) return;
+    if (towerCount < VISITOR_MAX_TOWERS && tryVisitorBuildStructure(visitor, "tower")) return;
+
+    maybeUpgradeVisitor(visitor, now);
+}
+
+
+function getVisitorTowerTarget(tower) {
+    const candidates = [];
+    if (player && player.hp > 0) candidates.push({ type: "player", x: player.x, y: player.y, radius: 23, score: Math.hypot(tower.x-player.x, tower.y-player.y) - 60 });
+    (towers || []).forEach(t => { if (t && t.owned && t.hp > 0) candidates.push({ type:"tower", x:t.x, y:t.y, object:t, radius:TOWER_COLLISION_RADIUS, score:Math.hypot(tower.x-t.x,tower.y-t.y) - 25 }); });
+    (barricades || []).forEach(b => { if (!b || !b.active || b.hp <= 0) return; const c = getClosestPointOnBarricade(tower.x, tower.y, b); candidates.push({ type:"barricade", x:c.x, y:c.y, object:b, radius:18, score:Math.hypot(tower.x-c.x,tower.y-c.y) - 10 }); });
+    (mines || []).forEach(m => { if (m && m.hp > 0) candidates.push({ type:"mine", x:m.x, y:m.y, object:m, radius:m.radius || MINE_COLLISION_RADIUS, score:Math.hypot(tower.x-m.x,tower.y-m.y) }); });
+    const range = tower.visitorTowerRange || 410;
+    return candidates.filter(c => Math.hypot(c.x - tower.x, c.y - tower.y) <= range + (c.radius || 0)).sort((a,b)=>a.score-b.score)[0] || null;
+}
+
+function updateVisitorStructures(now) {
+    getVisitorStructures("mine").forEach(mine => {
+        if (!mine || mine.hp <= 0) return;
+        const interval = 60000;
+        if (now - (mine.lastVisitorMineIncomeAt || 0) >= interval) {
+            mine.lastVisitorMineIncomeAt = now;
+            const visitor = getLivingVisitor();
+            const income = Math.max(6, Number(mine.visitorMineIncomePerMinute) || 34);
+            if (visitor) {
+                awardVisitorRawGold(visitor, income, { alert: "Las minas del Visitante generaron oro." });
+                effects.push({ type: "circle", x: mine.x, y: mine.y, radius: 8, maxRadius: 42, life: 18, color: "#1b0f22" });
+            }
+        }
+    });
+
+    getVisitorStructures("tower").forEach(tower => {
+        if (!tower || tower.hp <= 0) return;
+        const target = getVisitorTowerTarget(tower);
+        if (!target) return;
+        if (now - (tower.lastVisitorTowerShotAt || 0) >= (tower.visitorTowerCooldown || 1850)) {
+            tower.lastVisitorTowerShotAt = now;
+            fireEnemyProjectile(tower, target.x, target.y, { damage: Math.max(2, tower.visitorTowerDamage || 3), color: "#7b0712", speed: 4.1, radius: 5, visitorProjectile: true });
+            effects.push({ type: "line", x1: tower.x, y1: tower.y, x2: target.x, y2: target.y, life: 9, color: "#8f5bff" });
+        }
+    });
+}
+
+
 function createBarricadeSlot(name, x) {
     return {
         id: Date.now() + Math.random(),
@@ -2465,24 +4114,47 @@ function getEnemyMainTarget(enemy) {
 function getHealerSupportTarget(healer) {
     let best = null;
     let bestScore = -Infinity;
+    const livingVisitor = getLivingVisitor ? getLivingVisitor() : null;
 
     (enemies || []).forEach(other => {
         if (!other || other === healer || other.hp <= 0 || other.special === "healer") return;
         const dist = Math.hypot(other.x - healer.x, other.y - healer.y);
         const missingRatio = Math.max(0, 1 - other.hp / Math.max(1, other.maxHp || 1));
-        const allyWeight = other.isBoss ? 5 : other.special ? 2.2 : 1;
-        const score = missingRatio * 120 * allyWeight - dist * 0.12 + Math.min(35, (healer.healRadius || 180) / Math.max(1, dist));
+
+        // El Visitante ahora usa a los curanderos como parte de su IA: si está herido,
+        // los sanadores lo priorizan mucho más que a un enemigo normal. Esto hace que
+        // retirarse hacia grupos de curanderos tenga sentido sin permitir que los curanderos
+        // se curen entre ellos.
+        const isVisitor = other.special === "visitor" || other.visitor;
+        let allyWeight = other.isBoss ? 5 : other.special ? 2.2 : 1;
+        if (isVisitor) allyWeight = missingRatio >= 0.35 ? 8.5 : 5.5;
+
+        const visitorUrgency = isVisitor ? missingRatio * 220 : 0;
+        const score = missingRatio * 120 * allyWeight + visitorUrgency - dist * 0.12 + Math.min(35, (healer.healRadius || 180) / Math.max(1, dist));
         if (score > bestScore) {
             bestScore = score;
             best = other;
         }
     });
 
+    // Si el Visitante está vivo y le falta vida, incluso aunque esté algo lejos, los
+    // curanderos intentan acercarse para asistirlo. Si está sano, vuelven a comportarse normal.
+    if (livingVisitor && livingVisitor.hp > 0 && livingVisitor.hp < (livingVisitor.maxHp || livingVisitor.hp)) {
+        const missingRatio = Math.max(0, 1 - livingVisitor.hp / Math.max(1, livingVisitor.maxHp || 1));
+        const dist = Math.hypot(livingVisitor.x - healer.x, livingVisitor.y - healer.y);
+        const visitorScore = missingRatio * 950 - dist * 0.08;
+        if (visitorScore > bestScore) {
+            bestScore = visitorScore;
+            best = livingVisitor;
+        }
+    }
+
     if (!best) {
         (enemies || []).forEach(other => {
             if (!other || other === healer || other.hp <= 0 || other.special === "healer") return;
             const dist = Math.hypot(other.x - healer.x, other.y - healer.y);
-            const score = -dist + (other.isBoss ? 350 : other.special ? 120 : 0);
+            const isVisitor = other.special === "visitor" || other.visitor;
+            const score = -dist + (isVisitor ? 520 : other.isBoss ? 350 : other.special ? 120 : 0);
             if (score > bestScore) {
                 bestScore = score;
                 best = other;
@@ -2555,9 +4227,41 @@ function getBarricadeContactInfo(enemy, barricade) {
     return { rect, closestX, closestY, dx, dy, distance, isCorner: onVerticalEdge && onHorizontalEdge };
 }
 
+function getBlockingVisitorOwnStructure(enemy, x, y) {
+    if (!enemy || enemy.special !== "visitor") return null;
+    const radius = (enemy.radius || 18) + 3;
+    for (const s of getVisitorStructures()) {
+        if (!s || s.hp <= 0) continue;
+        if (s.visitorStructureType === "tower") continue;
+        if (isVisitorGateStructure(s)) {
+            // La compuerta del Visitante es una puerta hecha exclusivamente para él:
+            // visualmente puede cerrarse/abrirse para otros, pero NUNCA bloquea a su dueño.
+            const distVisitor = Math.hypot(enemy.x - s.x, enemy.y - s.y);
+            const distNext = Math.hypot(x - s.x, y - s.y);
+            if (distVisitor < 190 || distNext < 140 || enemy.visitorPassingDoor || enemy.visitorLeavingBase || enemy.visitorReturningToBase || enemy.visitorWantsShelter) {
+                s.isOpen = true;
+                s.openedByVisitorUntil = getGameTime() + 3000;
+            }
+            continue;
+        }
+        const shape = getVisitorStructureRect(s);
+        if (!shape) continue;
+        const blocked = shape.type === "circle"
+            ? Math.hypot(x - shape.x, y - shape.y) <= shape.radius + radius
+            : pointIntersectsOrientedRect(x, y, shape, radius);
+        if (blocked) return s;
+    }
+    return null;
+}
+
 function isEnemyPositionBlockedBySolid(enemy, x, y, ignoredBarricade = null) {
     if (!enemy) return true;
     const radius = (enemy.radius || 18) + 3;
+
+    if (enemy.special === "visitor") {
+        updateVisitorDoorAutomation(enemy, x, y);
+        if (getBlockingVisitorOwnStructure(enemy, x, y)) return true;
+    }
 
     if ((barricades || []).some(b => {
         if (!b || b === ignoredBarricade || !b.active || b.hp <= 0 || b.isOpen) return false;
@@ -2568,6 +4272,82 @@ function isEnemyPositionBlockedBySolid(enemy, x, y, ignoredBarricade = null) {
     if ((mines || []).some(m => m && m.hp > 0 && Math.hypot(m.x - x, m.y - y) < (m.radius || MINE_COLLISION_RADIUS) + radius)) return true;
     if (baseCore && basePlaced && baseCore.hp > 0 && Math.hypot(baseCore.x - x, baseCore.y - y) < BASE_RADIUS + radius) return true;
 
+    // Las estructuras del Visitante ahora son sólidas para la horda, pero con salida:
+    // las puertas abiertas no bloquean y el movimiento de enemigos usa deslizamiento/rodeo.
+    if (enemy.special !== "visitor" && !isVisitorStructure(enemy) && getBlockingVisitorStructureForEnemy(enemy, x, y)) return true;
+
+    return false;
+}
+
+function getBlockingVisitorStructureForEnemy(enemy, x, y) {
+    if (!enemy || isVisitorStructure(enemy)) return null;
+    const radius = (enemy.radius || 18) + 5;
+    let best = null;
+    let bestDist = Infinity;
+    for (const s of getVisitorStructures()) {
+        if (isVisitorGateStructure(s) && s.isOpen) continue;
+        const shape = getVisitorStructureRect(s);
+        if (!shape) continue;
+        let blocked = false;
+        let dist = Infinity;
+        if (shape.type === "circle") {
+            dist = Math.hypot(x - shape.x, y - shape.y);
+            blocked = dist < shape.radius + radius;
+        } else {
+            blocked = pointIntersectsOrientedRect(x, y, shape, radius);
+            dist = Math.hypot(x - shape.x, y - shape.y);
+        }
+        if (blocked && dist < bestDist) { best = s; bestDist = dist; }
+    }
+    return best;
+}
+
+function trySlideEnemyAroundVisitorStructure(enemy, targetX, targetY) {
+    const blocker = getBlockingVisitorStructureForEnemy(enemy, enemy.x, enemy.y) || getBlockingVisitorStructureForEnemy(enemy, targetX, targetY);
+    if (!enemy || !blocker) return false;
+    const now = getGameTime();
+    enemy.visitorBlockStuckSince = enemy.visitorBlockStuckSince || now;
+    const moveAmount = Math.max(0.75, (enemy.speed || enemy.baseSpeed || 1) * gameSpeed * frameScale * 1.65);
+    const awayAngle = Math.atan2(enemy.y - blocker.y, enemy.x - blocker.x);
+    const toTargetAngle = Math.atan2(targetY - enemy.y, targetX - enemy.x);
+    const candidates = [
+        toTargetAngle + 0.85,
+        toTargetAngle - 0.85,
+        awayAngle + Math.PI / 2,
+        awayAngle - Math.PI / 2,
+        awayAngle
+    ];
+    candidates.sort((a, b) => {
+        const ax = enemy.x + Math.cos(a) * moveAmount;
+        const ay = enemy.y + Math.sin(a) * moveAmount;
+        const bx = enemy.x + Math.cos(b) * moveAmount;
+        const by = enemy.y + Math.sin(b) * moveAmount;
+        return Math.hypot(targetX - ax, targetY - ay) - Math.hypot(targetX - bx, targetY - by);
+    });
+    for (const angle of candidates) {
+        const nx = clampWorldX(enemy.x + Math.cos(angle) * moveAmount, (enemy.radius || 18) + 3);
+        const ny = clampWorldY(enemy.y + Math.sin(angle) * moveAmount, (enemy.radius || 18) + 3);
+        if (!isEnemyPositionBlockedBySolid(enemy, nx, ny)) {
+            enemy.x = nx;
+            enemy.y = ny;
+            enemy.visitorBlockStuckSince = 0;
+            enemy.isAttacking = false;
+            enemy.target = "avoiding_visitor_base";
+            return true;
+        }
+    }
+
+    // Último recurso: si quedó encajado contra la base del Visitante, lo empujamos hacia afuera.
+    if (now - (enemy.visitorBlockStuckSince || now) > 900) {
+        const away = Math.atan2(enemy.y - blocker.y, enemy.x - blocker.x);
+        const nx = clampWorldX(enemy.x + Math.cos(away) * moveAmount * 2.4, (enemy.radius || 18) + 3);
+        const ny = clampWorldY(enemy.y + Math.sin(away) * moveAmount * 2.4, (enemy.radius || 18) + 3);
+        if (!isEnemyPositionBlockedBySolid(enemy, nx, ny)) {
+            enemy.x = nx; enemy.y = ny; enemy.visitorBlockStuckSince = 0;
+            enemy.target = "unstuck_visitor_base";
+            return true;
+        }
+    }
     return false;
 }
 
@@ -2832,9 +4612,166 @@ function getWorldToScreenPoint(worldX, worldY) {
     };
 }
 
+function getFogIndex(col, row) {
+    if (col < 0 || row < 0 || col >= fogCols || row >= fogRows) return -1;
+    return row * fogCols + col;
+}
+
+function getFogCellAtWorld(x, y) {
+    return {
+        col: Math.floor(Math.max(0, Math.min(WORLD_WIDTH - 1, x)) / FOG_CELL_SIZE),
+        row: Math.floor(Math.max(0, Math.min(WORLD_HEIGHT - 1, y)) / FOG_CELL_SIZE)
+    };
+}
+
+function isMarcoRevealMapActive() {
+    return false;
+}
+
+function revealEntireFogMap() {
+    if (!exploredMapCells || exploredMapCells.length !== fogCols * fogRows) {
+        exploredMapCells = new Uint8Array(fogCols * fogRows);
+    }
+    exploredMapCells.fill(1);
+}
+
+function isFogExplored(x, y) {
+    return true;
+}
+
+function getCameraWorldRect(padding = 0) {
+    return {
+        left: camera.x - padding,
+        top: camera.y - padding,
+        right: camera.x + getCameraVisibleWidth() + padding,
+        bottom: camera.y + getCameraVisibleHeight() + padding
+    };
+}
+
+function isWorldPointInCameraRect(x, y, padding = 0) {
+    const rect = getCameraWorldRect(padding);
+    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+function isFogCurrentlyVisible(x, y, radiusBonus = 0) {
+    return true;
+}
+
+function revealFogRect(left, top, right, bottom) {
+    if (!exploredMapCells || !exploredMapCells.length) {
+        exploredMapCells = new Uint8Array(fogCols * fogRows);
+    }
+
+    const minCol = Math.max(0, Math.floor(left / FOG_CELL_SIZE));
+    const maxCol = Math.min(fogCols - 1, Math.floor(right / FOG_CELL_SIZE));
+    const minRow = Math.max(0, Math.floor(top / FOG_CELL_SIZE));
+    const maxRow = Math.min(fogRows - 1, Math.floor(bottom / FOG_CELL_SIZE));
+
+    for (let row = minRow; row <= maxRow; row++) {
+        for (let col = minCol; col <= maxCol; col++) {
+            const index = getFogIndex(col, row);
+            if (index >= 0) exploredMapCells[index] = 1;
+        }
+    }
+}
+
+function revealFogAround(x, y, radius = FOG_REVEAL_RADIUS) {
+    // Compatibilidad: algunas cargas viejas o scripts externos pueden seguir llamando
+    // a la versión circular. La convertimos en un rectángulo simple.
+    revealFogRect(x - radius, y - radius, x + radius, y + radius);
+}
+
+function revealFogCameraView() {
+    if (!player || minimapInspectActive) return;
+    const rect = getCameraWorldRect(FOG_SCREEN_REVEAL_PADDING);
+    revealFogRect(rect.left, rect.top, rect.right, rect.bottom);
+}
+
+function updateMapExploration() {
+    // Sin niebla de guerra: mantenemos el mapa completo revelado para compatibilidad con partidas guardadas.
+    revealEntireFogMap();
+}
+
+function serializeExploredMapCells() {
+    return Array.from(exploredMapCells || []);
+}
+
+function restoreExploredMapCells(value) {
+    const size = fogCols * fogRows;
+    exploredMapCells = new Uint8Array(size);
+    exploredMapCells.fill(1);
+}
+
+function getMinimapBounds() {
+    const scale = visualSettings.minimapScale || 0.82;
+    const w = Math.round(150 * scale);
+    const h = Math.round(w * (WORLD_HEIGHT / WORLD_WIDTH));
+    const x = GAME_WIDTH - w - 14;
+    const bottomOffset = getBottomUiGameHeight();
+    const y = Math.max(54, GAME_HEIGHT - h - bottomOffset - 12);
+    return { x, y, w, h, sx: w / WORLD_WIDTH, sy: h / WORLD_HEIGHT };
+}
+
+function getMinimapWorldPointFromCanvasPoint(point) {
+    const bounds = getMinimapBounds();
+    if (!point || point.x < bounds.x || point.x > bounds.x + bounds.w || point.y < bounds.y || point.y > bounds.y + bounds.h) return null;
+    return {
+        x: Math.max(0, Math.min(WORLD_WIDTH, (point.x - bounds.x) / bounds.sx)),
+        y: Math.max(0, Math.min(WORLD_HEIGHT, (point.y - bounds.y) / bounds.sy)),
+        explored: isFogExplored((point.x - bounds.x) / bounds.sx, (point.y - bounds.y) / bounds.sy)
+    };
+}
+
+function centerCameraOnWorldPoint(worldX, worldY) {
+    const visibleWidth = getCameraVisibleWidth();
+    const visibleHeight = getCameraVisibleHeight();
+    camera.x = worldX - visibleWidth / 2;
+    camera.y = worldY - visibleHeight / 2;
+    clampCameraToWorld();
+}
+
+function stopMinimapInspect(returnToPlayer = true) {
+    minimapInspectActive = false;
+    minimapInspectStartedOnMap = false;
+    if (returnToPlayer && player) {
+        centerCameraOnWorldPoint(player.x, player.y);
+    }
+}
+
+function startMinimapInspect(worldPoint) {
+    if (!worldPoint) return false;
+    minimapInspectActive = true;
+    minimapInspectStartedOnMap = true;
+    minimapInspectWasShooting = isMouseDown;
+    minimapInspectLastWorld = worldPoint;
+    isMouseDown = false;
+    centerCameraOnWorldPoint(worldPoint.x, worldPoint.y);
+    showCenterMessage("INSPECCIONANDO MAPA", 520, "minor");
+    return true;
+}
+
+function updateMinimapInspectDrag(event) {
+    if (!minimapInspectActive) return false;
+    const point = getCanvasLogicalPoint(event);
+    const worldPoint = getMinimapWorldPointFromCanvasPoint(point);
+    if (worldPoint) {
+        minimapInspectLastWorld = worldPoint;
+        centerCameraOnWorldPoint(worldPoint.x, worldPoint.y);
+    }
+    return true;
+}
+
+function drawFogOfWarOverlay() {
+    // Fog of war desactivado: la cámara siempre muestra el mundo completo sin oscurecer.
+}
+
 function updateCamera() {
     if (!player) return;
     camera.zoom = getCameraZoom();
+    if (minimapInspectActive) {
+        clampCameraToWorld();
+        return;
+    }
     const visibleWidth = getCameraVisibleWidth();
     const visibleHeight = getCameraVisibleHeight();
     camera.x = player.x - visibleWidth / 2;
@@ -2887,14 +4824,41 @@ function healDefensesAndPlayer(amount, sourceX = null, sourceY = null) {
     for (const candidate of candidates) {
         if (remaining <= 0) break;
         const heal = Math.min(candidate.missing, remaining);
-        if (candidate.kind === "player") candidate.object.hp = Math.min(candidate.object.maxHp, candidate.object.hp + heal);
-        else candidate.object.hp = Math.min(candidate.object.maxHp, candidate.object.hp + heal);
+        candidate.object.hp = Math.min(candidate.object.maxHp, candidate.object.hp + heal);
+        remaining -= heal;
+        effects.push({ type: "line", x1: sx, y1: sy, x2: candidate.x, y2: candidate.y, life: 9, color: "#ff5d86" });
+    }
+}
+
+function healDefensesOnly(amount, sourceX = null, sourceY = null) {
+    let remaining = amount;
+    const sx = Number.isFinite(sourceX) ? sourceX : (player ? player.x : WORLD_WIDTH / 2);
+    const sy = Number.isFinite(sourceY) ? sourceY : (player ? player.y : WORLD_HEIGHT / 2);
+    const candidates = [];
+
+    (barricades || []).forEach(b => {
+        if (b.active && b.hp > 0 && b.hp < b.maxHp) candidates.push({ object: b, x: b.x, y: b.y, missing: b.maxHp - b.hp });
+    });
+    (towers || []).forEach(t => {
+        if (t.owned && t.hp > 0 && t.hp < t.maxHp) candidates.push({ object: t, x: t.x, y: t.y, missing: t.maxHp - t.hp });
+    });
+    if (baseCore && basePlaced && baseCore.hp > 0 && baseCore.hp < baseCore.maxHp) {
+        candidates.push({ object: baseCore, x: baseCore.x, y: baseCore.y, missing: baseCore.maxHp - baseCore.hp });
+    }
+
+    candidates.sort((a, b) => Math.hypot(a.x - sx, a.y - sy) - Math.hypot(b.x - sx, b.y - sy));
+
+    for (const candidate of candidates) {
+        if (remaining <= 0) break;
+        const heal = Math.min(candidate.missing, remaining);
+        candidate.object.hp = Math.min(candidate.object.maxHp, candidate.object.hp + heal);
         remaining -= heal;
         effects.push({ type: "line", x1: sx, y1: sy, x2: candidate.x, y2: candidate.y, life: 9, color: "#ff5d86" });
     }
 }
 
 function damageBarricade(b, amount, sourceEnemy = null) {
+    if (player?.guardianUmbralUntil && getGameTime() < player.guardianUmbralUntil) amount *= 0.62;
     if (!b || !b.active || b.hp <= 0) return;
 
     if (player && player.immortal) {
@@ -2904,7 +4868,8 @@ function damageBarricade(b, amount, sourceEnemy = null) {
 
     const isVisitorProjectile = !!(sourceEnemy && (sourceEnemy.isVisitorProjectile || sourceEnemy.sourceSpecial === "visitor"));
     const isBossDamage = !!(sourceEnemy && (sourceEnemy.isBoss || sourceEnemy.isBossProjectile));
-    const finalAmount = isVisitorProjectile ? amount * 0.72 : (isBossDamage ? amount * BOSS_BARRICADE_DAMAGE_MULTIPLIER : amount);
+    const rawAmount = isVisitorProjectile ? amount * 0.72 : (isBossDamage ? amount * BOSS_BARRICADE_DAMAGE_MULTIPLIER : amount);
+    const finalAmount = rawAmount * (b.bufferDefenseMultiplier || 1) * getCoreBarricadeDefenseMultiplier(b);
 
     b.hp -= finalAmount;
     awardVisitorGold(finalAmount);
@@ -3186,7 +5151,144 @@ function isMinePositionValid(x, y) {
     if ((barricades || []).some(b => b.active && b.hp > 0 && !b.isOpen && circleIntersectsBarricade(x, y, MINE_COLLISION_RADIUS + 6, b, 0))) return false;
     if ((traps || []).some(trap => Math.hypot(trap.x - x, trap.y - y) < TRAP_COLLISION_RADIUS + MINE_COLLISION_RADIUS + 6)) return false;
     if ((mines || []).some(mine => Math.hypot(mine.x - x, mine.y - y) < MINE_COLLISION_RADIUS * 2 + 10)) return false;
+    if ((cores || []).some(core => core && Math.hypot(core.x - x, core.y - y) < CORE_RADIUS + MINE_COLLISION_RADIUS + 12)) return false;
     return true;
+}
+
+
+function getCoreDefinition(type) {
+    return coreDefinitions[type] || null;
+}
+
+function getOwnedCore(type) {
+    return (cores || []).find(core => core && core.type === type);
+}
+
+function isCoreOwned(type) {
+    return Boolean(getOwnedCore(type));
+}
+
+function isPointInCoreRange(type, x, y) {
+    return (cores || []).some(core => core && core.type === type && Math.hypot(core.x - x, core.y - y) <= (core.effectRadius || CORE_EFFECT_RADIUS));
+}
+
+function isPlayerInCoreRange(type) {
+    return player && isPointInCoreRange(type, player.x, player.y);
+}
+
+function hasCursedCore() {
+    return isCoreOwned("cursed");
+}
+
+function isCorePositionValid(x, y, type) {
+    const def = getCoreDefinition(type);
+    if (!def) return false;
+    const coreRect = getEntityRect({ x, y, radius: CORE_RADIUS });
+    if (!isBuildRectInsideWorld(coreRect)) return false;
+    if (isCircleInBossSpawnZone(x, y, CORE_RADIUS, 14)) return false;
+    if (player && Math.hypot(x - player.x, y - player.y) < CORE_RADIUS + 30) return false;
+    if (baseCore && basePlaced && Math.hypot(x - baseCore.x, y - baseCore.y) < BASE_RADIUS + CORE_RADIUS + 35) return false;
+    if (buildCircleOverlapsEnemy(x, y, CORE_RADIUS, 12)) return false;
+    if ((cores || []).some(core => core && Math.hypot(core.x - x, core.y - y) < CORE_MIN_DISTANCE)) return false;
+    if ((towers || []).some(t => t && t.owned && t.hp > 0 && Math.hypot(t.x - x, t.y - y) < TOWER_COLLISION_RADIUS + CORE_RADIUS + 12)) return false;
+    if ((mines || []).some(m => m && m.hp > 0 && Math.hypot(m.x - x, m.y - y) < (m.radius || MINE_COLLISION_RADIUS) + CORE_RADIUS + 12)) return false;
+    if ((traps || []).some(trap => trap && Math.hypot(trap.x - x, trap.y - y) < TRAP_COLLISION_RADIUS + CORE_RADIUS + 10)) return false;
+    if ((barricades || []).some(b => b && b.active && b.hp > 0 && !b.isOpen && circleIntersectsBarricade(x, y, CORE_RADIUS + 10, b, 0))) return false;
+    return true;
+}
+
+function createCore(type, x, y, paidCost = CORE_COST) {
+    const def = getCoreDefinition(type);
+    if (!def) return null;
+    return {
+        id: Date.now() + Math.random(),
+        type,
+        name: def.name,
+        x,
+        y,
+        radius: CORE_RADIUS,
+        effectRadius: def.global ? 0 : CORE_EFFECT_RADIUS,
+        color: def.color,
+        label: def.label,
+        cost: paidCost,
+        placedAtWave: wave,
+        permanent: true,
+        global: Boolean(def.global)
+    };
+}
+
+function normalizeCores() {
+    cores = Array.isArray(cores) ? cores : [];
+    cores = cores.filter(core => core && coreDefinitions[core.type]).map((core, index) => {
+        const def = coreDefinitions[core.type];
+        return { ...core, id: core.id || Date.now() + Math.random() + index, name: def.name, radius: CORE_RADIUS, effectRadius: def.global ? 0 : CORE_EFFECT_RADIUS, color: def.color, label: def.label, permanent: true, global: Boolean(def.global) };
+    });
+}
+
+function getCoreAbilityCooldownMultiplier() {
+    return isPlayerInCoreRange("arcane") ? 0.82 : 1;
+}
+
+function getCoreAbilityPowerMultiplier() {
+    let mult = isPlayerInCoreRange("arcane") ? 1.18 : 1;
+    if (hasCursedCore()) mult *= 1.12;
+    return mult;
+}
+
+function getCorePlayerFireDelayMultiplier() {
+    return hasCursedCore() ? 0.90 : 1;
+}
+
+function getCorePlayerDamageMultiplier() {
+    return hasCursedCore() ? 1.18 : 1;
+}
+
+function getCoreMineIncomeMultiplier(mine) {
+    return mine && isPointInCoreRange("economic", mine.x, mine.y) ? 1.55 : 1;
+}
+
+function getCoreBarricadeDefenseMultiplier(b) {
+    return b && isPointInCoreRange("fortress", b.x, b.y) ? 0.78 : 1;
+}
+
+function getCoreTowerDefenseMultiplier(t) {
+    return t && isPointInCoreRange("military", t.x, t.y) ? 0.90 : 1;
+}
+
+
+function getCoreBuffsForTarget(target, targetType = "tower") {
+    if (!target || !cores || !cores.length) return [];
+    const buffs = [];
+    if (targetType === "tower" && isPointInCoreRange("military", target.x, target.y)) {
+        buffs.push({ type: "military", name: "Núcleo Militar", text: "+22% daño · +12% velocidad · +10% alcance · -10% daño recibido", color: "#ff9b43" });
+    }
+    if (targetType === "mine" && isPointInCoreRange("economic", target.x, target.y)) {
+        buffs.push({ type: "economic", name: "Núcleo Económico", text: "+55% oro generado · más vida y regeneración", color: "#ffb84a" });
+    }
+    if (targetType === "barricade" && isPointInCoreRange("fortress", target.x, target.y)) {
+        buffs.push({ type: "fortress", name: "Núcleo Fortaleza", text: "-22% daño recibido · regeneración lenta · reparación reducida", color: "#ff9b43" });
+    }
+    return buffs;
+}
+
+function getCoreBuffTextForTarget(target, targetType = "tower") {
+    const buffs = getCoreBuffsForTarget(target, targetType);
+    if (!buffs.length) return "";
+    return `<br><small class="coreBuffNotice">🟠 Buff de ${buffs.map(b => b.name).join(", ")}: ${buffs.map(b => b.text).join(" · ")}</small>`;
+}
+
+function updateCorePassiveEffects() {
+    if (!cores || !cores.length) return;
+    (barricades || []).forEach(b => {
+        if (!b || !b.active || b.hp <= 0 || !isPointInCoreRange("fortress", b.x, b.y)) return;
+        const regen = 0.09 * frameScale;
+        b.hp = Math.min(b.maxHp || b.hp, b.hp + regen);
+    });
+    (mines || []).forEach(m => {
+        if (!m || m.hp <= 0 || !isPointInCoreRange("economic", m.x, m.y)) return;
+        m.maxHp = Math.max(Number(m.maxHp) || MINE_MAX_HP, Math.ceil(MINE_MAX_HP * 1.35));
+        m.hp = Math.min(m.maxHp, (Number(m.hp) || 0) + 0.035 * frameScale);
+    });
 }
 
 function getTowerTileAt(x, y) {
@@ -3201,10 +5303,13 @@ function isTowerTileAvailable(tile, ignoredTower = null) {
 function createTowerFromDefinition(def, paidCost = def.cost, tile = null) {
     if (!tile || !isTowerTileAvailable(tile)) return null;
 
-    return {
+    const tower = {
         ...def,
         id: Date.now() + Math.random(),
         owned: true,
+        baseKey: def.key,
+        evolutionId: null,
+        evolutionName: "",
         x: tile.x,
         y: tile.y,
         rotation: Number(def.rotation) || towerBuildRotation || 0,
@@ -3220,6 +5325,8 @@ function createTowerFromDefinition(def, paidCost = def.cost, tile = null) {
         activePoisonZoneExpiresAt: 0,
         activeSlowZoneNextShotAt: 0
     };
+    clampTowerRange(tower);
+    return tower;
 }
 
 function beginTowerPlacement(defKey) {
@@ -3244,6 +5351,7 @@ function beginTowerPlacement(defKey) {
     towerBuildRotation = 0;
     pendingBarricadePlacement = null;
     pendingMinePlacement = null;
+    pendingCorePlacement = null;
     closeShop();
     waveSummaryPanel.classList.add("hidden");
     showCenterMessage(`Colocá: ${def.name} · seguí colocando o cancelá`, 1100, "minor");
@@ -3345,6 +5453,7 @@ function finishTowerPlacement(tile) {
 
     def = { ...def, rotation: towerBuildRotation };
     const tower = createTowerFromDefinition(def, price, tile);
+    applyKnownEvolutionToTower(tower);
     if (!tower) {
         coins += price;
         showCenterMessage("No se pudo colocar", 800, "minor");
@@ -3509,26 +5618,101 @@ function prepareRepeatWave(targetWave, source = "manual") {
     cancelBarricadePlacement(false);
     cancelTrapPlacement(false);
     cancelMinePlacement(false);
+    cancelCorePlacement(false);
     cancelTowerPlacement(false);
     showCenterMessage(`${source === "auto" ? "Auto repitiendo" : "Repitiendo"} oleada ${normalizedWave}`, 900);
     startWave();
     return true;
 }
 
+function getBufferEffectForTarget(buffer, target, targetType = "tower") {
+    if (!buffer || buffer.type !== "buffer" || !target) return null;
+    if (target === buffer || target.type === "buffer") return null;
+    if (buffer.hp <= 0 || !buffer.owned) return null;
+    const dist = Math.hypot((target.x || 0) - buffer.x, (target.y || 0) - buffer.y);
+    if (dist > (buffer.range || 0)) return null;
+
+    const baseDamage = Number(buffer.buffDamage) || 0;
+    const baseSpeed = Number(buffer.buffSpeed) || 0;
+    const isWarbanner = buffer.evolutionId === "buffer_warbanner";
+    const isSanctuary = buffer.evolutionId === "buffer_sanctuary";
+
+    if (targetType === "barricade" && !isSanctuary) return null;
+
+    return {
+        sourceId: buffer.id,
+        sourceName: buffer.name || "Buffer",
+        mode: isWarbanner ? "ofensivo" : isSanctuary ? "defensivo" : "normal",
+        damageBonus: targetType === "tower" ? baseDamage * (isWarbanner ? 1.38 : isSanctuary ? 0.45 : 1) : 0,
+        speedBonus: targetType === "tower" ? baseSpeed * (isWarbanner ? 1.28 : isSanctuary ? 0.45 : 1) : 0,
+        defenseBonus: isSanctuary ? (Number(buffer.sanctuaryDefense) || 0.18) : 0,
+        regenPerSecond: isSanctuary ? (Number(buffer.sanctuaryRegenPerSecond) || 0.22) : 0,
+        color: isWarbanner ? "#a6ff8f" : isSanctuary ? "#73ff9f" : "#8cff8c"
+    };
+}
+
+function getBufferEffectsForTarget(target, targetType = "tower") {
+    return (towers || [])
+        .map(buffer => getBufferEffectForTarget(buffer, target, targetType))
+        .filter(Boolean);
+}
+
+function getBufferBuffTextForTarget(target, targetType = "tower") {
+    const effects = getBufferEffectsForTarget(target, targetType);
+    if (!effects.length) return "";
+    const offensive = effects.reduce((sum, effect) => sum + (effect.damageBonus || 0), 0);
+    const speed = effects.reduce((sum, effect) => sum + (effect.speedBonus || 0), 0);
+    const defense = 1 - effects.reduce((mult, effect) => mult * (1 - (effect.defenseBonus || 0)), 1);
+    const names = [...new Set(effects.map(effect => effect.sourceName))].slice(0, 2).join(", ");
+    const pieces = [];
+    if (offensive > 0.005) pieces.push(`+${Math.round(offensive * 100)}% daño`);
+    if (speed > 0.005) pieces.push(`+${Math.round(speed * 100)}% vel.`);
+    if (defense > 0.005) pieces.push(`-${Math.round(defense * 100)}% daño recibido`);
+    return `<br><small class="bufferedStructureText">Buffeada por ${names}: ${pieces.join(" · ") || "soporte activo"}</small>`;
+}
+
 function applyTowerBuffs() {
     towers.forEach(t => {
         t.damageMultiplier = 1;
         t.fireDelayMultiplier = 1;
+        t.bufferDefenseMultiplier = 1;
+        t.activeBufferBuffs = [];
+    });
+    (barricades || []).forEach(b => {
+        b.bufferDefenseMultiplier = 1;
+        b.activeBufferBuffs = [];
+    });
+
+    towers.forEach(t => {
+        if (!t || !t.owned || t.hp <= 0) return;
+        if (isPointInCoreRange("military", t.x, t.y)) {
+            t.damageMultiplier *= 1.22;
+            t.fireDelayMultiplier *= 0.88;
+            t.bufferDefenseMultiplier *= 0.90;
+        }
     });
 
     towers.forEach(buffer => {
         if (buffer.type !== "buffer") return;
         towers.forEach(t => {
-            if (t === buffer || t.type === "buffer") return;
-            const dist = Math.hypot(t.x - buffer.x, t.y - buffer.y);
-            if (dist <= buffer.range) {
-                t.damageMultiplier *= 1 + (buffer.buffDamage || 0);
-                t.fireDelayMultiplier *= Math.max(0.55, 1 - (buffer.buffSpeed || 0));
+            const effect = getBufferEffectForTarget(buffer, t, "tower");
+            if (!effect) return;
+            t.damageMultiplier *= 1 + (effect.damageBonus || 0);
+            t.fireDelayMultiplier *= Math.max(0.48, 1 - (effect.speedBonus || 0));
+            if (effect.defenseBonus) t.bufferDefenseMultiplier *= Math.max(0.35, 1 - effect.defenseBonus);
+            t.activeBufferBuffs.push(effect);
+            if (effect.regenPerSecond && t.hp > 0 && t.hp < t.maxHp) {
+                t.hp = Math.min(t.maxHp, t.hp + effect.regenPerSecond * frameScale / 60);
+            }
+        });
+        (barricades || []).forEach(b => {
+            if (!b || !b.active || b.hp <= 0) return;
+            const effect = getBufferEffectForTarget(buffer, b, "barricade");
+            if (!effect) return;
+            if (effect.defenseBonus) b.bufferDefenseMultiplier *= Math.max(0.35, 1 - effect.defenseBonus);
+            b.activeBufferBuffs.push(effect);
+            if (effect.regenPerSecond && b.hp > 0 && b.hp < b.maxHp) {
+                b.hp = Math.min(b.maxHp, b.hp + effect.regenPerSecond * frameScale / 60);
             }
         });
     });
@@ -3546,7 +5730,20 @@ function isTowerNearActiveBarricade(tower) {
 }
 
 function getTowerDelay(tower) {
-    return (tower.fireDelay || 999999) * (tower.fireDelayMultiplier || 1);
+    let delay = (tower.fireDelay || 999999) * (tower.fireDelayMultiplier || 1);
+    if (tower?.evolutionId === "rapid_turbine") {
+        const now = getGameTime();
+        const burst = Math.max(650, Number(tower.turbineBurstDuration) || 1550);
+        const rest = Math.max(450, Number(tower.turbineRestDuration) || 900);
+        const cycleStart = Number(tower.turbineCycleStartedAt) || now;
+        const cycleTime = Math.max(1, burst + rest);
+        const phase = (now - cycleStart) % cycleTime;
+        tower.turbineInBurst = phase < burst;
+        delay *= tower.turbineInBurst
+            ? Math.max(0.32, Number(tower.turbineBurstDelayMultiplier) || 0.48)
+            : Math.max(1.45, Number(tower.turbineRestDelayMultiplier) || 2.15);
+    }
+    return delay;
 }
 
 function updateTowerSlotIndexes() {
@@ -3662,6 +5859,101 @@ function buffExistingBarricades(multiplier) {
     });
 }
 
+
+function getAbilitySlotKeyLabel(index) {
+    const action = ABILITY_SLOT_ACTIONS[index] || "bomb";
+    return codeToLabel(controlBindings[action]);
+}
+
+function getDefaultAbilityLoadout() {
+    return ["bomb", "freeze", "tsunami", "lightning", "meteor", "eclipse", "blink"];
+}
+
+function ensureAbilityLoadout() {
+    if (!Array.isArray(abilityLoadout) || abilityLoadout.length !== ABILITY_SLOT_ACTIONS.length) {
+        abilityLoadout = getDefaultAbilityLoadout();
+    }
+    abilityLoadout = abilityLoadout.slice(0, ABILITY_SLOT_ACTIONS.length);
+    while (abilityLoadout.length < ABILITY_SLOT_ACTIONS.length) abilityLoadout.push(null);
+    const seen = new Set();
+    abilityLoadout = abilityLoadout.map(id => {
+        if (!id || !abilities || !abilities[id] || seen.has(id)) return null;
+        seen.add(id);
+        return id;
+    });
+    updateAbilityKeysFromLoadout();
+    return abilityLoadout;
+}
+
+function updateAbilityKeysFromLoadout() {
+    if (!abilities) return;
+    Object.values(abilities).forEach(ability => { if (ability) ability.key = "—"; });
+    (abilityLoadout || []).forEach((id, index) => {
+        if (abilities[id]) abilities[id].key = getAbilitySlotKeyLabel(index);
+    });
+}
+
+function getFirstFreeAbilitySlot() {
+    ensureAbilityLoadout();
+    return abilityLoadout.findIndex(id => !id);
+}
+
+function equipAbilityToSlot(id, slotIndex = null) {
+    if (!abilities || !abilities[id] || !abilities[id].owned) return false;
+    ensureAbilityLoadout();
+    abilityLoadout = abilityLoadout.map(current => current === id ? null : current);
+    let target = Number.isInteger(slotIndex) ? slotIndex : getFirstFreeAbilitySlot();
+    if (target < 0 || target >= ABILITY_SLOT_ACTIONS.length) target = 0;
+    abilityLoadout[target] = id;
+    updateAbilityKeysFromLoadout();
+    updateHud(true);
+    renderAbilityLoadoutManager();
+    autoSaveRun(true);
+    return true;
+}
+
+function unequipAbility(id) {
+    ensureAbilityLoadout();
+    abilityLoadout = abilityLoadout.map(current => current === id ? null : current);
+    updateAbilityKeysFromLoadout();
+    updateHud(true);
+    renderAbilityLoadoutManager();
+    autoSaveRun(true);
+}
+
+function unlockAbility(id, options = {}) {
+    if (!abilities || !abilities[id]) return false;
+    const ability = abilities[id];
+    const wasOwned = ability.owned;
+    ability.owned = true;
+    if (!wasOwned || options.autoEquip) {
+        const freeSlot = getFirstFreeAbilitySlot();
+        if (freeSlot >= 0) equipAbilityToSlot(id, freeSlot);
+    }
+    updateAbilityKeysFromLoadout();
+    renderAbilityLoadoutManager();
+    updateHud(true);
+    autoSaveRun(true);
+    return true;
+}
+
+function renderAbilityLoadoutManager() {
+    if (!abilityLoadoutPanel || !abilities) return;
+    ensureAbilityLoadout();
+    const owned = Object.keys(abilities).filter(id => abilities[id].owned);
+    const slotHtml = abilityLoadout.map((id, index) => {
+        const ability = id ? abilities[id] : null;
+        const options = ['<option value="">Vacío</option>'].concat(owned.map(ownedId => `<option value="${ownedId}" ${ownedId === id ? "selected" : ""}>${escapeHtml(abilities[ownedId].name)}</option>`)).join("");
+        return `<div class="loadoutSlotCard"><strong>Slot ${index + 1} · ${getAbilitySlotKeyLabel(index)}</strong><select data-ability-slot-select="${index}">${options}</select><small>${ability ? escapeHtml(ability.desc || "Habilidad equipada.") : "Elegí una habilidad aprendida."}</small></div>`;
+    }).join("");
+    const learnedHtml = owned.length ? owned.map(id => {
+        const ability = abilities[id];
+        const equipped = abilityLoadout.includes(id);
+        return `<div class="learnedAbilityCard ${equipped ? "equipped" : ""}"><b>${escapeHtml(ability.name)}</b><span>${escapeHtml(ability.desc || "")}</span><button type="button" data-ability-unequip="${id}" ${equipped ? "" : "disabled"}>Desaprender slot</button></div>`;
+    }).join("") : `<p class="abilityLoadoutEmpty">Todavía no aprendiste habilidades.</p>`;
+    abilityLoadoutPanel.innerHTML = `<h4>Slots de habilidades</h4><p>Comprás o desbloqueás habilidades, y después elegís en qué tecla van. Si llenás todo, podés reemplazar un slot.</p><div class="loadoutGrid">${slotHtml}</div><h4>Aprendidas</h4><div class="learnedAbilityGrid">${learnedHtml}</div>`;
+}
+
 function createDefaultState() {
     wave = 1;
     coins = 0;
@@ -3707,6 +5999,9 @@ function createDefaultState() {
         enemyHpMultiplier: 1,
         enemySpeedMultiplier: 1,
         enemyCountMultiplier: 1,
+        specialEnemyChanceMultiplier: 1,
+        bossHpMultiplier: 1,
+        visitorDisabled: false,
         mineIncomeMultiplier: 1,
         repairCostMultiplier: 1,
         scoreMultiplier: 1,
@@ -3735,6 +6030,7 @@ function createDefaultState() {
         color: "#ffffff"
 
     };
+    restoreExploredMapCells([]);
     gameSpeed = 1;
     speedIndex = 0;
     autoMode = false;
@@ -3773,63 +6069,22 @@ function createDefaultState() {
     towerSlotLimit = INITIAL_TOWER_LIMIT;
 
     abilities = {
-        bomb: {
-            name: "Bomba",
-            key: codeToLabel(controlBindings.bomb),
-            owned: false,
-            cost: 180,
-            cooldown: 8000,
-            lastUsed: -Infinity
-        },
-        freeze: {
-            name: "Congelar",
-            key: codeToLabel(controlBindings.freeze),
-            owned: false,
-            cost: 280,
-            cooldown: 14000,
-            lastUsed: -Infinity
-        },
-        tsunami: {
-            name: "Tsunami",
-            key: codeToLabel(controlBindings.tsunami),
-            owned: false,
-            cost: 560,
-            cooldown: 24000,
-            lastUsed: -Infinity
-        },
-        lightning: {
-            name: "Rayo",
-            key: codeToLabel(controlBindings.lightning),
-            owned: false,
-            cost: 980,
-            cooldown: 22000,
-            lastUsed: -Infinity
-        },
-        meteor: {
-            name: "Meteorito",
-            key: codeToLabel(controlBindings.meteor),
-            owned: false,
-            cost: 1750,
-            cooldown: 30000,
-            lastUsed: -Infinity
-        },
-        eclipse: {
-            name: "Eclipse",
-            key: codeToLabel(controlBindings.eclipse),
-            owned: false,
-            cost: 2800,
-            cooldown: 42000,
-            lastUsed: -Infinity
-        },
-        blink: {
-            name: "Blink",
-            key: codeToLabel(controlBindings.blink),
-            owned: false,
-            cost: 800,
-            cooldown: 5000,
-            lastUsed: -Infinity
-        }
+        bomb: { name: "Bomba", desc: "Explosión directa en el cursor. Simple, confiable y brutal.", key: codeToLabel(controlBindings.bomb), owned: false, cost: 180, cooldown: 8000, lastUsed: -Infinity },
+        freeze: { name: "Congelar", desc: "Ralentiza a toda la oleada por unos segundos.", key: codeToLabel(controlBindings.freeze), owned: false, cost: 280, cooldown: 14000, lastUsed: -Infinity },
+        tsunami: { name: "Tsunami", desc: "Empuja una línea ancha de enemigos hacia donde apuntás.", key: codeToLabel(controlBindings.tsunami), owned: false, cost: 560, cooldown: 24000, lastUsed: -Infinity },
+        lightning: { name: "Rayo", desc: "Cadena de daño que salta entre objetivos cercanos.", key: codeToLabel(controlBindings.lightning), owned: false, cost: 980, cooldown: 22000, lastUsed: -Infinity },
+        meteor: { name: "Meteorito", desc: "Gran impacto y fuego persistente en el cursor.", key: codeToLabel(controlBindings.meteor), owned: false, cost: 1750, cooldown: 30000, lastUsed: -Infinity },
+        eclipse: { name: "Eclipse", desc: "Zona oscura que pulsa, ralentiza y ejecuta enemigos heridos.", key: codeToLabel(controlBindings.eclipse), owned: false, cost: 2800, cooldown: 42000, lastUsed: -Infinity },
+        blink: { name: "Blink", desc: "Dash corto para reposicionarte atravesando peligro.", key: codeToLabel(controlBindings.blink), owned: false, cost: 800, cooldown: 5000, lastUsed: -Infinity },
+        nova: { name: "Nova Verde", desc: "Explosión desde tu cuerpo: daño medio, empuje y curación ligera por enemigo golpeado.", key: "—", owned: false, lootOnly: true, cost: 0, cooldown: 26000, lastUsed: -Infinity },
+        guardian: { name: "Guardián Umbral", desc: "Durante unos segundos tus defensas reciben menos daño y se reparan lentamente.", key: "—", owned: false, lootOnly: true, cost: 0, cooldown: 36000, lastUsed: -Infinity },
+        timewarp: { name: "Reloj Roto", desc: "Ralentiza fuerte a enemigos cercanos y acelera tus disparos por un momento.", key: "—", owned: false, lootOnly: true, cost: 0, cooldown: 32000, lastUsed: -Infinity },
+        voidchain: { name: "Cadena del Vacío", desc: "Ata varios enemigos cercanos al cursor, los daña y los agrupa hacia el centro.", key: "—", owned: false, lootOnly: true, cost: 0, cooldown: 30000, lastUsed: -Infinity },
+        thornstorm: { name: "Tormenta de Espinas", desc: "Crea un campo de espinas que sangra y frena a los enemigos que lo cruzan.", key: "—", owned: false, lootOnly: true, cost: 0, cooldown: 34000, lastUsed: -Infinity },
+        goldpulse: { name: "Pulso Dorado", desc: "Daña alrededor tuyo y convierte parte del caos en oro inmediato.", key: "—", owned: false, lootOnly: true, cost: 0, cooldown: 44000, lastUsed: -Infinity }
     };
+    abilityLoadout = getDefaultAbilityLoadout();
+    ensureAbilityLoadout();
 
     costs = {
         damage: 35,
@@ -3867,11 +6122,14 @@ function createDefaultState() {
         tower13: 1450,
         trapSnare: 55,
         trapBleed: 75,
-        mineGold: FIRST_MINE_COST
+        mineGold: FIRST_MINE_COST,
+        core: CORE_COST
     };
 
-    const persistentVisitors = (enemies || []).filter(e => e && e.special === "visitor" && e.hp > 0);
-    enemies = persistentVisitors;
+    // Nueva run: se limpia TODO enemigo/estructura enemiga.
+    // Antes se preservaba el Visitante si quedaba vivo, y podía colarse en wave 1
+    // al reiniciar una run. El Visitante solo debe persistir dentro de la misma run.
+    enemies = [];
     projectiles = [];
     bossProjectiles = [];
     slowZones = [];
@@ -3882,11 +6140,13 @@ function createDefaultState() {
     effects = [];
     traps = [];
     mines = [];
+    cores = [];
     titanShards = [];
     pendingTitanReward = null;
     inventory = createEmptyInventory();
     inventoryCooldownUntil = 0;
     activeRelics = [];
+    towerEvolutionChoices = {};
     relicFamilyWeights = { constructor: 1, sangre: 1, codicia: 1, arcana: 1, neutral: 1 };
     pendingRelicChoice = null;
     activeWaveEvent = null;
@@ -3946,10 +6206,12 @@ function buildSavePayload() {
         selectedClassKey,
         activeRelics,
         relicFamilyWeights,
+        towerEvolutionChoices,
         runStats,
         totalRunTimeMs,
         gameTime,
         gameSpeed,
+        exploredMapCells: serializeExploredMapCells(),
         speedIndex,
         autoMode,
         autoRepeatWaveMode,
@@ -3978,6 +6240,7 @@ function buildSavePayload() {
         towers,
         towerSlotLimit,
         abilities,
+        abilityLoadout,
         costs,
         enemies,
         projectiles: (projectiles || []).map(getSerializableProjectile),
@@ -3990,6 +6253,7 @@ function buildSavePayload() {
         effects,
         traps,
         mines,
+        cores,
         titanShards,
         pendingTitanReward,
         inventory,
@@ -4072,6 +6336,7 @@ function restoreSavedRun() {
         selectedClassKey = CLASS_DEFINITIONS[data.selectedClassKey] ? data.selectedClassKey : (CLASS_DEFINITIONS[data.player?.classKey] ? data.player.classKey : (localStorage.getItem("ardentSelectedClass") || "errante"));
         activeClass = CLASS_DEFINITIONS[selectedClassKey] || CLASS_DEFINITIONS.errante;
         activeRelics = Array.isArray(data.activeRelics) ? data.activeRelics : [];
+        towerEvolutionChoices = data.towerEvolutionChoices && typeof data.towerEvolutionChoices === "object" ? { ...data.towerEvolutionChoices } : {};
         relicFamilyWeights = data.relicFamilyWeights && typeof data.relicFamilyWeights === "object"
             ? { constructor: 1, sangre: 1, codicia: 1, arcana: 1, neutral: 1, ...data.relicFamilyWeights }
             : { constructor: 1, sangre: 1, codicia: 1, arcana: 1, neutral: 1 };
@@ -4120,18 +6385,22 @@ function restoreSavedRun() {
         player.classKey = selectedClassKey;
         player.classColor = activeClass?.color || player.classColor || "#ffffff";
         player.color = activeClass?.color || player.color || "#ffffff";
+        restoreExploredMapCells(data.exploredMapCells || []);
+        revealEntireFogMap();
 
         barricades = Array.isArray(data.barricades) ? data.barricades : [createBarricadeSlot("Inicio", 120), createBarricadeSlot("Avanzada", ADVANCED_BARRICADE_X)];
         barricades.forEach((b, index) => { if (!b.id) b.id = Date.now() + Math.random() + index; ensureBarricadeEconomy(b); });
         barricade = barricades[0];
         towers = Array.isArray(data.towers) ? data.towers : [];
-        towers.forEach((t, index) => { if (!t.id) t.id = Date.now() + Math.random() + index; ensureTowerEconomy(t); });
+        towers.forEach((t, index) => { if (!t.id) t.id = Date.now() + Math.random() + index; if (!t.baseKey) t.baseKey = t.originalKey || t.key; applyKnownEvolutionToTower(t); ensureTowerEconomy(t); });
         selectedStructureIds = [];
         selectedStructureType = null;
         towerSlotLimit = clampTowerSlotLimit(data.towerSlotLimit || INITIAL_TOWER_LIMIT);
         updateTowerSlotIndexes();
 
         abilities = data.abilities || abilities;
+        abilityLoadout = Array.isArray(data.abilityLoadout) ? data.abilityLoadout : getDefaultAbilityLoadout();
+        ensureAbilityLoadout();
         if (abilities.lightning) abilities.lightning.cost = Math.max(Number(abilities.lightning.cost) || 0, 980);
         if (abilities.meteor) abilities.meteor.cost = Math.max(Number(abilities.meteor.cost) || 0, 1750);
         if (abilities.eclipse) abilities.eclipse.cost = Math.max(Number(abilities.eclipse.cost) || 0, 2800);
@@ -4147,6 +6416,7 @@ function restoreSavedRun() {
         if (!Number.isFinite(Number(costs.trapSnare))) costs.trapSnare = trapDefinitions.snare.cost;
         if (!Number.isFinite(Number(costs.trapBleed))) costs.trapBleed = trapDefinitions.bleed.cost;
         if (!Number.isFinite(Number(costs.mineGold))) costs.mineGold = getMineCostForCount(Array.isArray(data.mines) ? data.mines.length : 0);
+        if (!Number.isFinite(Number(costs.core))) costs.core = CORE_COST;
         if (!Number.isFinite(Number(costs.towerSlot))) costs.towerSlot = getTowerSlotCostForLimit(towerSlotLimit);
         applyControlsToAbilities();
 
@@ -4158,6 +6428,13 @@ function restoreSavedRun() {
                 enemy.summonBatchId = null;
             }
         });
+        // Migración anti-bug: si una partida normal vieja guardó un Visitante antes de wave 25,
+        // se limpia para que no aparezca en wave 1/early al reiniciar o continuar.
+        if (wave < 25 && !runDisqualifiedFromLeaderboard) {
+            enemies = enemies.filter(enemy => enemy && enemy.special !== "visitor" && !isVisitorStructure(enemy));
+            visitorSpawnedThisWave = false;
+            lastVisitorWave = -999;
+        }
         projectiles = Array.isArray(data.projectiles) ? data.projectiles : [];
         projectiles.forEach(p => { p.bornAt = Number(p.bornAt) || getGameTime(); p.maxAge = Number(p.maxAge) || 5200; });
         bossProjectiles = Array.isArray(data.bossProjectiles) ? data.bossProjectiles : [];
@@ -4177,6 +6454,8 @@ function restoreSavedRun() {
             mine.hp = Number.isFinite(Number(mine.hp)) ? Math.max(0, Math.min(mine.maxHp, Number(mine.hp))) : mine.maxHp;
         });
         mines = mines.filter(mine => mine && mine.hp > 0);
+        cores = Array.isArray(data.cores) ? data.cores : [];
+        normalizeCores();
         titanShards = Array.isArray(data.titanShards) ? data.titanShards : [];
         pendingTitanReward = data.pendingTitanReward || null;
         inventory = normalizeInventory(data.inventory);
@@ -4258,7 +6537,7 @@ function startGame() {
     isInMainMenu = false;
     updateClassSelectionVisibility();
 
-    menu.classList.add("hidden");
+    hideMainMenuLayout();
     gameArea.classList.remove("hidden");
     resizeCanvasForDisplay();
 
@@ -4304,62 +6583,16 @@ function startGame() {
 }
 
 
-function getSideMissionContext() {
-    const activeMines = (mines || []).filter(m => m && m.hp > 0);
-    const activeTraps = (traps || []).filter(t => t && t.active !== false);
-    const activeBarricades = (barricades || []).filter(b => b && b.active && b.hp > 0);
-    const hasTrapDamageSource = activeTraps.length > 0 || activeBarricades.some(b => ["thorns", "explosive"].includes(b.kind));
-    const hasControlSource =
-        Boolean(abilities?.freeze?.owned || abilities?.tsunami?.owned || abilities?.lightning?.owned || abilities?.eclipse?.owned) ||
-        (towers || []).some(t => t && t.type === "slow") ||
-        activeTraps.some(t => t.type === "snare" || t.type === "bleed");
-
-    return {
-        hasMines: activeMines.length > 0,
-        hasTrapDamageSource,
-        hasControlSource,
-        hasBoss: isBossWave() || (enemies || []).some(e => e && e.isBoss && e.hp > 0),
-        canSpawnSpecials: wave >= Math.min(...specialEnemyTypes.map(t => t.unlockWave || 999)),
-        canSpawnRam: wave >= (specialEnemyTypes.find(t => t.special === "ram")?.unlockWave || 999),
-        expectedEnemyCount: getEnemiesAmountForWave()
-    };
-}
-
-function canOfferSideMission(m, context = getSideMissionContext()) {
-    if (!m) return false;
-
-    // Misiones de boss: solo cuando realmente es wave de boss.
-    // Antes "Duelo personal" podía salir en una wave normal y quedaba imposible.
-    if (["boss_duel", "last_spell"].includes(m.id) || ["bossPlayerDamage", "bossAbilityKill"].includes(m.type)) {
-        return context.hasBoss;
-    }
-
-    // Misiones que dependen de una estructura o enemigo concreto.
-    if (["protect_mines", "mine_income"].includes(m.id)) return context.hasMines;
-    if (m.id === "trapper") return context.hasTrapDamageSource;
-    if (m.id === "crowd_control") return context.hasControlSource;
-    if (m.id === "ram_punish") return context.canSpawnRam;
-    if (m.id === "special_priority") return context.canSpawnSpecials;
-
-    // Esta misión pide construir durante la preparación, pero las misiones se eligen al iniciar wave.
-    // La dejamos fuera hasta moverla a la fase de construcción como contrato de preparación.
-    if (m.id === "build_phase") return false;
-
-    // Evita objetivos matemáticamente imposibles en early.
-    if (m.id === "fast_clear" && context.expectedEnemyCount < m.target) return false;
-
-    return true;
-}
-
 function maybeStartSideMission() {
     activeSideMission = null;
     if (!sideMissionBox || wave < 4 || Math.random() > 0.38) { updateSideMissionUI(); return; }
-
-    const context = getSideMissionContext();
-    const pool = SIDE_MISSIONS.filter(m => canOfferSideMission(m, context));
+    const pool = SIDE_MISSIONS.filter(m => {
+        if (["protect_mines", "mine_income"].includes(m.id) && !(mines || []).some(x => x && x.hp > 0)) return false;
+        if (m.id === "last_spell" && !isBossWave()) return false;
+        return true;
+    });
     const base = pool[Math.floor(Math.random() * pool.length)];
-    if (!base) { updateSideMissionUI(); return; }
-
+    if (!base) return;
     activeSideMission = { ...base, progress: 0, failed: false, reward: getSideMissionReward() };
     updateSideMissionUI();
 }
@@ -4379,8 +6612,10 @@ function updateMissionFailure(type) {
 }
 function showMissionToast(completed, mission = activeSideMission) {
     if (!mission) return;
-    if (completed) showCenterMessage(`MISIÓN COMPLETADA — ${mission.title} · +${formatMoney(mission.reward)} oro`, 1500, "mission-success");
-    else showCenterMessage(`MISIÓN FALLIDA — ${mission.title}`, 1250, "mission-fail");
+    if (completed) showCenterMessage(`MISIÓN COMPLETADA
+${mission.title} · +${formatMoney(mission.reward)} oro`, 1500, "mission-success");
+    else showCenterMessage(`MISIÓN FALLIDA
+${mission.title}`, 1250, "mission-fail");
 }
 function updateMissionOnKill(enemy, source) {
     if (!activeSideMission || activeSideMission.failed) return;
@@ -4440,16 +6675,37 @@ function startWave() {
     waveInProgress = true;
     gameRunning = true;
 
-    const persistentVisitors = (enemies || []).filter(e => e && e.special === "visitor" && e.hp > 0);
-    persistentVisitors.forEach(v => {
-        v.retreating = false;
-        v.untargetable = false;
-        v.retreatX = null;
-        v.retreatY = null;
-        v.lastVisitorShotAt = getGameTime() + 650;
-        v.visitorStrafeUntil = getGameTime() + 900;
+    const persistentVisitorForces = (enemies || []).filter(e => e && e.hp > 0 && (e.special === "visitor" || isVisitorStructure(e)));
+    persistentVisitorForces.forEach(v => {
+        if (v.special === "visitor") {
+            v.retreating = false;
+            v.untargetable = false;
+            v.retreatX = null;
+            v.retreatY = null;
+            // Orden clara de inicio de ronda: salir por su compuerta y presionar tu base.
+            // Esto evita que arranque recalculando/strafeando adentro como si estuviera peleando
+            // contra un objetivo invisible.
+            v.visitorOpeningAssaultWave = wave;
+            v.visitorOpeningAssaultUntil = getGameTime() + 9000;
+            v.visitorLeavingBase = true;
+            v.visitorPassingDoor = true;
+            v.visitorMovingToBuildSlot = false;
+            v.visitorPendingBuild = null;
+            v.visitorPendingUpgradeWall = null;
+            v.visitorActionLockUntil = 0;
+            v.visitorMoveMemoryX = 0;
+            v.visitorMoveMemoryY = 0;
+            v.lastVisitorShotAt = getGameTime() + 1200;
+            v.visitorStrafeUntil = getGameTime() + 1900;
+            clearVisitorHumanGoal(v);
+            const pass = getVisitorBestDoorPass(v, baseCore?.x ?? player?.x ?? v.x, baseCore?.y ?? player?.y ?? v.y);
+            if (pass?.door) {
+                pass.door.isOpen = true;
+                pass.door.openedByVisitorUntil = getGameTime() + 3600;
+            }
+        }
     });
-    enemies = persistentVisitors;
+    enemies = persistentVisitorForces;
     projectiles = [];
     bossProjectiles = [];
     slowZones = [];
@@ -4499,7 +6755,7 @@ function startWave() {
 function getEnemiesAmountForWave() {
     // La cantidad sube hasta cierto punto y luego se vuelve densidad/calidad, no duración infinita.
     const earlyCount = 12 + wave * 4;
-    if (wave <= 35) return isBossWave() ? Math.max(18, Math.floor(earlyCount * 0.75)) : earlyCount;
+    if (wave <= 35) return Math.max(1, Math.floor((isBossWave() ? Math.max(18, Math.floor(earlyCount * 0.75)) : earlyCount) * (player?.enemyCountMultiplier || 1) * (hasCursedCore() ? 1.08 : 1)));
 
     const lateCount = Math.floor(150 + Math.log10(wave + 1) * 42 + Math.pow(wave - 35, 0.36) * 18);
     const capped = Math.min(MAX_LATE_WAVE_ENEMIES, lateCount);
@@ -4508,7 +6764,7 @@ function getEnemiesAmountForWave() {
         return Math.min(MAX_BOSS_WAVE_ENEMIES, Math.max(65, Math.floor(capped * 0.72)));
     }
 
-    return Math.max(1, Math.floor(capped * (player?.enemyCountMultiplier || 1)));
+    return Math.max(1, Math.floor(capped * (player?.enemyCountMultiplier || 1) * (hasCursedCore() ? 1.08 : 1)));
 }
 
 function getSpawnIntervalForWave(amount) {
@@ -4546,7 +6802,8 @@ function startWaveEvent() {
     activeWaveEvent = pickWaveEvent();
     if (!activeWaveEvent) return;
     lastWaveEventWave = wave;
-    showCenterMessage(`${activeWaveEvent.title} — ${activeWaveEvent.desc}`, 2600, activeWaveEvent.messageType || "event");
+    showCenterMessage(`${activeWaveEvent.title}
+${activeWaveEvent.desc}`, 2600, activeWaveEvent.messageType || "event");
 }
 
 function endWaveEvent(completedWave) {
@@ -4595,10 +6852,13 @@ function getEnemyTypeForWave() {
 }
 
 function getSpecialEnemyChance() {
-    if (wave < 35) return Math.min(0.38, 0.13 + wave * 0.008);
-    if (wave < 100) return Math.min(0.62, 0.34 + (wave - 35) * 0.0042);
-    if (wave < 350) return Math.min(0.82, 0.62 + (wave - 100) * 0.0008);
-    return 0.90;
+    const mult = player?.specialEnemyChanceMultiplier || 1;
+    let base;
+    if (wave < 35) base = Math.min(0.38, 0.13 + wave * 0.008);
+    else if (wave < 100) base = Math.min(0.62, 0.34 + (wave - 35) * 0.0042);
+    else if (wave < 350) base = Math.min(0.82, 0.62 + (wave - 100) * 0.0008);
+    else base = 0.90;
+    return Math.max(0, Math.min(0.95, base * mult * (hasCursedCore() ? 1.45 : 1)));
 }
 
 function getRandomSpawnPoint() {
@@ -4609,12 +6869,31 @@ function getRandomSpawnPoint() {
     return getSpawnPointForSide(Math.floor(Math.random() * 4));
 }
 
+function isSpawnPointTooCloseToVisitorBase(point) {
+    const visitor = getLivingVisitor();
+    if (!visitor || !point) return false;
+    const center = getVisitorPlanningCenter(visitor);
+    if (Math.hypot(point.x - center.x, point.y - center.y) < 420) return true;
+    // Si una estructura del Visitante está pegada a un borde/esquina, no spawneamos bichos ahí:
+    // elegimos otro lado para evitar el tapón de enemigos contra bases/outposts.
+    return getVisitorStructures().some(s => s && s.hp > 0 && Math.hypot(point.x - s.x, point.y - s.y) < 300 + (s.radius || 24));
+}
+
 function getSpawnPointForSide(side) {
     const margin = 55;
-    if (side === 0) return { x: Math.random() * WORLD_WIDTH, y: -margin };
-    if (side === 1) return { x: WORLD_WIDTH + margin, y: Math.random() * WORLD_HEIGHT };
-    if (side === 2) return { x: Math.random() * WORLD_WIDTH, y: WORLD_HEIGHT + margin };
-    return { x: -margin, y: Math.random() * WORLD_HEIGHT };
+    let lastPoint = null;
+    for (let i = 0; i < 12; i++) {
+        const point = side === 0
+            ? { x: Math.random() * WORLD_WIDTH, y: -margin }
+            : side === 1
+                ? { x: WORLD_WIDTH + margin, y: Math.random() * WORLD_HEIGHT }
+                : side === 2
+                    ? { x: Math.random() * WORLD_WIDTH, y: WORLD_HEIGHT + margin }
+                    : { x: -margin, y: Math.random() * WORLD_HEIGHT };
+        lastPoint = point;
+        if (!isSpawnPointTooCloseToVisitorBase(point)) return point;
+    }
+    return lastPoint || { x: -margin, y: Math.random() * WORLD_HEIGHT };
 }
 
 function getBossSpawnPoint() {
@@ -4730,7 +7009,7 @@ function createEnemyFromType(type, options = {}) {
         enemy.retreating = Boolean(options.retreating);
         enemy.retreatX = Number.isFinite(options.retreatX) ? options.retreatX : null;
         enemy.retreatY = Number.isFinite(options.retreatY) ? options.retreatY : null;
-        enemy.visitorGold = Number(options.visitorGold) || 0;
+        enemy.visitorGold = Number(options.visitorGold) || Math.ceil(45 + wave * 2.2);
         enemy.visitorLevel = Number(options.visitorLevel) || 1;
         // El Visitante empieza amenazante, pero no debe borrar la base antes de mejorarse.
         enemy.visitorDamage = Number(options.visitorDamage) || Math.ceil(2.6 + wave * 0.045);
@@ -4772,13 +7051,15 @@ function hasLivingVisitor() {
 }
 
 function shouldSpawnVisitor() {
+    if (player?.visitorDisabled || activeClass?.beginnerLeague) return false;
     if (visitorSpawnedThisWave) return false;
     if (isRepeatingWave) return false;
     if (wave < 25) return false;
     if (hasLivingVisitor()) return false;
     if (wave - lastVisitorWave < 12) return false;
-    if (wave - lastVisitorDeathWave < 14) return false;
-    const chance = Math.min(0.055, 0.012 + Math.max(0, wave - 25) * 0.00065);
+    const rememberedGap = player?.visitorRemembers ? 9 : 14;
+    if (wave - lastVisitorDeathWave < rememberedGap) return false;
+    const chance = Math.min(player?.visitorRemembers ? 0.075 : 0.055, (player?.visitorRemembers ? 0.018 : 0.012) + Math.max(0, wave - 25) * 0.00065);
     return Math.random() < chance;
 }
 
@@ -4821,50 +7102,505 @@ function updateVisitorAlert() {
     box.classList.toggle("hidden", getGameTime() > visitorAlertUntil);
 }
 
+function ensureVisitorHudPanel() {
+    if (visitorHudPanel && document.body.contains(visitorHudPanel)) return visitorHudPanel;
+    visitorHudPanel = document.getElementById("visitorHudPanel");
+    if (!visitorHudPanel) {
+        visitorHudPanel = document.createElement("div");
+        visitorHudPanel.id = "visitorHudPanel";
+        visitorHudPanel.className = "visitorHudPanel hidden";
+        const stage = document.getElementById("playStage") || document.body;
+        stage.appendChild(visitorHudPanel);
+    }
+    return visitorHudPanel;
+}
+
+function updateVisitorHud() {
+    const panel = ensureVisitorHudPanel();
+    const visitor = getLivingVisitor();
+    if (!visitor) {
+        panel.classList.add("hidden");
+        panel.innerHTML = "";
+        return;
+    }
+    panel.classList.remove("hidden");
+    const hpPct = Math.max(0, Math.min(1, visitor.hp / Math.max(1, visitor.maxHp || visitor.hp)));
+    panel.innerHTML = `
+        <strong>EL VISITANTE</strong>
+        <div class="visitorHudBar"><span style="width:${Math.round(hpPct * 100)}%"></span></div>
+        <small>HP ${Math.ceil(visitor.hp)}/${Math.ceil(visitor.maxHp || visitor.hp)}</small>
+        <em>Oro ${formatMoney(Math.floor(visitor.visitorGold || 0))}</em>
+    `;
+}
+
 function awardVisitorGold(amount = 0) {
     const visitor = (enemies || []).find(e => e && e.special === "visitor" && e.hp > 0);
     if (!visitor) return;
     visitor.visitorGold = (Number(visitor.visitorGold) || 0) + Math.max(0, amount) * 0.42;
 }
 
-function getVisitorTarget(visitor) {
+function awardVisitorRawGold(visitor, amount = 0, options = {}) {
+    if (!visitor || visitor.hp <= 0) return 0;
+    const gained = Math.max(0, Math.floor(Number(amount) || 0));
+    if (!gained) return 0;
+    visitor.visitorGold = (Number(visitor.visitorGold) || 0) + gained;
+    if (options.alert) showVisitorAlert(options.alert);
+    return gained;
+}
+
+function awardVisitorPlanningIncome(visitor, reason = "planning") {
+    if (!visitor || visitor.hp <= 0) return 0;
+    const marker = `${reason}:${wave}`;
+    if (visitor.lastVisitorIncomeMarker === marker) return 0;
+    visitor.lastVisitorIncomeMarker = marker;
+    const level = Math.max(1, Number(visitor.visitorLevel) || 1);
+    const structures = getVisitorStructures().length;
+    // El Visitante no puede depender solamente de que tus defensas fallen.
+    // Si el jugador está muy fuerte, igual junta recursos en la sombra para construir.
+    const amount = Math.ceil(72 + wave * 4.4 + level * 12 + structures * 5);
+    return awardVisitorRawGold(visitor, amount, { alert: "El Visitante reunió recursos en la sombra." });
+}
+
+function awardVisitorPassiveWaveIncome(visitor, now = getGameTime()) {
+    if (!visitor || visitor.hp <= 0 || visitor.retreating || !waveInProgress) return 0;
+    if (now < (visitor.nextVisitorPassiveIncomeAt || 0)) return 0;
+    visitor.nextVisitorPassiveIncomeAt = now + 5200 + Math.random() * 1800;
+    const level = Math.max(1, Number(visitor.visitorLevel) || 1);
+    const amount = Math.ceil(4 + wave * 0.35 + level * 1.5);
+    return awardVisitorRawGold(visitor, amount);
+}
+
+const VISITOR_PLAYER_VISION_RANGE = 520;
+const VISITOR_LOW_HP_RETREAT_RATIO = 0.38;
+const VISITOR_ATTACK_HP_RATIO = 0.56;
+const VISITOR_MIN_CHASE_BASE_DISTANCE = 520;
+const VISITOR_TERRITORY_WARNING_MS = 5000;
+const VISITOR_BUILD_VISION_RANGE = 560;
+const VISITOR_BUILD_HAND_RANGE = 74;
+
+// Movimiento humano del Visitante: evita el temblor de recalcular dirección cada frame.
+// La IA ahora fija un objetivo, camina hacia él, se detiene un instante y recién ahí ejecuta.
+const VISITOR_BUILD_PAUSE_MS = 680;
+const VISITOR_UPGRADE_PAUSE_MS = 540;
+const VISITOR_PATROL_REPATH_MS = 4200;
+
+function setVisitorHumanGoal(visitor, x, y, label = "Moviéndose", options = {}) {
+    if (!visitor || !Number.isFinite(x) || !Number.isFinite(y)) return false;
+    const now = getGameTime();
+    const sameGoal = Number.isFinite(visitor.visitorGoalX) && Number.isFinite(visitor.visitorGoalY) && Math.hypot(visitor.visitorGoalX - x, visitor.visitorGoalY - y) < 18;
+    if (!sameGoal) {
+        visitor.visitorGoalX = clampWorldX(x, (visitor.radius || 22) + 8);
+        visitor.visitorGoalY = clampWorldY(y, (visitor.radius || 22) + 8);
+        visitor.visitorGoalCreatedAt = now;
+        visitor.visitorGoalArrivedAt = 0;
+        visitor.visitorMoveMemoryX = 0;
+        visitor.visitorMoveMemoryY = 0;
+    }
+    visitor.retreatX = visitor.visitorGoalX;
+    visitor.retreatY = visitor.visitorGoalY;
+    visitor.targetX = visitor.visitorGoalX;
+    visitor.targetY = visitor.visitorGoalY;
+    visitor.visitorGoalArriveRadius = Number(options.arriveRadius) || visitor.visitorGoalArriveRadius || 24;
+    visitor.visitorGoalDwellMs = Number(options.dwellMs) || 0;
+    visitor.visitorActionState = options.state || visitor.visitorActionState || "moving";
+    if (label) visitor.visitorLastPlan = label;
+    return true;
+}
+
+function clearVisitorHumanGoal(visitor) {
+    if (!visitor) return;
+    visitor.visitorGoalX = null;
+    visitor.visitorGoalY = null;
+    visitor.visitorGoalCreatedAt = 0;
+    visitor.visitorGoalArrivedAt = 0;
+    visitor.visitorActionState = null;
+    visitor.visitorMoveMemoryX = 0;
+    visitor.visitorMoveMemoryY = 0;
+}
+
+function getVisitorStructureStandingPoint(visitor, structure, distance = 62) {
+    if (!visitor || !structure) return null;
+    const angleToVisitor = Math.atan2(visitor.y - structure.y, visitor.x - structure.x);
     const candidates = [];
-    if (player && player.hp > 0) candidates.push({ type:"player", object:player, x:player.x, y:player.y, radius:23, score: Math.hypot(visitor.x-player.x, visitor.y-player.y) * 0.62 });
-    (towers || []).forEach(t => { if (t && t.owned && t.hp > 0) candidates.push({ type:"tower", object:t, x:t.x, y:t.y, radius:TOWER_COLLISION_RADIUS, score: Math.hypot(visitor.x-t.x, visitor.y-t.y) - (1 - (t.hp / Math.max(1, t.maxHp || t.hp))) * 110 }); });
-    (mines || []).forEach(m => { if (m && m.hp > 0) candidates.push({ type:"mine", object:m, x:m.x, y:m.y, radius:m.radius || MINE_COLLISION_RADIUS, score: Math.hypot(visitor.x-m.x, visitor.y-m.y) - 55 }); });
+    for (let i = 0; i < 10; i++) {
+        const offset = (i === 0 ? 0 : Math.ceil(i / 2) * (Math.PI / 5) * (i % 2 === 0 ? 1 : -1));
+        const a = angleToVisitor + offset;
+        candidates.push({
+            x: clampWorldX(structure.x + Math.cos(a) * distance, (visitor.radius || 22) + 8),
+            y: clampWorldY(structure.y + Math.sin(a) * distance, (visitor.radius || 22) + 8)
+        });
+    }
+    candidates.sort((a, b) => Math.hypot(visitor.x - a.x, visitor.y - a.y) - Math.hypot(visitor.x - b.x, visitor.y - b.y));
+    return candidates.find(c => !isEnemyPositionBlockedBySolid(visitor, c.x, c.y) && !isVisitorBuildPhaseForbiddenPosition(c.x, c.y, 24)) || candidates[0];
+}
+
+function applyVisitorHumanMovement(visitor, targetX, targetY, move, options = {}) {
+    if (!visitor || !Number.isFinite(targetX) || !Number.isFinite(targetY)) return false;
+    const now = getGameTime();
+    const arriveRadius = Number(options.arriveRadius) || 18;
+    const oldX = visitor.x;
+    const oldY = visitor.y;
+    const dx = targetX - visitor.x;
+    const dy = targetY - visitor.y;
+    const dist = Math.hypot(dx, dy) || 1;
+
+    if (now < (visitor.visitorActionLockUntil || 0)) {
+        visitor.lastMoveX = 0;
+        visitor.lastMoveY = 0;
+        visitor.isMoving = false;
+        return true;
+    }
+
+    if (dist <= arriveRadius) {
+        visitor.visitorGoalArrivedAt = visitor.visitorGoalArrivedAt || now;
+        visitor.lastMoveX = 0;
+        visitor.lastMoveY = 0;
+        visitor.isMoving = false;
+        return true;
+    }
+
+    const desiredX = dx / dist;
+    const desiredY = dy / dist;
+    // Inercia suave: no cambia de izquierda/derecha instantáneamente salvo que esté muy trabado.
+    const memory = Math.max(0, Math.min(0.86, Number(options.memory) || 0.72));
+    let mx = (Number(visitor.visitorMoveMemoryX) || 0) * memory + desiredX * (1 - memory);
+    let my = (Number(visitor.visitorMoveMemoryY) || 0) * memory + desiredY * (1 - memory);
+    const len = Math.hypot(mx, my) || 1;
+    mx /= len;
+    my /= len;
+    visitor.visitorMoveMemoryX = mx;
+    visitor.visitorMoveMemoryY = my;
+
+    const step = Math.min(move, Math.max(0.55, dist));
+    const nextX = clampWorldX(visitor.x + mx * step, visitor.radius + 8);
+    const nextY = clampWorldY(visitor.y + my * step, visitor.radius + 8);
+
+    if (!isEnemyPositionBlockedBySolid(visitor, nextX, nextY) && !isVisitorBuildPhaseForbiddenPosition(nextX, nextY, 18)) {
+        visitor.x = nextX;
+        visitor.y = nextY;
+    } else if (!isEnemyPositionBlockedBySolid(visitor, nextX, visitor.y) && !isVisitorBuildPhaseForbiddenPosition(nextX, visitor.y, 18)) {
+        visitor.x = nextX;
+        visitor.visitorMoveMemoryY *= 0.35;
+    } else if (!isEnemyPositionBlockedBySolid(visitor, visitor.x, nextY) && !isVisitorBuildPhaseForbiddenPosition(visitor.x, nextY, 18)) {
+        visitor.y = nextY;
+        visitor.visitorMoveMemoryX *= 0.35;
+    } else if (!tryMoveVisitorAroundObstacle(visitor, targetX, targetY, step * 1.25)) {
+        visitor.visitorMoveMemoryX = 0;
+        visitor.visitorMoveMemoryY = 0;
+        visitor.lastMoveX = 0;
+        visitor.lastMoveY = 0;
+        visitor.isMoving = false;
+        return false;
+    }
+
+    visitor.lastMoveX = visitor.x - oldX;
+    visitor.lastMoveY = visitor.y - oldY;
+    visitor.isMoving = Math.hypot(visitor.lastMoveX || 0, visitor.lastMoveY || 0) > 0.015;
+    return visitor.isMoving;
+}
+
+
+function isPlayerInsideOwnBaseArea() {
+    if (!player || player.hp <= 0) return false;
+
+    // Base principal: si el jugador está cerca del núcleo, el Visitante entiende que
+    // está protegido y no se tira de cabeza a perseguirlo.
+    if (basePlaced && baseCore && baseCore.hp > 0) {
+        if (Math.hypot(player.x - baseCore.x, player.y - baseCore.y) <= 430) return true;
+    }
+
+    // También contamos como "base" el refugio construido: murallas, torres y minas cercanas.
+    const nearTower = (towers || []).some(t => t && t.owned && t.hp > 0 && Math.hypot(player.x - t.x, player.y - t.y) <= 135);
+    if (nearTower) return true;
+
+    const nearMine = (mines || []).some(m => m && m.hp > 0 && Math.hypot(player.x - m.x, player.y - m.y) <= 130);
+    if (nearMine) return true;
+
+    const nearBarricade = (barricades || []).some(b => {
+        if (!b || !b.active || b.hp <= 0) return false;
+        const c = getClosestPointOnBarricade(player.x, player.y, b);
+        return Math.hypot(player.x - c.x, player.y - c.y) <= 120;
+    });
+
+    return nearBarricade;
+}
+
+function getPlayerOwnBaseDistance() {
+    if (!player) return Infinity;
+    let best = Infinity;
+    if (basePlaced && baseCore && baseCore.hp > 0) best = Math.min(best, Math.hypot(player.x - baseCore.x, player.y - baseCore.y));
+    (towers || []).forEach(t => { if (t && t.owned && t.hp > 0) best = Math.min(best, Math.hypot(player.x - t.x, player.y - t.y)); });
+    (mines || []).forEach(m => { if (m && m.hp > 0) best = Math.min(best, Math.hypot(player.x - m.x, player.y - m.y)); });
+    (barricades || []).forEach(b => {
+        if (!b || !b.active || b.hp <= 0) return;
+        const c = getClosestPointOnBarricade(player.x, player.y, b);
+        best = Math.min(best, Math.hypot(player.x - c.x, player.y - c.y));
+    });
+    return best;
+}
+
+function isPlayerFarEnoughFromOwnBaseForVisitorChase() {
+    return getPlayerOwnBaseDistance() >= VISITOR_MIN_CHASE_BASE_DISTANCE;
+}
+
+function visitorHasCombatConfidence(visitor) {
+    if (!visitor || !visitor.maxHp) return false;
+    const hpPct = visitor.hp / Math.max(1, visitor.maxHp);
+    const hasBaseSupport = getVisitorStructures("tower").length > 0 || getVisitorStructures("wall").length >= 3;
+    return hpPct >= VISITOR_ATTACK_HP_RATIO || hasBaseSupport;
+}
+
+function canVisitorSeePlayer(visitor) {
+    if (!visitor || !player || player.hp <= 0) return false;
+    const dist = Math.hypot(visitor.x - player.x, visitor.y - player.y);
+    return dist <= VISITOR_PLAYER_VISION_RANGE;
+}
+
+function shouldVisitorPrioritizePlayer(visitor) {
+    // El Visitante solo te prioriza si te ve, si saliste REALMENTE de tu base/refugio
+    // y si él no está tan herido como para suicidarse.
+    return Boolean(
+        player && player.hp > 0 &&
+        canVisitorSeePlayer(visitor) &&
+        !isPlayerInsideOwnBaseArea() &&
+        isPlayerFarEnoughFromOwnBaseForVisitorChase() &&
+        visitorHasCombatConfidence(visitor)
+    );
+}
+
+function getVisitorOpeningAssaultTarget(visitor) {
+    if (!visitor || !waveInProgress) return null;
+    const now = getGameTime();
+    if (visitor.visitorOpeningAssaultWave !== wave || now > (visitor.visitorOpeningAssaultUntil || 0)) return null;
+
+    // La orden de apertura no es “disparar desde la base”: es salir y presionar
+    // el corazón de la run del jugador. Mientras siga dentro de su base, esta
+    // prioridad mantiene la ruta hacia la compuerta y desactiva el baile circular.
+    const candidates = [];
+    if (basePlaced && baseCore && baseCore.hp > 0) {
+        candidates.push({
+            type: "base",
+            object: baseCore,
+            x: baseCore.x,
+            y: baseCore.y,
+            radius: BASE_RADIUS,
+            score: -9000
+        });
+    }
+    (towers || []).forEach(t => {
+        if (t && t.owned && t.hp > 0) candidates.push({ type: "tower", object: t, x: t.x, y: t.y, radius: TOWER_COLLISION_RADIUS, score: Math.hypot(visitor.x - t.x, visitor.y - t.y) - 520 });
+    });
+    (mines || []).forEach(m => {
+        if (m && m.hp > 0) candidates.push({ type: "mine", object: m, x: m.x, y: m.y, radius: m.radius || MINE_COLLISION_RADIUS, score: Math.hypot(visitor.x - m.x, visitor.y - m.y) - 360 });
+    });
+    (barricades || []).forEach(b => {
+        if (!b || !b.active || b.hp <= 0 || b.isOpen) return;
+        const c = getClosestPointOnBarricade(visitor.x, visitor.y, b);
+        candidates.push({ type: "barricade", object: b, x: c.x, y: c.y, radius: 12, score: Math.hypot(visitor.x - c.x, visitor.y - c.y) - 240 });
+    });
+
+    if (!candidates.length && player && player.hp > 0) {
+        return { type: "player", object: player, x: player.x, y: player.y, radius: 23, score: -4500, openingAssault: true };
+    }
+
+    candidates.sort((a, b) => a.score - b.score);
+    const best = candidates[0] || null;
+    if (best) {
+        best.openingAssault = true;
+        visitor.visitorLastPlan = isVisitorInsideOwnBase(visitor) ? "Saliendo a presionar tu base" : "Presionando tu base";
+    }
+    return best;
+}
+
+function getVisitorBaseAnchor(visitor = getLivingVisitor()) {
+    if (visitor && Number.isFinite(visitor.visitorBaseAnchorX) && Number.isFinite(visitor.visitorBaseAnchorY)) {
+        return { x: visitor.visitorBaseAnchorX, y: visitor.visitorBaseAnchorY, radius: 42 };
+    }
+
+    const door = getVisitorStructures("door")[0];
+    if (door && door.hp > 0) return { x: door.x, y: door.y, radius: door.radius || 30 };
+
+    const structures = getVisitorStructures();
+    if (structures.length) {
+        const sx = structures.reduce((sum, s) => sum + (s.x || 0), 0) / structures.length;
+        const sy = structures.reduce((sum, s) => sum + (s.y || 0), 0) / structures.length;
+        return { x: sx, y: sy, radius: 42 };
+    }
+
+    const center = getVisitorPlanningCenter(visitor);
+    return { x: center.x, y: center.y, radius: 42 };
+}
+
+function getVisitorWeakPointTarget(visitor) {
+    if (!visitor) return null;
+    const openDoors = (barricades || []).filter(b => b && b.kind === "door" && b.active && b.hp > 0 && b.isOpen);
+    const damagedWalls = (barricades || []).filter(b => b && b.active && b.hp > 0 && !b.isOpen && (b.hp / Math.max(1, b.maxHp || b.hp)) < 0.42);
+    const candidates = [];
+
+    openDoors.forEach(door => {
+        const doorPoint = { x: door.x || 0, y: door.y || 0 };
+        (towers || []).forEach(t => {
+            if (!t || !t.owned || t.hp <= 0) return;
+            const distToDoor = Math.hypot(t.x - doorPoint.x, t.y - doorPoint.y);
+            if (distToDoor <= 320) candidates.push({ type: "tower", object: t, x: t.x, y: t.y, radius: TOWER_COLLISION_RADIUS, score: Math.hypot(visitor.x - t.x, visitor.y - t.y) - 260 });
+        });
+        (mines || []).forEach(m => {
+            if (!m || m.hp <= 0) return;
+            const distToDoor = Math.hypot(m.x - doorPoint.x, m.y - doorPoint.y);
+            if (distToDoor <= 320) candidates.push({ type: "mine", object: m, x: m.x, y: m.y, radius: m.radius || MINE_COLLISION_RADIUS, score: Math.hypot(visitor.x - m.x, visitor.y - m.y) - 220 });
+        });
+        if (basePlaced && baseCore && baseCore.hp > 0 && Math.hypot(baseCore.x - doorPoint.x, baseCore.y - doorPoint.y) <= 420) {
+            candidates.push({ type: "base", object: baseCore, x: baseCore.x, y: baseCore.y, radius: BASE_RADIUS, score: Math.hypot(visitor.x - baseCore.x, visitor.y - baseCore.y) - 180 });
+        }
+    });
+
+    damagedWalls.forEach(b => {
+        const c = getClosestPointOnBarricade(visitor.x, visitor.y, b);
+        candidates.push({ type: "barricade", object: b, x: c.x, y: c.y, radius: 12, score: Math.hypot(visitor.x - c.x, visitor.y - c.y) - 135 });
+    });
+
+    candidates.sort((a, b) => a.score - b.score);
+    const best = candidates[0] || null;
+    if (best) visitor.visitorLastPlan = openDoors.length ? "Atacando una abertura" : "Presionando un punto débil";
+    return best;
+}
+
+
+function getNearestPlayerTowerDistanceTo(x, y) {
+    let best = Infinity;
+    (towers || []).forEach(t => {
+        if (!t || !t.owned || t.hp <= 0) return;
+        best = Math.min(best, Math.hypot(t.x - x, t.y - y));
+    });
+    return best;
+}
+
+function isVisitorInPlayerKillZone(visitor) {
+    if (!visitor || !player) return false;
+    const hpPct = visitor.hp / Math.max(1, visitor.maxHp || visitor.hp);
+    const nearTowers = (towers || []).filter(t => t && t.owned && t.hp > 0 && Math.hypot(t.x - visitor.x, t.y - visitor.y) <= 360).length;
+    const insideBase = isInsidePlayerBaseProtectedZone(visitor.x, visitor.y, 30);
+    return (insideBase && hpPct < 0.82) || (nearTowers >= 2 && hpPct < 0.9);
+}
+
+function getVisitorRetreatTarget(visitor) {
+    const anchor = getVisitorBaseAnchor(visitor);
+    return { type: "visitor_base", x: anchor.x, y: anchor.y, radius: anchor.radius || 42, score: 0 };
+}
+
+function getVisitorObservationTarget(visitor) {
+    if (!visitor || !player || player.hp <= 0) return null;
+    const outpostDoors = getVisitorStructures("door").filter(d => d && d.hp > 0 && d.visitorOutpost);
+    const outpostTowers = getVisitorStructures("tower").filter(t => t && t.hp > 0 && t.visitorOutpost);
+    const anchors = [];
+    outpostDoors.forEach(d => anchors.push({ x: d.x, y: d.y, weight: 0 }));
+    outpostTowers.forEach(t => anchors.push({ x: t.x, y: t.y, weight: 40 }));
+    if (!anchors.length) return null;
+    anchors.sort((a, b) => Math.hypot(a.x - player.x, a.y - player.y) - a.weight - (Math.hypot(b.x - player.x, b.y - player.y) - b.weight));
+    const best = anchors[0];
+    const angleToPlayer = Math.atan2(player.y - best.y, player.x - best.x);
+    return {
+        type: "outpost_observe",
+        x: clampWorldX(best.x + Math.cos(angleToPlayer) * 78, 70),
+        y: clampWorldY(best.y + Math.sin(angleToPlayer) * 78, 70),
+        radius: 35,
+        score: 25
+    };
+}
+
+function getVisitorTarget(visitor) {
+    const hpPct = visitor && visitor.maxHp ? visitor.hp / Math.max(1, visitor.maxHp) : 1;
+
+    // Si está herido o se metió en un nido de torres, vuelve a su zona/base.
+    if (hpPct <= VISITOR_LOW_HP_RETREAT_RATIO || isVisitorInPlayerKillZone(visitor)) {
+        visitor.visitorLastPlan = hpPct <= VISITOR_LOW_HP_RETREAT_RATIO ? "Refugiándose" : "Evitando torres";
+        return getVisitorRetreatTarget(visitor);
+    }
+
+    const openingAssault = getVisitorOpeningAssaultTarget(visitor);
+    if (openingAssault) return openingAssault;
+
+    // Si saliste lejos de tu base y entra en su rango de visión, te prioriza como rival directo.
+    if (shouldVisitorPrioritizePlayer(visitor)) {
+        visitor.visitorLastPlan = "Cazando al jugador";
+        return { type:"player", object:player, x:player.x, y:player.y, radius:23, score:-9999 };
+    }
+
+    const weakPoint = getVisitorWeakPointTarget(visitor);
+    if (weakPoint) return weakPoint;
+
+    const candidates = [];
+    (towers || []).forEach(t => { if (t && t.owned && t.hp > 0) { if (isInsidePlayerBaseProtectedZone(t.x, t.y, 20) && hpPct < 0.88) return; candidates.push({ type:"tower", object:t, x:t.x, y:t.y, radius:TOWER_COLLISION_RADIUS, score: Math.hypot(visitor.x-t.x, visitor.y-t.y) - (1 - (t.hp / Math.max(1, t.maxHp || t.hp))) * 110 }); } });
+    (mines || []).forEach(m => { if (m && m.hp > 0) { if (isInsidePlayerBaseProtectedZone(m.x, m.y, 20) && hpPct < 0.88) return; candidates.push({ type:"mine", object:m, x:m.x, y:m.y, radius:m.radius || MINE_COLLISION_RADIUS, score: Math.hypot(visitor.x-m.x, visitor.y-m.y) - 55 }); } });
     (barricades || []).forEach(b => {
         if (!b || !b.active || b.hp <= 0 || b.isOpen) return;
         const c = getClosestPointOnBarricade(visitor.x, visitor.y, b);
         candidates.push({ type:"barricade", object:b, x:c.x, y:c.y, radius:12, score: Math.hypot(visitor.x-c.x, visitor.y-c.y) - 25 });
     });
-    if (basePlaced && baseCore && baseCore.hp > 0) candidates.push({ type:"base", object:baseCore, x:baseCore.x, y:baseCore.y, radius:BASE_RADIUS, score: Math.hypot(visitor.x-baseCore.x, visitor.y-baseCore.y) + 160 });
+    if (basePlaced && baseCore && baseCore.hp > 0 && hpPct >= 0.9) candidates.push({ type:"base", object:baseCore, x:baseCore.x, y:baseCore.y, radius:BASE_RADIUS, score: Math.hypot(visitor.x-baseCore.x, visitor.y-baseCore.y) + 160 });
     candidates.sort((a,b)=>a.score-b.score);
-    return candidates[0] || null;
+    if (candidates[0]) return candidates[0];
+
+    const observe = getVisitorObservationTarget(visitor);
+    if (observe) {
+        visitor.visitorLastPlan = "Observando desde un outpost";
+        return observe;
+    }
+    return null;
 }
 
 function maybeUpgradeVisitor(visitor, now) {
     if (!visitor || now - (visitor.lastVisitorUpgradeAt || 0) < 1200) return;
+    const shell = getVisitorMainShellCompletion(visitor);
+    if (!shell.complete) {
+        visitor.visitorLastPlan = `Priorizando cierre de base ${shell.built}/${shell.total}`;
+        return;
+    }
     const level = Number(visitor.visitorLevel) || 1;
-    const cost = Math.ceil(18 + level * 12 + wave * 0.8);
+    const cost = Math.ceil(30 + level * 18 + wave * 1.15);
+    const reserve = getVisitorOutstandingBaseReserve(visitor);
+    const nextTerritorySlot = getVisitorNextMissingTerritorySlot(visitor, { includeOutposts: true });
+    if (nextTerritorySlot) {
+        const buildCost = getVisitorConstructionCost(nextTerritorySlot.type === "door" ? "door" : nextTerritorySlot.type, visitor);
+        if ((visitor.visitorGold || 0) >= buildCost || shouldVisitorSaveForBase(visitor) || (visitor.visitorGold || 0) < cost + reserve) {
+            visitor.visitorLastPlan = nextTerritorySlot.outpost ? "Guardando oro para expandirse" : "Guardando oro para su fortaleza";
+            return;
+        }
+    }
+    if (shouldVisitorSaveForBase(visitor) && (visitor.visitorGold || 0) < cost + reserve) {
+        visitor.visitorLastPlan = "Ahorrando para fortalecer la base";
+        return;
+    }
     if ((visitor.visitorGold || 0) < cost) return;
     visitor.visitorGold -= cost;
     visitor.visitorLevel = level + 1;
     visitor.lastVisitorUpgradeAt = now;
     const roll = Math.random();
-    if (roll < 0.38) {
+    if (roll < 0.32) {
         visitor.visitorDamage = (visitor.visitorDamage || 3) + 0.75;
         showVisitorAlert("El Visitante se está haciendo más fuerte: daño aumentado.");
-    } else if (roll < 0.72) {
+    } else if (roll < 0.58) {
         const gain = Math.ceil(10 + wave * 0.25);
         visitor.maxHp += gain;
         visitor.hp = Math.min(visitor.maxHp, visitor.hp + gain);
         showVisitorAlert("El Visitante se está haciendo más fuerte: vida aumentada.");
-    } else {
+    } else if (roll < 0.78) {
         visitor.baseSpeed = Math.min(1.75, (visitor.baseSpeed || 1) + 0.035);
         visitor.speed = visitor.baseSpeed;
         showVisitorAlert("El Visitante se está haciendo más fuerte: velocidad aumentada.");
+    } else {
+        const current = Number(visitor.visitorShotCooldown) || 1450;
+        const nextCooldown = Math.max(760, Math.floor(current * 0.92));
+        if (nextCooldown < current) {
+            visitor.visitorShotCooldown = nextCooldown;
+            showVisitorAlert("El Visitante se está haciendo más fuerte: velocidad de disparo aumentada.");
+        } else {
+            visitor.visitorDamage = (visitor.visitorDamage || 3) + 0.45;
+            showVisitorAlert("El Visitante se está haciendo más fuerte: daño aumentado.");
+        }
     }
 }
+
 
 function updateVisitorAI(visitor, now) {
     if (!visitor || visitor.hp <= 0) return;
@@ -4876,14 +7612,52 @@ function updateVisitorAI(visitor, now) {
         visitor.visitorPlanningCenterX = null;
         visitor.visitorPlanningCenterY = null;
     }
-    maybeUpgradeVisitor(visitor, now);
+    awardVisitorPassiveWaveIncome(visitor, now);
     const target = getVisitorTarget(visitor);
-    if (!target) return;
-    visitor.targetX = target.x;
-    visitor.targetY = target.y;
-    const dx = target.x - visitor.x;
-    const dy = target.y - visitor.y;
+    if (tryVisitorTerritoryBuildAction(visitor, target)) return;
+    maybeUpgradeVisitor(visitor, now);
+    if (!target) {
+        const observe = getVisitorObservationTarget(visitor);
+        if (observe) setVisitorHumanGoal(visitor, observe.x, observe.y, "Observando desde un outpost", { arriveRadius: 34, state: "observe" });
+        return;
+    }
+    let targetX = target.x;
+    let targetY = target.y;
+    let visitorDoorRouteActive = false;
+    if (target.type === "visitor_base") {
+        visitor.visitorWantsShelter = true;
+        const pass = getVisitorBestDoorPass(visitor, targetX, targetY);
+        if (pass && getVisitorMainShellCompletion(visitor).ratio > 0.55 && !isVisitorInsideOwnBase(visitor)) {
+            targetX = Math.hypot(visitor.x - pass.outside.x, visitor.y - pass.outside.y) > 40 ? pass.outside.x : pass.inside.x;
+            targetY = Math.hypot(visitor.x - pass.outside.x, visitor.y - pass.outside.y) > 40 ? pass.outside.y : pass.inside.y;
+            updateVisitorDoorAutomation(visitor, targetX, targetY);
+        }
+    } else {
+        visitor.visitorWantsShelter = false;
+        const exitRoute = getVisitorDoorRouteTarget(visitor, targetX, targetY);
+        if (exitRoute) {
+            targetX = exitRoute.x;
+            targetY = exitRoute.y;
+            visitorDoorRouteActive = true;
+            visitor.visitorLastPlan = exitRoute.phase === "align_inside" ? "Yendo a su puerta" : "Saliendo de su base";
+        } else {
+            visitor.visitorPassingDoor = false;
+            visitor.visitorLeavingBase = false;
+            if (!target.openingAssault) closeVisitorDoorIfSafe(visitor);
+        }
+    }
+    visitor.targetX = targetX;
+    visitor.targetY = targetY;
+    const dx = targetX - visitor.x;
+    const dy = targetY - visitor.y;
     const dist = Math.hypot(dx, dy) || 1;
+
+    if (target.type === "outpost_observe" && !visitorDoorRouteActive) {
+        const move = Math.max(0.72, Math.min(1.55, visitor.speed || visitor.baseSpeed || 1)) * gameSpeed * frameScale;
+        setVisitorHumanGoal(visitor, targetX, targetY, "Observando desde un outpost", { arriveRadius: 34, state: "observe" });
+        applyVisitorHumanMovement(visitor, targetX, targetY, move, { arriveRadius: 34, memory: 0.80 });
+        return;
+    }
     const nx = dx / dist;
     const ny = dy / dist;
     if (now > (visitor.visitorStrafeUntil || 0)) {
@@ -4892,43 +7666,88 @@ function updateVisitorAI(visitor, now) {
     }
     let mx = 0;
     let my = 0;
-    const preferred = target.type === "player" ? 300 : 255;
-    if (dist < preferred - 85) { mx -= nx; my -= ny; }
+    const preferred = visitorDoorRouteActive ? 12 : target.type === "visitor_base" ? 34 : target.type === "outpost_observe" ? 58 : target.type === "player" ? 310 : 255;
+    if (visitorDoorRouteActive) {
+        mx += nx;
+        my += ny;
+    } else if (dist < preferred - 85) { mx -= nx; my -= ny; }
     else if (dist > preferred + 105) { mx += nx; my += ny; }
-    mx += -ny * 0.62 * (visitor.visitorStrafeDir || 1);
-    my += nx * 0.62 * (visitor.visitorStrafeDir || 1);
+    const shouldCombatStrafe = !target.openingAssault && !visitorDoorRouteActive && ["player", "tower", "mine", "barricade", "base"].includes(target.type);
+    if (shouldCombatStrafe) {
+        mx += -ny * 0.32 * (visitor.visitorStrafeDir || 1);
+        my += nx * 0.32 * (visitor.visitorStrafeDir || 1);
+    }
 
-    let nearestProjectile = null;
-    let nearestProjectileDist = 9999;
+    let bestThreat = null;
     (projectiles || []).forEach(p => {
         if (!p || (p.owner !== "player" && p.owner !== "tower")) return;
-        const d = Math.hypot(p.x - visitor.x, p.y - visitor.y);
-        if (d < nearestProjectileDist) { nearestProjectileDist = d; nearestProjectile = p; }
+        const vx = Number(p.dx) || 0;
+        const vy = Number(p.dy) || 0;
+        const relX = visitor.x - p.x;
+        const relY = visitor.y - p.y;
+        const along = relX * vx + relY * vy;
+        if (along < -8) return; // ya pasó de largo
+        const closestX = p.x + vx * along;
+        const closestY = p.y + vy * along;
+        const miss = Math.hypot(visitor.x - closestX, visitor.y - closestY);
+        const currentDist = Math.hypot(visitor.x - p.x, visitor.y - p.y);
+        const danger = (120 - miss) + (150 - currentDist) * 0.35;
+        if (miss <= 72 && currentDist <= 165 && (!bestThreat || danger > bestThreat.danger)) {
+            bestThreat = { p, miss, currentDist, danger };
+        }
     });
-    if (nearestProjectile && nearestProjectileDist < 95) {
-        mx += -(nearestProjectile.dy || 0) * 1.25;
-        my += (nearestProjectile.dx || 0) * 1.25;
+    if (bestThreat && now >= (visitor.nextNaturalDodgeAt || 0)) {
+        // Esquiva predictiva: mira la trayectoria de la bala, no solo la distancia actual.
+        visitor.nextNaturalDodgeAt = now + 150;
+        const p = bestThreat.p;
+        const side = (visitor.visitorStrafeDir || 1) * (Math.random() < 0.22 ? -1 : 1);
+        const strength = bestThreat.currentDist < 70 ? 2.25 : 1.55;
+        mx += -(Number(p.dy) || 0) * strength * side;
+        my += (Number(p.dx) || 0) * strength * side;
+        // Un toque de salida contra la fuente para que no se quede bailando sobre la misma línea.
+        mx += (visitor.x - p.x) / Math.max(1, bestThreat.currentDist) * 0.45;
+        my += (visitor.y - p.y) / Math.max(1, bestThreat.currentDist) * 0.45;
     }
-    const len = Math.hypot(mx, my) || 1;
+    const rawLen = Math.hypot(mx, my) || 1;
+    let moveDirX = mx / rawLen;
+    let moveDirY = my / rawLen;
+    // Movimiento de combate con inercia: no vibra cambiando dirección cada frame.
+    const combatMemory = target.type === "player" ? 0.62 : 0.72;
+    moveDirX = (Number(visitor.visitorMoveMemoryX) || 0) * combatMemory + moveDirX * (1 - combatMemory);
+    moveDirY = (Number(visitor.visitorMoveMemoryY) || 0) * combatMemory + moveDirY * (1 - combatMemory);
+    const smoothLen = Math.hypot(moveDirX, moveDirY) || 1;
+    moveDirX /= smoothLen;
+    moveDirY /= smoothLen;
+    visitor.visitorMoveMemoryX = moveDirX;
+    visitor.visitorMoveMemoryY = moveDirY;
+
     const move = (visitor.speed || visitor.baseSpeed || 1) * gameSpeed * frameScale;
-    const nextX = clampWorldX(visitor.x + (mx / len) * move, visitor.radius + 4);
-    const nextY = clampWorldY(visitor.y + (my / len) * move, visitor.radius + 4);
+    const nextX = clampWorldX(visitor.x + moveDirX * move, visitor.radius + 4);
+    const nextY = clampWorldY(visitor.y + moveDirY * move, visitor.radius + 4);
     const oldX = visitor.x;
     const oldY = visitor.y;
     if (!isEnemyPositionBlockedBySolid(visitor, nextX, nextY)) {
         visitor.x = nextX; visitor.y = nextY;
     } else if (!isEnemyPositionBlockedBySolid(visitor, nextX, visitor.y)) {
         visitor.x = nextX;
+        visitor.visitorMoveMemoryY *= 0.25;
     } else if (!isEnemyPositionBlockedBySolid(visitor, visitor.x, nextY)) {
         visitor.y = nextY;
+        visitor.visitorMoveMemoryX *= 0.25;
+    } else {
+        visitor.visitorMoveMemoryX = 0;
+        visitor.visitorMoveMemoryY = 0;
     }
     visitor.lastMoveX = visitor.x - oldX;
     visitor.lastMoveY = visitor.y - oldY;
     visitor.isMoving = Math.hypot(visitor.lastMoveX || 0, visitor.lastMoveY || 0) > 0.04;
 
-    if (dist < 470 && now - (visitor.lastVisitorShotAt || 0) >= (visitor.visitorShotCooldown || 1250)) {
+    const shotTarget = getVisitorIntentionalShotTarget(visitor, target, visitorDoorRouteActive);
+    if (shotTarget && now - (visitor.lastVisitorShotAt || 0) >= (visitor.visitorShotCooldown || 1250)) {
         visitor.lastVisitorShotAt = now;
-        fireEnemyProjectile(visitor, target.x, target.y, { damage: Math.max(2, visitor.visitorDamage || 4), color: "#f2f2f2", speed: 5.2, radius: 6 });
+        visitor.lastAimX = shotTarget.x;
+        visitor.lastAimY = shotTarget.y;
+        fireEnemyProjectile(visitor, shotTarget.x, shotTarget.y, { damage: Math.max(2, visitor.visitorDamage || 4), color: "#7b0712", speed: 5.2, radius: 6, visitorProjectile: true });
     }
 }
 
@@ -4976,7 +7795,7 @@ function getVisitorRetreatPoint(visitor) {
         { x: WORLD_WIDTH * 0.73, y: WORLD_HEIGHT * 0.22 },
         { x: WORLD_WIDTH * 0.27, y: WORLD_HEIGHT * 0.78 },
         { x: WORLD_WIDTH * 0.73, y: WORLD_HEIGHT * 0.78 }
-    ].filter(p => !isVisitorBuildPhaseForbiddenPosition(p.x, p.y, 120));
+    ].filter(p => !isVisitorBuildPhaseForbiddenPosition(p.x, p.y, 120) && isVisitorBaseAnchorViable(p, visitor));
 
     const pool = candidates.length ? candidates : [
         { x: margin, y: margin },
@@ -4984,6 +7803,22 @@ function getVisitorRetreatPoint(visitor) {
     ];
     pool.sort((a, b) => scoreVisitorPlanningPoint(b, visitor) - scoreVisitorPlanningPoint(a, visitor));
     return pool[0];
+}
+
+function forceVisitorToPlanningZone(visitor) {
+    if (!visitor || visitor.hp <= 0) return;
+    const point = getVisitorRetreatPoint(visitor);
+    if (!Number.isFinite(visitor.visitorBaseAnchorX) || !Number.isFinite(visitor.visitorBaseAnchorY)) {
+        visitor.visitorBaseAnchorX = point.x;
+        visitor.visitorBaseAnchorY = point.y;
+    }
+    visitor.visitorPlanningCenterX = visitor.visitorBaseAnchorX;
+    visitor.visitorPlanningCenterY = visitor.visitorBaseAnchorY;
+    visitor.retreatX = visitor.visitorBaseAnchorX;
+    visitor.retreatY = visitor.visitorBaseAnchorY;
+    visitor.targetX = visitor.visitorBaseAnchorX;
+    visitor.targetY = visitor.visitorBaseAnchorY;
+    visitor.visitorForbiddenStartedAt = 0;
 }
 
 function getVisitorPlanningWanderPoint(visitor) {
@@ -5007,17 +7842,100 @@ function beginVisitorRetreat() {
         if (!visitor || visitor.special !== "visitor" || visitor.hp <= 0) return;
         const point = getVisitorRetreatPoint(visitor);
         visitor.retreating = true;
-        visitor.untargetable = true;
-        visitor.visitorPlanningCenterX = point.x;
-        visitor.visitorPlanningCenterY = point.y;
-        const wander = getVisitorPlanningWanderPoint({ ...visitor, visitorPlanningCenterX: point.x, visitorPlanningCenterY: point.y, retreatX: point.x, retreatY: point.y });
-        visitor.retreatX = wander.x;
-        visitor.retreatY = wander.y;
-        visitor.targetX = wander.x;
-        visitor.targetY = wander.y;
-        visitor.visitorNextPlanningMoveAt = getGameTime() + 900 + Math.random() * 1300;
+        visitor.untargetable = false;
+        if (!Number.isFinite(visitor.visitorBaseAnchorX) || !Number.isFinite(visitor.visitorBaseAnchorY) || !isVisitorBaseAnchorViable({ x: visitor.visitorBaseAnchorX, y: visitor.visitorBaseAnchorY }, visitor)) {
+            const anchor = findVisitorViableBaseAnchor(visitor) || point;
+            visitor.visitorBaseAnchorX = anchor.x;
+            visitor.visitorBaseAnchorY = anchor.y;
+        }
+        visitor.visitorPlanningCenterX = visitor.visitorBaseAnchorX;
+        visitor.visitorPlanningCenterY = visitor.visitorBaseAnchorY;
+        visitor.retreatX = visitor.visitorBaseAnchorX;
+        visitor.retreatY = visitor.visitorBaseAnchorY;
+        visitor.targetX = visitor.visitorBaseAnchorX;
+        visitor.targetY = visitor.visitorBaseAnchorY;
+        visitor.visitorReturningToBase = true;
+        visitor.visitorRetreatBoostUntil = getGameTime() + 5200;
+        visitor.visitorNextPlanningMoveAt = getGameTime() + 2600 + Math.random() * 2600;
+        awardVisitorPlanningIncome(visitor, "buildphase");
+        visitor.nextVisitorBuildAt = getGameTime() + 450 + Math.random() * 650;
         visitor.isMoving = true;
     });
+}
+
+
+function getNearestPlayerAvoidPoint(x, y) {
+    let best = null;
+    let bestDist = Infinity;
+    getPlayerStructureAvoidPoints().forEach(p => {
+        const d = Math.hypot(x - p.x, y - p.y) - p.radius;
+        if (d < bestDist) { best = p; bestDist = d; }
+    });
+    return best;
+}
+
+function tryMoveVisitorAroundObstacle(visitor, targetX, targetY, move) {
+    if (!visitor || !Number.isFinite(targetX) || !Number.isFinite(targetY)) return false;
+    const toTarget = Math.atan2(targetY - visitor.y, targetX - visitor.x);
+    const avoid = getNearestPlayerAvoidPoint(visitor.x, visitor.y) || getNearestPlayerAvoidPoint(targetX, targetY);
+    const around = avoid ? Math.atan2(visitor.y - avoid.y, visitor.x - avoid.x) : toTarget;
+    const candidates = [
+        toTarget + 0.85,
+        toTarget - 0.85,
+        around + Math.PI / 2,
+        around - Math.PI / 2,
+        toTarget + 1.45,
+        toTarget - 1.45
+    ];
+    candidates.sort((a, b) => {
+        const ax = visitor.x + Math.cos(a) * move;
+        const ay = visitor.y + Math.sin(a) * move;
+        const bx = visitor.x + Math.cos(b) * move;
+        const by = visitor.y + Math.sin(b) * move;
+        return Math.hypot(targetX - ax, targetY - ay) - Math.hypot(targetX - bx, targetY - by);
+    });
+    for (const angle of candidates) {
+        const nx = clampWorldX(visitor.x + Math.cos(angle) * move, visitor.radius + 8);
+        const ny = clampWorldY(visitor.y + Math.sin(angle) * move, visitor.radius + 8);
+        if (!isEnemyPositionBlockedBySolid(visitor, nx, ny) && !isVisitorBuildPhaseForbiddenPosition(nx, ny, 18)) {
+            visitor.x = nx;
+            visitor.y = ny;
+            visitor.visitorLastPlan = "Rodeando obstáculos";
+            return true;
+        }
+    }
+    return false;
+}
+
+function sellVisitorBlockingStructure(visitor, reason = "stuck") {
+    if (!visitor) return false;
+    const now = getGameTime();
+    const shellComplete = getVisitorMainShellCompletion(visitor).complete;
+    const candidates = getVisitorStructures().filter(s => {
+        if (!s || s.hp <= 0 || s.visitorStructureType === "door") return false;
+        if (Math.hypot(s.x - visitor.x, s.y - visitor.y) >= 135) return false;
+        // No vender lo que acaba de construir: eso generaba el loop construir/vender.
+        if (now - (s.visitorBuiltAt || now) < 18000) return false;
+        // Mientras la base principal no cerró, no sacrifica muros de plantilla principal.
+        if (!shellComplete && s.visitorSlotKey && /:main:/.test(s.visitorSlotKey)) return false;
+        return true;
+    });
+    candidates.sort((a, b) => {
+        const aMine = a.visitorStructureType === "mine" ? 0 : 1;
+        const bMine = b.visitorStructureType === "mine" ? 0 : 1;
+        if (aMine !== bMine) return aMine - bMine;
+        return Math.hypot(a.x - visitor.x, a.y - visitor.y) - Math.hypot(b.x - visitor.x, b.y - visitor.y);
+    });
+    const target = candidates[0];
+    if (!target) return false;
+    const refund = Math.ceil((target.reward || 20) * 1.4);
+    visitor.visitorGold = (Number(visitor.visitorGold) || 0) + refund;
+    target.hp = 0;
+    effects.push({ type: "circle", x: target.x, y: target.y, radius: 10, maxRadius: 58, life: 20, color: "#ff5d86" });
+    showVisitorAlert("El Visitante vendió una construcción que lo estaba encerrando.");
+    visitor.visitorLastPlan = "Vendió una construcción trabada";
+    visitor.nextVisitorBuildAt = now + 2200;
+    return true;
 }
 
 function updateVisitorRetreat(visitor) {
@@ -5031,60 +7949,202 @@ function updateVisitorRetreat(visitor) {
         visitor.visitorPlanningCenterY = point.y;
     }
 
-    if (!Number.isFinite(visitor.retreatX) || !Number.isFinite(visitor.retreatY) ||
-        isVisitorBuildPhaseForbiddenPosition(visitor.retreatX, visitor.retreatY, 75) ||
-        getGameTime() >= (visitor.visitorNextPlanningMoveAt || 0)) {
+    const planningCenter = { x: visitor.visitorPlanningCenterX, y: visitor.visitorPlanningCenterY };
+    const pass = getVisitorDoorPassPoints(visitor);
+    if (visitor.visitorReturningToBase && pass && getVisitorMainShellCompletion(visitor).ratio > 0.55) {
+        const inside = isVisitorInsideOwnBase(visitor);
+        if (!inside && !visitor.visitorReachedDoorOutside) {
+            visitor.retreatX = pass.outside.x;
+            visitor.retreatY = pass.outside.y;
+            visitor.visitorPassingDoor = true;
+            if (Math.hypot(visitor.x - pass.outside.x, visitor.y - pass.outside.y) < 42) visitor.visitorReachedDoorOutside = true;
+        } else if (!inside) {
+            visitor.retreatX = pass.inside.x;
+            visitor.retreatY = pass.inside.y;
+            visitor.visitorPassingDoor = true;
+        } else {
+            visitor.visitorPassingDoor = false;
+            visitor.visitorReachedDoorOutside = false;
+            closeVisitorDoorIfSafe(visitor);
+        }
+        updateVisitorDoorAutomation(visitor, visitor.retreatX, visitor.retreatY);
+    }
+    const distToCenter = Math.hypot(visitor.x - planningCenter.x, visitor.y - planningCenter.y);
+    if (visitor.visitorReturningToBase && distToCenter <= 34) {
+        visitor.visitorReturningToBase = false;
         const point = getVisitorPlanningWanderPoint(visitor);
         visitor.retreatX = point.x;
         visitor.retreatY = point.y;
         visitor.targetX = point.x;
         visitor.targetY = point.y;
-        visitor.visitorNextPlanningMoveAt = getGameTime() + 1400 + Math.random() * 2400;
+        visitor.visitorNextPlanningMoveAt = getGameTime() + 4200 + Math.random() * 2600;
     }
 
-    const dx = visitor.retreatX - visitor.x;
-    const dy = visitor.retreatY - visitor.y;
+    if (!visitor.visitorReturningToBase && visitor.visitorMovingToBuildSlot) {
+        const distToBuildSlot = Math.hypot(visitor.x - (visitor.retreatX || visitor.x), visitor.y - (visitor.retreatY || visitor.y));
+        if (distToBuildSlot <= 22) {
+            visitor.visitorMovingToBuildSlot = false;
+            visitor.visitorNextPlanningMoveAt = getGameTime() + 900;
+        }
+    }
+
+    if (!visitor.visitorReturningToBase && !visitor.visitorMovingToBuildSlot && (!Number.isFinite(visitor.retreatX) || !Number.isFinite(visitor.retreatY) ||
+        isVisitorBuildPhaseForbiddenPosition(visitor.retreatX, visitor.retreatY, 75) ||
+        getGameTime() >= (visitor.visitorNextPlanningMoveAt || 0))) {
+        const point = getVisitorPlanningWanderPoint(visitor);
+        visitor.retreatX = point.x;
+        visitor.retreatY = point.y;
+        visitor.targetX = point.x;
+        visitor.targetY = point.y;
+        visitor.visitorNextPlanningMoveAt = getGameTime() + 5200 + Math.random() * 4200;
+    }
+
+    const currentTargetX = visitor.retreatX;
+    const currentTargetY = visitor.retreatY;
+    const dx = currentTargetX - visitor.x;
+    const dy = currentTargetY - visitor.y;
     const dist = Math.hypot(dx, dy) || 1;
 
     if (isVisitorBuildPhaseForbiddenPosition(visitor.x, visitor.y, 35)) {
-        const point = getVisitorRetreatPoint(visitor);
-        visitor.visitorPlanningCenterX = point.x;
-        visitor.visitorPlanningCenterY = point.y;
-        visitor.retreatX = point.x;
-        visitor.retreatY = point.y;
-    }
-
-    const nx = dx / dist;
-    const ny = dy / dist;
-    const oldX = visitor.x;
-    const oldY = visitor.y;
-
-    // Movimiento de planificación: más humano y sutil, no bolita de DVD.
-    const move = Math.max(0.65, Math.min(1.35, (visitor.speed || visitor.baseSpeed || 1) * 0.72)) * gameSpeed * frameScale;
-    let nextX = clampWorldX(visitor.x + nx * move, visitor.radius + 8);
-    let nextY = clampWorldY(visitor.y + ny * move, visitor.radius + 8);
-
-    if (dist <= 12 || isEnemyPositionBlockedBySolid(visitor, nextX, nextY) || isVisitorBuildPhaseForbiddenPosition(nextX, nextY, 25)) {
-        const point = getVisitorPlanningWanderPoint(visitor);
-        visitor.retreatX = point.x;
-        visitor.retreatY = point.y;
-        visitor.targetX = point.x;
-        visitor.targetY = point.y;
-        visitor.visitorNextPlanningMoveAt = getGameTime() + 1000 + Math.random() * 1900;
+        if (!visitor.visitorForbiddenStartedAt) visitor.visitorForbiddenStartedAt = getGameTime();
+        // No lo teletransportamos: busca rodear/salir de la base del jugador hacia un ancla viable.
+        const safeAnchor = isVisitorBaseAnchorViable(planningCenter, visitor) ? planningCenter : findVisitorViableBaseAnchor(visitor);
+        visitor.retreatX = safeAnchor.x;
+        visitor.retreatY = safeAnchor.y;
+        visitor.targetX = safeAnchor.x;
+        visitor.targetY = safeAnchor.y;
     } else {
-        visitor.x = nextX;
-        visitor.y = nextY;
+        visitor.visitorForbiddenStartedAt = 0;
     }
 
-    visitor.lastMoveX = visitor.x - oldX;
-    visitor.lastMoveY = visitor.y - oldY;
-    visitor.isMoving = Math.hypot(visitor.lastMoveX || 0, visitor.lastMoveY || 0) > 0.015;
+    const retreatBoost = visitor.visitorReturningToBase ? 1.55 : 0.78;
+    const move = Math.max(0.8, Math.min(2.25, (visitor.speed || visitor.baseSpeed || 1) * retreatBoost)) * gameSpeed * frameScale;
+    const blockedOwn = getBlockingVisitorOwnStructure(visitor, visitor.x, visitor.y);
+    if (blockedOwn && isVisitorGateStructure(blockedOwn)) {
+        blockedOwn.isOpen = true;
+        blockedOwn.openedByVisitorUntil = getGameTime() + 1400;
+    }
+
+    const movedNaturally = applyVisitorHumanMovement(visitor, currentTargetX, currentTargetY, move, {
+        arriveRadius: visitor.visitorMovingToBuildSlot ? 22 : (visitor.visitorReturningToBase ? 24 : 18),
+        memory: visitor.visitorMovingToBuildSlot ? 0.78 : 0.70
+    });
+
+    if (!movedNaturally && dist > 18 && getGameTime() >= (visitor.visitorActionLockUntil || 0)) {
+        visitor.visitorRetreatBlockedSince = visitor.visitorRetreatBlockedSince || getGameTime();
+        const nextBlockedOwn = getBlockingVisitorOwnStructure(visitor, currentTargetX, currentTargetY);
+        if (nextBlockedOwn && isVisitorGateStructure(nextBlockedOwn)) {
+            nextBlockedOwn.isOpen = true;
+            nextBlockedOwn.openedByVisitorUntil = getGameTime() + 1400;
+        }
+        if (getGameTime() - (visitor.visitorRetreatBlockedSince || 0) > 7200 && nextBlockedOwn && !isVisitorGateStructure(nextBlockedOwn) && !visitor.visitorMovingToBuildSlot) {
+            if (sellVisitorBlockingStructure(visitor, "own_wall")) visitor.visitorRetreatBlockedSince = 0;
+        } else if (visitor.visitorMovingToBuildSlot && getGameTime() - (visitor.visitorRetreatBlockedSince || 0) > 2800) {
+            visitor.visitorPendingBuild = null;
+            visitor.visitorPendingUpgradeWall = null;
+            visitor.visitorMovingToBuildSlot = false;
+            visitor.visitorNextPlanningMoveAt = getGameTime() + 250;
+            visitor.nextVisitorBuildAt = getGameTime() + 250;
+            visitor.visitorRetreatBlockedSince = 0;
+            clearVisitorHumanGoal(visitor);
+        } else if (!visitor.visitorMovingToBuildSlot && !visitor.visitorReturningToBase) {
+            const point = getVisitorPlanningWanderPoint(visitor);
+            setVisitorHumanGoal(visitor, point.x, point.y, "Patrullando dentro de su base", { arriveRadius: 24, state: "patrol" });
+            visitor.visitorNextPlanningMoveAt = getGameTime() + 4800 + Math.random() * 3600;
+        }
+    } else if (movedNaturally) {
+        visitor.visitorRetreatBlockedSince = 0;
+    }
+
+    updateVisitorPlanningEconomy(visitor, getGameTime());
+}
+
+
+function getVisitorTerritoryRadius() {
+    const structures = getVisitorStructures();
+    if (!structures.length) return 0;
+    return Math.min(650, 365 + structures.length * 30);
+}
+
+function isPlayerInVisitorTerritory() {
+    const visitor = getLivingVisitor();
+    if (!visitor || !player || player.hp <= 0) return false;
+    const anchor = getVisitorBaseAnchor(visitor);
+    const radius = getVisitorTerritoryRadius();
+    if (!radius) return false;
+    return Math.hypot(player.x - anchor.x, player.y - anchor.y) <= radius;
+}
+
+function updateVisitorTerritoryThreat() {
+    visitorTerritoryWarningStartedAt = Number(visitorTerritoryWarningStartedAt) || 0;
+    visitorTerritoryWarningRealStartedAt = Number(visitorTerritoryWarningRealStartedAt) || 0;
+    visitorTerritoryLastDamageAt = Number(visitorTerritoryLastDamageAt) || 0;
+    visitorTerritoryWarned = Boolean(visitorTerritoryWarned);
+
+    const visitor = getLivingVisitor();
+    if (!buildPhaseActive || !player || player.hp <= 0 || !visitor || !isPlayerInVisitorTerritory()) {
+        visitorTerritoryWarningStartedAt = 0;
+        visitorTerritoryWarningRealStartedAt = 0;
+        visitorTerritoryWarned = false;
+        if (visitor) visitor.lastTerritoryCountdownShown = null;
+        // Si el jugador se fue, las balas defensivas del Visitante no quedan colgadas en el aire.
+        if (buildPhaseActive) clearVisitorProjectiles();
+        return;
+    }
+
+    const now = getGameTime();
+    if (!visitorTerritoryWarningStartedAt) {
+        visitorTerritoryWarningStartedAt = now;
+        visitorTerritoryWarningRealStartedAt = performance.now();
+        visitorTerritoryWarned = true;
+        visitor.lastTerritoryCountdownShown = null;
+    }
+
+    const elapsed = performance.now() - (visitorTerritoryWarningRealStartedAt || performance.now());
+    const remaining = Math.max(0, Math.ceil((VISITOR_TERRITORY_WARNING_MS - elapsed) / 1000));
+    if (elapsed < VISITOR_TERRITORY_WARNING_MS) {
+        if (remaining !== visitor.lastTerritoryCountdownShown) {
+            visitor.lastTerritoryCountdownShown = remaining;
+            showCenterMessage(`TERRITORIO DEL VISITANTE\nAlejate en ${remaining} segundos o te va a atacar.`, 900, "visitor");
+        }
+        return;
+    }
+
+    visitor.visitorLastPlan = "Defendiendo su territorio";
+    visitor.targetX = player.x;
+    visitor.targetY = player.y;
+
+    const dx = player.x - visitor.x;
+    const dy = player.y - visitor.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const speed = Math.max(0.85, Math.min(1.9, (visitor.speed || visitor.baseSpeed || 1.05) * 1.08)) * gameSpeed * frameScale;
+    if (dist > 205) {
+        const nx = dx / dist;
+        const ny = dy / dist;
+        const nxp = clampWorldX(visitor.x + nx * speed, visitor.radius + 5);
+        const nyp = clampWorldY(visitor.y + ny * speed, visitor.radius + 5);
+        if (!isEnemyPositionBlockedBySolid(visitor, nxp, nyp)) {
+            visitor.x = nxp;
+            visitor.y = nyp;
+        }
+    }
+
+    if (now - (visitorTerritoryLastDamageAt || 0) >= 850) {
+        visitorTerritoryLastDamageAt = now;
+        if (dist <= 118) {
+            damagePlayer(Math.max(3, 4 + wave * 0.06), visitor, visitor.x, visitor.y, "¡El Visitante defendió su territorio!");
+        } else if (dist <= 610) {
+            fireEnemyProjectile(visitor, player.x, player.y, { damage: Math.max(2.5, (visitor.visitorDamage || 3.5) * 0.9), color: "#f2f2f2", speed: 5.4, radius: 6, visitorProjectile: true, life: 1150 });
+        }
+    }
 }
 
 function updateVisitorsDuringBuildPhase() {
     (enemies || []).forEach(visitor => {
         if (visitor && visitor.special === "visitor" && visitor.hp > 0) updateVisitorRetreat(visitor);
     });
+    updateVisitorTerritoryThreat();
+    updateTitanShards();
 }
 
 function shouldSpawnDoomEnemy() {
@@ -5246,7 +8306,7 @@ function spawnBoss() {
     const type = getBossTypeForWave();
     const hpScaling = getBossHpScaling();
     const repeatStrength = getRepeatEnemyStrengthMultiplier();
-    const maxHp = Math.ceil(type.hp * hpScaling * repeatStrength);
+    const maxHp = Math.ceil(type.hp * hpScaling * repeatStrength * (player?.bossHpMultiplier || 1));
     const speed = (type.speed + getBossSpeedScaling()) * ENEMY_SURVIVAL_SPEED_MULTIPLIER;
 
     const spawn = getBossSpawnPoint();
@@ -5319,14 +8379,15 @@ function shoot(targetX, targetY, owner = "player", tower = null) {
     const now = getGameTime();
 
     if (owner === "player") {
-        const attackMultiplier = now < player.attackSpeedUntil ? 0.55 : 1;
+        const attackMultiplier = (now < player.attackSpeedUntil ? 0.55 : 1) * getCorePlayerFireDelayMultiplier();
         if (now - player.lastShotTime < player.fireDelay * attackMultiplier) return;
 
         player.lastShotTime = now;
         playShootSound();
         const baseAngle = Math.atan2(targetY - player.y, targetX - player.x);
         const isCrit = Math.random() < player.critChance;
-        const damage = isCrit ? player.damage * player.critMultiplier : player.damage;
+        const coreDamage = player.damage * getCorePlayerDamageMultiplier();
+        const damage = isCrit ? coreDamage * player.critMultiplier : coreDamage;
         const doubleShotActive = now < player.doubleShotUntil || Math.random() < (player.passiveDoubleShotChance || 0);
         const offsets = doubleShotActive ? [-0.085, 0.085] : [0];
 
@@ -5363,42 +8424,75 @@ function shoot(targetX, targetY, owner = "player", tower = null) {
         playShootSound();
 
         if (tower.type === "basic") {
-            addTowerProjectile(tower, targetX, targetY);
+            const projectileType = tower.evolutionId === "basic_echo" ? "echo" : tower.evolutionId === "basic_oath" ? "oath" : "normal";
+            addTowerProjectile(tower, targetX, targetY, {
+                type: projectileType,
+                color: tower.color,
+                damage: getTowerDamage(tower)
+            });
         }
 
         if (tower.type === "rapid") {
+            const projectileType = tower.evolutionId === "rapid_splinters" ? "rapid_splinter" : tower.evolutionId === "rapid_turbine" ? "rapid_turbine" : "normal";
             addTowerProjectile(tower, targetX, targetY, {
-                radius: 4,
-                speed: 8.2,
-                damage: getTowerDamage(tower),
-                color: tower.color
+                radius: tower.evolutionId === "rapid_turbine" ? 4.5 : 4,
+                speed: tower.evolutionId === "rapid_turbine" ? 9.0 : 8.2,
+                damage: getTowerDamage(tower) * (tower.evolutionId === "rapid_turbine" && tower.turbineInBurst ? 0.92 : 1),
+                color: tower.color,
+                type: projectileType
             });
         }
 
         if (tower.type === "pierce") {
+            const isAstral = tower.evolutionId === "pierce_astral";
+            const isRuin = tower.evolutionId === "pierce_ruin";
             addTowerProjectile(tower, targetX, targetY, {
-                radius: 6,
-                speed: 7,
-                type: "pierce",
-                hitsLeft: 2
+                radius: isAstral ? 6.5 : 6,
+                speed: isAstral ? 7.8 : 7,
+                damage: getTowerDamage(tower) * (isRuin ? 0.82 : isAstral ? 0.92 : 1),
+                type: isAstral ? "pierce_astral" : isRuin ? "pierce_ruin" : "pierce",
+                hitsLeft: isAstral ? Math.max(3, Number(tower.astralPierceHits) || 5) : 2,
+                damageGrowth: Number(tower.astralDamageGrowth) || 0.13,
+                ruinDamageMultiplier: Number(tower.ruinDamageMultiplier) || 1.15,
+                ruinDuration: Number(tower.ruinDuration) || 2600,
+                color: tower.color
             });
         }
 
         if (tower.type === "slow") {
             addTowerProjectile(tower, targetX, targetY, {
-                radius: 7,
-                speed: 5.5,
+                radius: tower.evolutionId === "slow_glacier" ? 8 : 7,
+                speed: tower.evolutionId === "slow_glacier" ? 5.1 : 5.5,
                 damage: 0,
                 type: "slow",
                 slowAmount: tower.slowAmount,
                 slowDuration: tower.slowDuration,
-                areaRadius: tower.areaRadius
+                areaRadius: tower.areaRadius,
+                color: tower.color
             });
         }
 
         if (tower.type === "double") {
-            addTowerProjectile(tower, targetX, targetY, { angleOffset: -0.09, radius: 5, speed: 6.7 });
-            addTowerProjectile(tower, targetX, targetY, { angleOffset: 0.09, radius: 5, speed: 6.7 });
+            if (tower.evolutionId === "double_crossfire") {
+                const candidates = (enemies || [])
+                    .filter(enemy => enemy && !enemy.untargetable && enemy.hp > 0 && Math.hypot(enemy.x - tower.x, enemy.y - tower.y) <= (tower.range || 0))
+                    .sort((a, b) => Math.hypot(a.x - tower.x, a.y - tower.y) - Math.hypot(b.x - tower.x, b.y - tower.y));
+                const first = candidates[0];
+                const second = candidates.find(enemy => enemy !== first) || null;
+                const mult = Number(tower.crossfireDamageMultiplier) || 0.92;
+                if (first) addTowerProjectile(tower, first.x, first.y, { radius: 5, speed: 7.2, damage: getTowerDamage(tower) * mult, type: "double_crossfire", color: tower.color });
+                if (second) addTowerProjectile(tower, second.x, second.y, { radius: 5, speed: 7.2, damage: getTowerDamage(tower) * mult, type: "double_crossfire", color: tower.color });
+                else if (first) addTowerProjectile(tower, first.x, first.y, { angleOffset: 0.12, radius: 5, speed: 7.2, damage: getTowerDamage(tower) * mult * 0.82, type: "double_crossfire", color: tower.color });
+            } else if (tower.evolutionId === "double_sync") {
+                const target = findClosestEnemy(tower.x, tower.y, tower.range || 0) || { x: targetX, y: targetY };
+                const dangerous = Boolean(target.isBoss || target.special || (Number(target.maxHp) && target.hp > target.maxHp * 0.55));
+                const mult = dangerous ? (Number(tower.syncThreatMultiplier) || 1.32) : (Number(tower.syncNormalMultiplier) || 0.92);
+                addTowerProjectile(tower, target.x, target.y, { angleOffset: -0.035, radius: 5.5, speed: 7.0, damage: getTowerDamage(tower) * mult, type: "double_sync", color: tower.color });
+                addTowerProjectile(tower, target.x, target.y, { angleOffset: 0.035, radius: 5.5, speed: 7.0, damage: getTowerDamage(tower) * mult, type: "double_sync", color: tower.color });
+            } else {
+                addTowerProjectile(tower, targetX, targetY, { angleOffset: -0.09, radius: 5, speed: 6.7 });
+                addTowerProjectile(tower, targetX, targetY, { angleOffset: 0.09, radius: 5, speed: 6.7 });
+            }
         }
 
         if (tower.type === "ballista") {
@@ -5419,16 +8513,28 @@ function shoot(targetX, targetY, owner = "player", tower = null) {
                 type: "poison",
                 areaRadius: tower.areaRadius,
                 poisonDuration: tower.poisonDuration,
-                tickDelay: tower.tickDelay
+                tickDelay: tower.tickDelay,
+                color: tower.color
             });
         }
 
         if (tower.type === "siphon") {
             const target = findClosestEnemy(tower.x, tower.y, tower.range);
             if (target) {
-                damageEnemy(target, getTowerDamage(tower), false, "#ff5d86", "tower");
-                healDefensesAndPlayer(tower.drainAmount || 2, tower.x, tower.y);
-                effects.push({ type: "line", x1: tower.x, y1: tower.y, x2: target.x, y2: target.y, life: 10, color: "#ff2f68" });
+                if (tower.evolutionId === "siphon_parasite") {
+                    damageEnemy(target, getTowerDamage(tower) * 0.72, false, tower.color || "#c9154d", "tower");
+                    applySiphonParasite(target, tower);
+                    healDefensesOnly((tower.drainAmount || 2) * 0.22, tower.x, tower.y);
+                    effects.push({ type: "line", x1: tower.x, y1: tower.y, x2: target.x, y2: target.y, life: 12, color: "#c9154d" });
+                } else {
+                    const healMult = tower.evolutionId === "siphon_heart" ? (Number(tower.crimsonHeartHealMultiplier) || 1.55) : 1;
+                    damageEnemy(target, getTowerDamage(tower) * (tower.evolutionId === "siphon_heart" ? 1.08 : 1), false, tower.color || "#ff5d86", "tower");
+                    healDefensesOnly((tower.drainAmount || 2) * healMult * 0.55, tower.x, tower.y);
+                    if (tower.evolutionId === "siphon_heart" && player && player.hp >= player.maxHp) {
+                        player.bloodShield = Math.min(player.bloodShieldMax || 8, (player.bloodShield || 0) + (tower.drainAmount || 2) * 0.10);
+                    }
+                    effects.push({ type: "line", x1: tower.x, y1: tower.y, x2: target.x, y2: target.y, life: 10, color: tower.color || "#ff2f68" });
+                }
                 if (target.hp <= 0) {
                     const idx = enemies.indexOf(target);
                     if (idx >= 0) killEnemy(idx);
@@ -5445,6 +8551,35 @@ function autoShootPlayer() {
 
 function getPlayerRightBoundaryX() {
     return WORLD_WIDTH - 32;
+}
+
+function getVisitorStructureRect(structure) {
+    if (!structure || !isVisitorStructure(structure)) return null;
+    if (structure.special === "visitor_tower" || structure.special === "visitor_mine") {
+        return { type: "circle", x: structure.x, y: structure.y, radius: (structure.radius || 24) + 5 };
+    }
+    const width = isVisitorGateStructure(structure) ? 92 : 108;
+    const height = isVisitorGateStructure(structure) ? 34 : 24;
+    return { type: "rect", x: structure.x, y: structure.y, width, height, angle: structure.orientation || 0 };
+}
+
+function pointIntersectsOrientedRect(px, py, rect, padding = 0) {
+    const ca = Math.cos(-(rect.angle || 0));
+    const sa = Math.sin(-(rect.angle || 0));
+    const dx = px - rect.x;
+    const dy = py - rect.y;
+    const lx = dx * ca - dy * sa;
+    const ly = dx * sa + dy * ca;
+    return Math.abs(lx) <= rect.width / 2 + padding && Math.abs(ly) <= rect.height / 2 + padding;
+}
+
+function isPlayerVisitorStructureBlockedAt(x, y) {
+    return getVisitorStructures().some(s => {
+        const shape = getVisitorStructureRect(s);
+        if (!shape) return false;
+        if (shape.type === "circle") return Math.hypot(x - shape.x, y - shape.y) <= shape.radius + 20;
+        return pointIntersectsOrientedRect(x, y, shape, 21);
+    });
 }
 
 function getPlayerBarricadeBlockAt(x, y, ignoredBarricade = null) {
@@ -5478,6 +8613,10 @@ function tryMovePlayerWithBarricadeSlide(moveX, moveY) {
     const oldY = player.y;
     let targetX = clampWorldX(oldX + moveX, 32);
     let targetY = clampWorldY(oldY + moveY, 32);
+    if (isPlayerVisitorStructureBlockedAt(targetX, targetY)) {
+        return;
+    }
+
     const firstBlocker = getPlayerBarricadeBlockAt(targetX, targetY);
 
     if (!firstBlocker) {
@@ -5501,7 +8640,7 @@ function tryMovePlayerWithBarricadeSlide(moveX, moveY) {
 
     const slideTargetX = clampWorldX(oldX + slideX, 32);
     const slideTargetY = clampWorldY(oldY + slideY, 32);
-    if ((Math.abs(slideX) > 0.01 || Math.abs(slideY) > 0.01) && !isPlayerBarricadeBlockedAt(slideTargetX, slideTargetY)) {
+    if ((Math.abs(slideX) > 0.01 || Math.abs(slideY) > 0.01) && !isPlayerBarricadeBlockedAt(slideTargetX, slideTargetY) && !isPlayerVisitorStructureBlockedAt(slideTargetX, slideTargetY)) {
         player.x = slideTargetX;
         player.y = slideTargetY;
         return;
@@ -5510,14 +8649,14 @@ function tryMovePlayerWithBarricadeSlide(moveX, moveY) {
     // Fallback clásico por ejes: ayuda mucho en esquinas y contra los extremos de las
     // barricadas cuando el jugador llega con movimiento diagonal.
     const xOnly = clampWorldX(oldX + moveX, 32);
-    if (Math.abs(moveX) > 0.01 && !isPlayerBarricadeBlockedAt(xOnly, oldY)) {
+    if (Math.abs(moveX) > 0.01 && !isPlayerBarricadeBlockedAt(xOnly, oldY) && !isPlayerVisitorStructureBlockedAt(xOnly, oldY)) {
         player.x = xOnly;
         player.y = oldY;
         return;
     }
 
     const yOnly = clampWorldY(oldY + moveY, 32);
-    if (Math.abs(moveY) > 0.01 && !isPlayerBarricadeBlockedAt(oldX, yOnly)) {
+    if (Math.abs(moveY) > 0.01 && !isPlayerBarricadeBlockedAt(oldX, yOnly) && !isPlayerVisitorStructureBlockedAt(oldX, yOnly)) {
         player.x = oldX;
         player.y = yOnly;
         return;
@@ -5580,21 +8719,13 @@ function updatePlayerMovement() {
     resolvePlayerEnemyCollision(oldX, oldY);
 }
 
-function updateSpearTower(tower) {
-    const now = getGameTime();
-    const delay = getTowerDelay(tower);
-    if (now - tower.lastShotTime < delay) return;
-
-    const dir = getDirectionVector(tower.rotation || 0);
-    const range = tower.range || 150;
-    const laneWidth = tower.laneWidth || 38;
+function findBestEnemyInLineFromPoint(x, y, dir, range, laneWidth) {
     let bestEnemy = null;
     let bestForward = Infinity;
-
-    enemies.forEach(enemy => {
-        if (enemy.untargetable || enemy.hp <= 0) return;
-        const rx = enemy.x - tower.x;
-        const ry = enemy.y - tower.y;
+    (enemies || []).forEach(enemy => {
+        if (!enemy || enemy.untargetable || enemy.hp <= 0) return;
+        const rx = enemy.x - x;
+        const ry = enemy.y - y;
         const forward = rx * dir.x + ry * dir.y;
         if (forward < 0 || forward > range + enemy.radius) return;
         const side = Math.abs(rx * -dir.y + ry * dir.x);
@@ -5603,30 +8734,121 @@ function updateSpearTower(tower) {
             bestForward = forward;
         }
     });
+    return bestEnemy;
+}
 
-    if (!bestEnemy) return;
-
-    tower.lastShotTime = now;
-    const damage = getTowerDamage(tower);
-    enemies.forEach(enemy => {
-        if (enemy.untargetable || enemy.hp <= 0) return;
+function damageEnemiesInSpearLine(tower, dir, range, laneWidth, damage, color) {
+    let hitCount = 0;
+    (enemies || []).forEach(enemy => {
+        if (!enemy || enemy.untargetable || enemy.hp <= 0) return;
         const rx = enemy.x - tower.x;
         const ry = enemy.y - tower.y;
         const forward = rx * dir.x + ry * dir.y;
         if (forward < 0 || forward > range + enemy.radius) return;
         const side = Math.abs(rx * -dir.y + ry * dir.x);
         if (side <= laneWidth / 2 + enemy.radius) {
-            damageEnemy(enemy, damage, false, tower.color, "tower");
+            damageEnemy(enemy, damage, false, color || tower.color, "tower");
             enemy.hitFlash = 0.75;
+            hitCount++;
         }
     });
+    if (hitCount > 0) {
+        for (let i = enemies.length - 1; i >= 0; i--) {
+            if (enemies[i].hp <= 0) killEnemy(i);
+        }
+    }
+    return hitCount;
+}
 
-    effects.push({ type: "spear", x: tower.x, y: tower.y, dx: dir.x, dy: dir.y, length: range, width: laneWidth, life: 10, color: tower.color });
-    for (let i = enemies.length - 1; i >= 0; i--) {
-        if (enemies[i].hp <= 0) killEnemy(i);
+function updateRoamingSpearTower(tower) {
+    const now = getGameTime();
+    const range = tower.range || 310;
+    if (!tower.roamingSpear || !Number.isFinite(tower.roamingSpear.x) || !Number.isFinite(tower.roamingSpear.y)) {
+        tower.roamingSpear = { x: tower.x, y: tower.y, target: null, nextHitAt: 0, angle: tower.rotation || 0 };
+    }
+    const spear = tower.roamingSpear;
+    if (Math.hypot(spear.x - tower.x, spear.y - tower.y) > range + 160) {
+        spear.x = tower.x;
+        spear.y = tower.y;
+        spear.target = null;
+    }
+
+    if (!spear.target || spear.target.hp <= 0 || spear.target.untargetable || Math.hypot(spear.target.x - tower.x, spear.target.y - tower.y) > range + 80) {
+        spear.target = findClosestEnemy(spear.x, spear.y, range + 90) || findClosestEnemy(tower.x, tower.y, range);
+    }
+
+    const targetX = spear.target ? spear.target.x : tower.x;
+    const targetY = spear.target ? spear.target.y : tower.y;
+    const dx = targetX - spear.x;
+    const dy = targetY - spear.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const speed = (Number(tower.roamingSpearSpeed) || 6.0) * gameSpeed * frameScale;
+    if (dist > 4) {
+        spear.x += (dx / dist) * Math.min(speed, dist);
+        spear.y += (dy / dist) * Math.min(speed, dist);
+        spear.angle = Math.atan2(dy, dx);
+    }
+
+    if (spear.target && dist <= (spear.target.radius || 14) + 13 && now >= (spear.nextHitAt || 0)) {
+        const damage = getTowerDamage(tower) * (Number(tower.roamingSpearDamageMultiplier) || 0.82);
+        damageEnemy(spear.target, damage, false, tower.color, "tower");
+        createImpactParticles(spear.x, spear.y, tower.color);
+        spear.target.hitFlash = 0.85;
+        spear.nextHitAt = now + (Number(tower.roamingSpearHitDelay) || 210);
+        if (spear.target.hp <= 0) {
+            const idx = enemies.indexOf(spear.target);
+            if (idx >= 0) killEnemy(idx);
+        }
+        spear.target = null;
     }
 }
 
+function updateHuntingSpearTower(tower) {
+    const now = getGameTime();
+    const delay = getTowerDelay(tower);
+    if (now - tower.lastShotTime < delay) return;
+    const target = findClosestEnemy(tower.x, tower.y, tower.range || 310);
+    if (!target) return;
+    const angle = Math.atan2(target.y - tower.y, target.x - tower.x);
+    const dir = { x: Math.cos(angle), y: Math.sin(angle) };
+    const range = tower.range || 310;
+    const laneWidth = Number(tower.hunterSpearLaneWidth) || tower.laneWidth || 48;
+    const damage = getTowerDamage(tower) * (Number(tower.hunterSpearDamageMultiplier) || 1.12);
+    tower.lastShotTime = now;
+    tower.rotation = angle;
+    tower.lastHunterAngle = angle;
+    const hits = damageEnemiesInSpearLine(tower, dir, range, laneWidth, damage, tower.color);
+    if (hits > 0) {
+        effects.push({ type: "spear", x: tower.x, y: tower.y, dx: dir.x, dy: dir.y, length: Math.min(range, Math.hypot(target.x - tower.x, target.y - tower.y) + 38), width: laneWidth, life: 10, color: tower.color });
+    }
+}
+
+function updateSpearTower(tower) {
+    if (tower.evolutionId === "spear_wanderer") {
+        updateRoamingSpearTower(tower);
+        return;
+    }
+    if (tower.evolutionId === "spear_hunter") {
+        updateHuntingSpearTower(tower);
+        return;
+    }
+
+    const now = getGameTime();
+    const delay = getTowerDelay(tower);
+    if (now - tower.lastShotTime < delay) return;
+
+    const dir = getDirectionVector(tower.rotation || 0);
+    const range = tower.range || 150;
+    const laneWidth = tower.laneWidth || 38;
+    const bestEnemy = findBestEnemyInLineFromPoint(tower.x, tower.y, dir, range, laneWidth);
+
+    if (!bestEnemy) return;
+
+    tower.lastShotTime = now;
+    const damage = getTowerDamage(tower);
+    damageEnemiesInSpearLine(tower, dir, range, laneWidth, damage, tower.color);
+    effects.push({ type: "spear", x: tower.x, y: tower.y, dx: dir.x, dy: dir.y, length: range, width: laneWidth, life: 10, color: tower.color });
+}
 
 function updateLaserTower(tower) {
     const now = getGameTime();
@@ -5636,10 +8858,12 @@ function updateLaserTower(tower) {
     if (!target || target.hp <= 0 || target.untargetable || Math.hypot(target.x - tower.x, target.y - tower.y) > range + (target.radius || 0)) {
         target = findClosestEnemy(tower.x, tower.y, range);
         tower.laserTarget = target;
+        if (tower.evolutionId === "laser_judgement") tower.judgementCharge = 1;
     }
 
     if (!target) {
         tower.laserCharge = Math.max(0, (tower.laserCharge || 0) - 0.08 * frameScale);
+        if (tower.evolutionId === "laser_judgement") tower.judgementCharge = Math.max(1, (tower.judgementCharge || 1) - 0.04 * frameScale);
         return;
     }
 
@@ -5649,12 +8873,37 @@ function updateLaserTower(tower) {
 
     if (elapsed >= tickDelay) {
         const ticks = Math.min(4, Math.floor(elapsed / tickDelay));
-        const damagePerSecond = getTowerDamage(tower);
+        let damagePerSecond = getTowerDamage(tower);
+
+        if (tower.evolutionId === "laser_judgement") {
+            tower.judgementCharge = Math.min(Number(tower.judgementMaxCharge) || 2.15, (Number(tower.judgementCharge) || 1) + (Number(tower.judgementChargeGain) || 0.085) * ticks);
+            damagePerSecond *= tower.judgementCharge;
+        }
+
+        if (tower.evolutionId === "laser_prism") damagePerSecond *= 0.88;
+
         const tickDamage = damagePerSecond * (tickDelay / 1000) * ticks;
         tower.lastShotTime += tickDelay * ticks;
-        target.hp -= tickDamage;
+        damageEnemy(target, tickDamage, false, tower.color, "tower");
         target.hitFlash = 1;
         tower.laserCharge = Math.min(1, (tower.laserCharge || 0) + 0.16 * ticks);
+
+        if (tower.evolutionId === "laser_prism") {
+            const branchCount = Math.max(1, Number(tower.prismBranches) || 2);
+            const branchRange = Math.max(60, Number(tower.prismRange) || 120);
+            const branchDamage = tickDamage * Math.max(0.18, Number(tower.prismDamageMultiplier) || 0.34);
+            let branches = 0;
+            const candidates = [...enemies]
+                .filter(enemy => enemy && enemy !== target && enemy.hp > 0 && !enemy.untargetable && Math.hypot(enemy.x - target.x, enemy.y - target.y) <= branchRange + (enemy.radius || 0))
+                .sort((a, b) => Math.hypot(a.x - target.x, a.y - target.y) - Math.hypot(b.x - target.x, b.y - target.y));
+            for (const branchTarget of candidates) {
+                if (branches >= branchCount) break;
+                damageEnemy(branchTarget, branchDamage, false, tower.color, "tower");
+                branchTarget.hitFlash = 0.8;
+                effects.push({ type: "line", x1: target.x, y1: target.y, x2: branchTarget.x, y2: branchTarget.y, life: 8, color: tower.color || "#ff9cf4" });
+                branches++;
+            }
+        }
 
         if (now - (tower.lastLaserTextAt || 0) >= 360) {
             tower.lastLaserTextAt = now;
@@ -5662,24 +8911,119 @@ function updateLaserTower(tower) {
             playHitSound();
         }
 
-        if (target.hp <= 0) {
-            const idx = enemies.indexOf(target);
-            tower.laserTarget = null;
-            if (idx >= 0) killEnemy(idx);
+        for (let i = enemies.length - 1; i >= 0; i--) {
+            if (enemies[i]?.hp <= 0) killEnemy(i);
         }
+
+        if (target.hp <= 0) {
+            tower.laserTarget = null;
+            if (tower.evolutionId === "laser_judgement") tower.judgementCharge = 1;
+        }
+    }
+}
+
+function applyFrostMistAura(tower) {
+    if (!tower || tower.evolutionId !== "slow_mist") return;
+    const now = getGameTime();
+    const radius = Math.max(80, Number(tower.mistRadius) || 132);
+    const slowAmount = Math.max(0.35, Math.min(0.85, Number(tower.mistSlowAmount) || 0.62));
+    const duration = Math.max(260, Number(tower.mistSlowDuration) || 520);
+
+    let affected = 0;
+    enemies.forEach(enemy => {
+        if (!enemy || enemy.hp <= 0 || enemy.untargetable || enemy.slowImmune) return;
+        if (Math.hypot(enemy.x - tower.x, enemy.y - tower.y) <= radius + (enemy.radius || 0)) {
+            enemy.slowMultiplier = Math.min(enemy.slowMultiplier || 1, slowAmount);
+            enemy.slowUntil = Math.max(enemy.slowUntil || 0, now + duration);
+            affected++;
+        }
+    });
+
+    if (affected > 0 && now - (tower.lastMistEffectAt || 0) > 900) {
+        tower.lastMistEffectAt = now;
+        effects.push({ type: "circle", x: tower.x, y: tower.y, radius: 8, maxRadius: radius, life: 18, color: tower.color || "#d9fbff" });
     }
 }
 
 function updateTowers() {
     applyTowerBuffs();
+        updateCorePassiveEffects();
 
     towers.forEach(tower => {
         ensureTowerEconomy(tower);
         if (!tower.owned || tower.hp <= 0 || tower.type === "buffer") return;
 
         if (tower.type === "spear") {
-            updateSpearTower(tower);
-            return;
+            const dir = tower.evolutionId === "spear_hunter" && Number.isFinite(tower.lastHunterAngle)
+                ? { x: Math.cos(tower.lastHunterAngle), y: Math.sin(tower.lastHunterAngle) }
+                : getDirectionVector(tower.rotation || 0);
+
+            if (tower.evolutionId === "spear_wanderer") {
+                ctx.strokeStyle = "rgba(255,226,138,0.16)";
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(tower.x, tower.y, Math.min(tower.range || 310, 120), 0, Math.PI * 2);
+                ctx.stroke();
+                const spear = tower.roamingSpear;
+                if (spear && Number.isFinite(spear.x) && Number.isFinite(spear.y)) {
+                    const angle = Number.isFinite(spear.angle) ? spear.angle : 0;
+                    const sx = spear.x;
+                    const sy = spear.y;
+                    const len = 34;
+                    const perpX = -Math.sin(angle);
+                    const perpY = Math.cos(angle);
+                    ctx.save();
+                    ctx.shadowColor = tower.color || "#ffe29a";
+                    ctx.shadowBlur = 12;
+                    ctx.strokeStyle = "rgba(255,246,190,0.96)";
+                    ctx.lineWidth = 4;
+                    ctx.beginPath();
+                    ctx.moveTo(sx - Math.cos(angle) * len * 0.45, sy - Math.sin(angle) * len * 0.45);
+                    ctx.lineTo(sx + Math.cos(angle) * len * 0.55, sy + Math.sin(angle) * len * 0.55);
+                    ctx.stroke();
+                    ctx.fillStyle = tower.color || "#ffe29a";
+                    ctx.beginPath();
+                    ctx.moveTo(sx + Math.cos(angle) * len * 0.65, sy + Math.sin(angle) * len * 0.65);
+                    ctx.lineTo(sx + Math.cos(angle) * len * 0.30 + perpX * 7, sy + Math.sin(angle) * len * 0.30 + perpY * 7);
+                    ctx.lineTo(sx + Math.cos(angle) * len * 0.30 - perpX * 7, sy + Math.sin(angle) * len * 0.30 - perpY * 7);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.restore();
+                }
+            } else {
+                const spearLength = Math.max(42, tower.evolutionId === "spear_hunter" ? Math.min(92, tower.range || 155) : tower.range || 155);
+                const baseOffset = 11;
+                const tipX = tower.x + dir.x * spearLength;
+                const tipY = tower.y + dir.y * spearLength;
+                const startX = tower.x + dir.x * baseOffset;
+                const startY = tower.y + dir.y * baseOffset;
+                const perpX = -dir.y;
+                const perpY = dir.x;
+                const headLength = Math.min(22, Math.max(13, spearLength * 0.07));
+                const headWidth = 8;
+
+                ctx.strokeStyle = tower.evolutionId === "spear_hunter" ? "rgba(255,208,107,0.26)" : "rgba(255,226,138,0.34)";
+                ctx.lineWidth = Math.max(10, Math.min(18, (tower.laneWidth || 38) * 0.38));
+                ctx.beginPath();
+                ctx.moveTo(startX, startY);
+                ctx.lineTo(tipX, tipY);
+                ctx.stroke();
+
+                ctx.strokeStyle = "rgba(255,246,190,0.92)";
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.moveTo(startX, startY);
+                ctx.lineTo(tipX, tipY);
+                ctx.stroke();
+
+                ctx.fillStyle = "rgba(255,246,190,0.95)";
+                ctx.beginPath();
+                ctx.moveTo(tipX, tipY);
+                ctx.lineTo(tipX - dir.x * headLength + perpX * headWidth, tipY - dir.y * headLength + perpY * headWidth);
+                ctx.lineTo(tipX - dir.x * headLength - perpX * headWidth, tipY - dir.y * headLength - perpY * headWidth);
+                ctx.closePath();
+                ctx.fill();
+            }
         }
 
         if (tower.type === "laser") {
@@ -5696,7 +9040,13 @@ function updateTowers() {
                     if (enemy.untargetable || enemy.hp <= 0) return;
                     const dist = Math.hypot(enemy.x - tower.x, enemy.y - tower.y);
                     if (dist <= tower.range + enemy.radius) {
-                        damageEnemy(enemy, getTowerDamage(tower), false, tower.color, "tower");
+                        let bladeDamage = getTowerDamage(tower);
+                        if (tower.evolutionId === "blade_saw") bladeDamage *= Number(tower.bladeSawDamageMultiplier) || 0.72;
+                        if (tower.evolutionId === "blade_guillotine") {
+                            const heavy = enemy.isBoss || enemy.special || (Number(enemy.maxHp) && enemy.hp >= enemy.maxHp * (Number(tower.guillotineHeavyThreshold) || 0.42));
+                            bladeDamage *= heavy ? (Number(tower.guillotineMultiplier) || 2.25) : 1.18;
+                        }
+                        damageEnemy(enemy, bladeDamage, false, tower.color, "tower");
                         enemy.hitFlash = 0.8;
                         hitCount++;
                     }
@@ -5712,8 +9062,13 @@ function updateTowers() {
             return;
         }
 
+        if (tower.evolutionId === "slow_mist") {
+            applyFrostMistAura(tower);
+        }
+
         let closestEnemy = null;
         let closestDistanceSq = Infinity;
+        let bestThreatScore = -Infinity;
         const rangeSq = tower.range * tower.range;
 
         enemies.forEach(enemy => {
@@ -5721,8 +9076,19 @@ function updateTowers() {
             const dx = enemy.x - tower.x;
             const dy = enemy.y - tower.y;
             const distanceSq = dx * dx + dy * dy;
+            if (distanceSq > rangeSq) return;
 
-            if (distanceSq < closestDistanceSq && distanceSq <= rangeSq) {
+            if (tower.evolutionId === "basic_oath") {
+                const threatScore = (enemy.isBoss ? 9000 : 0) + (enemy.special ? 3500 : 0) + Math.min(2500, Number(enemy.hp) || 0) - distanceSq / 900;
+                if (threatScore > bestThreatScore) {
+                    bestThreatScore = threatScore;
+                    closestEnemy = enemy;
+                    closestDistanceSq = distanceSq;
+                }
+                return;
+            }
+
+            if (distanceSq < closestDistanceSq) {
                 closestDistanceSq = distanceSq;
                 closestEnemy = enemy;
             }
@@ -5833,10 +9199,15 @@ function updateEnemySpecials(now, defenseLineX) {
                 const dist = Math.hypot(other.x - enemy.x, other.y - enemy.y);
 
                 if (dist <= enemy.healRadius) {
-                    other.hp = Math.min(other.maxHp, other.hp + enemy.healAmount + Math.floor(wave / 12));
+                    const isVisitor = other.special === "visitor" || other.visitor;
+                    const baseHeal = enemy.healAmount + Math.floor(wave / 12);
+                    // Los curanderos siguen curando al resto, pero si alcanzan al Visitante
+                    // herido lo curan un poco más: ahora la retirada hacia sanadores importa.
+                    const healAmount = isVisitor ? Math.ceil(baseHeal * 1.65) : baseHeal;
+                    other.hp = Math.min(other.maxHp, other.hp + healAmount);
                     other.hitFlash = 0.6;
                     healedSomeone = true;
-                    addDamageText(other.x, other.y - other.radius - 8, `+${enemy.healAmount}`, false, "#73ff9f");
+                    addDamageText(other.x, other.y - other.radius - 8, `+${healAmount}`, false, isVisitor ? "#b78cff" : "#73ff9f");
                 }
             });
 
@@ -6074,6 +9445,11 @@ function applyExtraBossVariantBehavior(enemy, now) {
 function updateBossProjectiles() {
     for (let i = bossProjectiles.length - 1; i >= 0; i--) {
         const p = bossProjectiles[i];
+        if (p.isVisitorProjectile && buildPhaseActive && !isPlayerInVisitorTerritory()) {
+            bossProjectiles.splice(i, 1);
+            continue;
+        }
+
         p.x += p.dx * p.speed * gameSpeed * frameScale;
         p.y += p.dy * p.speed * gameSpeed * frameScale;
         p.life -= 16.666 * frameScale;
@@ -6176,6 +9552,21 @@ function resolveEnemyCollisions() {
                     const overlap = (minDist - dist) * 0.5;
                     const nx = dx / dist;
                     const ny = dy / dist;
+
+                    const aIsVisitorStructure = isVisitorStructure(a);
+                    const bIsVisitorStructure = isVisitorStructure(b);
+                    if (aIsVisitorStructure && bIsVisitorStructure) return;
+
+                    if (aIsVisitorStructure || bIsVisitorStructure) {
+                        const mover = aIsVisitorStructure ? b : a;
+                        const sign = aIsVisitorStructure ? 1 : -1;
+                        mover.x += nx * overlap * 2.15 * sign;
+                        mover.y += ny * overlap * 2.15 * sign;
+                        mover.x = clampWorldX(mover.x, (mover.radius || 12) + 3);
+                        mover.y = clampWorldY(mover.y, (mover.radius || 12) + 3);
+                        return;
+                    }
+
                     const aMass = a.isBoss ? 2.6 : 1;
                     const bMass = b.isBoss ? 2.6 : 1;
                     const totalMass = aMass + bMass;
@@ -6197,10 +9588,12 @@ function resolveEnemyCollisions() {
 
 
 function damageTower(tower, amount, sourceEnemy = null) {
+    if (player?.guardianUmbralUntil && getGameTime() < player.guardianUmbralUntil) amount *= 0.62;
     if (!tower || tower.hp <= 0) return;
     ensureTowerEconomy(tower);
     const isVisitorProjectile = !!(sourceEnemy && (sourceEnemy.isVisitorProjectile || sourceEnemy.sourceSpecial === "visitor"));
-    const finalAmount = isVisitorProjectile ? amount * 0.78 : ((sourceEnemy && (sourceEnemy.isBoss || sourceEnemy.isBossProjectile)) ? amount * 1.15 : amount);
+    const rawAmount = isVisitorProjectile ? amount * 0.78 : ((sourceEnemy && (sourceEnemy.isBoss || sourceEnemy.isBossProjectile)) ? amount * 1.15 : amount);
+    const finalAmount = rawAmount * (tower.bufferDefenseMultiplier || 1) * getCoreTowerDefenseMultiplier(tower);
     tower.hp -= finalAmount;
     awardVisitorGold(finalAmount);
     createImpactParticles(tower.x, tower.y, sourceEnemy && sourceEnemy.color ? sourceEnemy.color : "#ff7777");
@@ -6235,6 +9628,14 @@ function resolvePlayerEnemyCollision(oldX = player ? player.x : 0, oldY = player
     let blocked = false;
     enemies.forEach(enemy => {
         if (!enemy || enemy.hp <= 0 || enemy.untargetable) return;
+        if (isVisitorStructure(enemy)) {
+            if (isPlayerVisitorStructureBlockedAt(player.x, player.y)) {
+                player.x = oldX;
+                player.y = oldY;
+                blocked = true;
+            }
+            return;
+        }
         const minDist = (enemy.radius || 12) + 22;
         let dx = player.x - enemy.x;
         let dy = player.y - enemy.y;
@@ -6290,6 +9691,42 @@ function updateBleeds(now = getGameTime()) {
     for (let i = enemies.length - 1; i >= 0; i--) {
         if (enemies[i].hp <= 0) killEnemy(i);
     }
+}
+
+function applySiphonParasite(enemy, tower) {
+    if (!enemy || enemy.hp <= 0 || !tower) return;
+    const now = getGameTime();
+    const power = Math.max(0.5, getTowerDamage(tower) * (Number(tower.parasiteDamageMultiplier) || 0.34));
+    enemy.siphonParasiteUntil = Math.max(enemy.siphonParasiteUntil || 0, now + (Number(tower.parasiteDuration) || 3600));
+    enemy.siphonParasiteTickDamage = Math.max(enemy.siphonParasiteTickDamage || 0, power);
+    enemy.siphonParasiteHeal = Math.max(enemy.siphonParasiteHeal || 0, (Number(tower.drainAmount) || 2) * 1.75);
+    enemy.nextSiphonParasiteTickAt = Math.min(enemy.nextSiphonParasiteTickAt || now, now + 620);
+    enemy.siphonParasiteColor = tower.color || "#c9154d";
+}
+
+function updateSiphonParasites(now = getGameTime()) {
+    enemies.forEach(enemy => {
+        if (!enemy.siphonParasiteUntil || enemy.siphonParasiteUntil <= now || enemy.hp <= 0) return;
+        if (!enemy.nextSiphonParasiteTickAt || now >= enemy.nextSiphonParasiteTickAt) {
+            enemy.nextSiphonParasiteTickAt = now + 620;
+            damageEnemy(enemy, enemy.siphonParasiteTickDamage || 0.6, false, enemy.siphonParasiteColor || "#c9154d", "tower");
+            enemy.hitFlash = 0.62;
+        }
+    });
+    for (let i = enemies.length - 1; i >= 0; i--) {
+        if (enemies[i].hp <= 0) killEnemy(i);
+    }
+}
+
+function triggerSiphonParasiteDeath(enemy) {
+    if (!enemy || !enemy.siphonParasiteHeal) return;
+    const heal = Math.max(0, Number(enemy.siphonParasiteHeal) || 0);
+    if (heal <= 0) return;
+    healDefensesAndPlayer(heal, enemy.x, enemy.y);
+    if (player && player.hp >= player.maxHp) {
+        player.bloodShield = Math.min(player.bloodShieldMax || 8, (player.bloodShield || 0) + heal * 0.25);
+    }
+    effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 10, maxRadius: 72, life: 20, color: "#ff4f7f" });
 }
 
 function createTrap(typeKey, x, y) {
@@ -6372,13 +9809,13 @@ function getTitanRewardPool() {
         { type: "bleedGold", title: "Sangrado + oro", desc: "+8% oro y +10% potencia de sangrado.", apply: () => { player.goldBonusMultiplier = (player.goldBonusMultiplier || 1) + 0.08; player.bleedPowerMultiplier = (player.bleedPowerMultiplier || 1) + 0.10; } },
         { type: "double", title: "+3% doble disparo", desc: "Chance permanente de doble disparo pasivo.", apply: () => { player.passiveDoubleShotChance = Math.min(0.35, (player.passiveDoubleShotChance || 0) + 0.03); } },
         { type: "towerSlot", title: "+1 slot de torre", desc: "Aumenta la capacidad máxima si todavía hay lugar.", apply: () => { towerSlotLimit = clampTowerSlotLimit(towerSlotLimit + 1); } },
-        { type: "gold", title: "Bolsa violeta", desc: "Gana oro escalado por oleada.", apply: () => { coins += getGoldAmount(450 + wave * 28); } },
+        { type: "gold", title: "Bolsa violeta", desc: "Gana oro escalado por oleada y muestra la cantidad exacta.", apply: () => { const g = getGoldAmount(450 + wave * 28); coins += g; showCenterMessage(`Bolsa violeta\n+${formatMoney(g)} oro`, 1300, "titan-reward"); addDamageText(player.x, player.y - 48, `+${formatMoney(g)}`, false, "#d98cff"); } },
         { type: "items", title: "Pack de consumibles", desc: "Recibís pociones útiles al inventario.", apply: () => { addConsumableToInventory("shieldPotion"); addConsumableToInventory("attackSpeedPotion"); addConsumableToInventory("mediumPotion"); } },
         { type: "freeRapid", title: "Torre rápida gratis", desc: "Te coloca una torre rápida en la mochila de construcción como reembolso en oro.", apply: () => { coins += costs.tower2 || 40; showCenterMessage("Oro para torre rápida recibido", 800); } },
         { type: "maxhp", title: "+8 vida máxima", desc: "Más margen para sobrevivir.", apply: () => { player.maxHp += 8; player.hp = Math.min(player.maxHp, player.hp + 8); } }
     ];
     lockedAbilityKeys.forEach(key => {
-        pool.push({ type: "ability_" + key, title: `Habilidad: ${abilities[key].name}`, desc: "Desbloquea una habilidad que todavía no tenías.", apply: () => { abilities[key].owned = true; } });
+        pool.push({ type: "ability_" + key, title: `Habilidad: ${abilities[key].name}`, desc: abilities[key].desc || "Desbloquea una habilidad que todavía no tenías.", apply: () => { unlockAbility(key, { autoEquip: true }); } });
     });
     return pool;
 }
@@ -6395,6 +9832,8 @@ function pickTitanRewardOptions() {
 
 function openTitanRewardChoice() {
     pendingTitanReward = { options: pickTitanRewardOptions() };
+    gameRunning = false;
+    isPaused = true;
     updateTitanRewardPanel();
 }
 
@@ -6404,6 +9843,8 @@ function applyTitanRewardOption(option) {
     reward.apply();
     showCenterMessage(`Recompensa: ${reward.title}`, 1200);
     pendingTitanReward = null;
+    isPaused = false;
+    gameRunning = waveInProgress;
     updateTitanRewardPanel();
     updateHud(true);
     autoSaveRun(true);
@@ -6439,6 +9880,7 @@ function updateTitanRewardPanel() {
 
 function updateNewEnemyBehaviors(now) {
     updateVisitorAlert();
+    updateVisitorStructures(now);
     (enemies || []).forEach(enemy => {
         if (!enemy || enemy.hp <= 0) return;
         if (enemy.isBoss) applyExtraBossVariantBehavior(enemy, now);
@@ -6466,19 +9908,88 @@ function clearCombatProjectilesForBuildPhase() {
 }
 
 function clearVisitorProjectiles() {
-    bossProjectiles = (bossProjectiles || []).filter(p => !(p && (p.isVisitorProjectile || p.sourceSpecial === "visitor")));
+    bossProjectiles = (bossProjectiles || []).filter(p => !(p && (p.isVisitorProjectile || p.sourceSpecial === "visitor" || p.sourceSpecial === "visitor_tower")));
 }
 
 function fireEnemyProjectile(enemy, targetX, targetY, options = {}) {
     const angle = Math.atan2(targetY - enemy.y, targetX - enemy.x);
+    const isVisitorShot = enemy.special === "visitor" || Boolean(options.visitorProjectile) || isVisitorStructure(enemy);
     bossProjectiles.push({
         x: enemy.x, y: enemy.y, radius: options.radius || 5, speed: options.speed || 4,
-        dx: Math.cos(angle), dy: Math.sin(angle), color: options.color || "#ffb36b",
+        dx: Math.cos(angle), dy: Math.sin(angle), color: isVisitorShot ? "#7b0712" : (options.color || "#ffb36b"),
         damage: options.damage || 2, bornAt: getGameTime(), maxAge: 5200, life: options.life || 5200,
         isBossProjectile: true, sourceName: enemy.name, deathName: enemy.name,
         sourceSpecial: enemy.special || null,
-        isVisitorProjectile: enemy.special === "visitor"
+        isVisitorProjectile: isVisitorShot
     });
+}
+
+function resolveEnemyEmbeddedInBarricades(enemy) {
+    if (!enemy || enemy.hp <= 0) return false;
+    let moved = false;
+    for (let pass = 0; pass < 4; pass++) {
+        let overlapFound = false;
+        for (const b of (barricades || [])) {
+            if (!b || !b.active || b.hp <= 0 || b.isOpen) continue;
+            if (!circleIntersectsBarricade(enemy.x, enemy.y, enemy.radius || 18, b, 0)) continue;
+            const seg = getBarricadeSegment(b);
+            const hit = distancePointToSegment(enemy.x, enemy.y, seg.x1, seg.y1, seg.x2, seg.y2);
+            const desired = (enemy.radius || 18) + BARRICADE_COLLISION_THICKNESS / 2 + 2;
+            const dx = enemy.x - hit.closestX;
+            const dy = enemy.y - hit.closestY;
+            const dist = Math.hypot(dx, dy) || 1;
+            const push = Math.max(1.2, desired - dist);
+            enemy.x = clampWorldX(enemy.x + (dx / dist) * push, (enemy.radius || 18) + 3);
+            enemy.y = clampWorldY(enemy.y + (dy / dist) * push, (enemy.radius || 18) + 3);
+            overlapFound = true;
+            moved = true;
+        }
+        if (!overlapFound) break;
+    }
+    return moved;
+}
+
+function moveEnemyWithSolidSubsteps(enemy, targetX, targetY, moveAmount) {
+    const dx = targetX - enemy.x;
+    const dy = targetY - enemy.y;
+    const distance = Math.hypot(dx, dy) || 1;
+    const nx = dx / distance;
+    const ny = dy / distance;
+    const steps = Math.max(1, Math.ceil(moveAmount / 8));
+    const stepAmount = moveAmount / steps;
+    let moved = false;
+
+    for (let step = 0; step < steps; step++) {
+        const nextX = clampWorldX(enemy.x + nx * stepAmount, enemy.radius + 3);
+        const nextY = clampWorldY(enemy.y + ny * stepAmount, enemy.radius + 3);
+        if (!isEnemyPositionBlockedBySolid(enemy, nextX, nextY)) {
+            enemy.visitorBlockStuckSince = 0;
+            enemy.x = nextX;
+            enemy.y = nextY;
+            moved = true;
+            continue;
+        }
+
+        if (getBlockingVisitorStructureForEnemy(enemy, nextX, nextY) && trySlideEnemyAroundVisitorStructure(enemy, targetX, targetY)) {
+            moved = true;
+            continue;
+        }
+
+        const slideX = clampWorldX(enemy.x + nx * stepAmount, enemy.radius + 3);
+        const slideY = clampWorldY(enemy.y + ny * stepAmount, enemy.radius + 3);
+        if (!isEnemyPositionBlockedBySolid(enemy, slideX, enemy.y)) {
+            enemy.x = slideX;
+            moved = true;
+        } else if (!isEnemyPositionBlockedBySolid(enemy, enemy.x, slideY)) {
+            enemy.y = slideY;
+            moved = true;
+        } else {
+            break;
+        }
+    }
+
+    resolveEnemyEmbeddedInBarricades(enemy);
+    return moved;
 }
 function updateEnemies() {
     const now = getGameTime();
@@ -6487,6 +9998,7 @@ function updateEnemies() {
     updateEnemySpecials(now, defenseLineX);
     updateBossSpecials(now, defenseLineX);
     updateBleeds(now);
+    updateSiphonParasites(now);
     updateTraps();
     updateTitanShards();
     updateNewEnemyBehaviors(now);
@@ -6514,6 +10026,8 @@ function updateEnemies() {
 
     for (let i = enemies.length - 1; i >= 0; i--) {
         const enemy = enemies[i];
+        if (isVisitorStructure(enemy)) continue;
+        resolveEnemyEmbeddedInBarricades(enemy);
         if (enemy.special === "visitor") {
             updateVisitorAI(enemy, now);
             continue;
@@ -6592,25 +10106,8 @@ function updateEnemies() {
         const attackDistance = enemy.radius + mainTarget.radius;
 
         if (distance > attackDistance) {
-            const nx = dx / (distance || 1);
-            const ny = dy / (distance || 1);
             const moveAmount = enemy.speed * gameSpeed * frameScale;
-            const nextX = clampWorldX(enemy.x + nx * moveAmount, enemy.radius + 3);
-            const nextY = clampWorldY(enemy.y + ny * moveAmount, enemy.radius + 3);
-
-            if (!isEnemyPositionBlockedBySolid(enemy, nextX, nextY)) {
-                enemy.x = nextX;
-                enemy.y = nextY;
-            } else {
-                const slideX = clampWorldX(enemy.x + nx * moveAmount, enemy.radius + 3);
-                const slideY = clampWorldY(enemy.y + ny * moveAmount, enemy.radius + 3);
-                if (!isEnemyPositionBlockedBySolid(enemy, slideX, enemy.y)) {
-                    enemy.x = slideX;
-                } else if (!isEnemyPositionBlockedBySolid(enemy, enemy.x, slideY)) {
-                    enemy.y = slideY;
-                }
-            }
-
+            moveEnemyWithSolidSubsteps(enemy, mainTarget.x, mainTarget.y, moveAmount);
             enemy.isAttacking = false;
             continue;
         }
@@ -6734,10 +10231,43 @@ function updateProjectiles() {
                 if (p.type === "pierce" && p.hitsLeft === 1) {
                     finalDamage = p.damage * 0.5;
                 }
+                if (p.type === "pierce_astral") {
+                    finalDamage = p.damage;
+                    p.damage *= 1 + Math.max(0, Number(p.damageGrowth) || 0.13);
+                }
+                if (p.type === "pierce_ruin") {
+                    e.ruinVulnerableUntil = getGameTime() + (Number(p.ruinDuration) || 2600);
+                    e.ruinDamageMultiplier = Math.max(Number(e.ruinDamageMultiplier) || 1, Number(p.ruinDamageMultiplier) || 1.15);
+                    addDamageText(e.x, e.y - (e.radius || 12) - 8, "RUINA", false, "#ffb64f");
+                }
 
                 if (p.type === "ballista") {
                     e.knockbackX += e.isBoss ? 4 : 12;
                 }
+
+                if (p.type === "oath" && (e.special || e.isBoss)) {
+                    finalDamage *= Math.max(1.1, Number(p.sourceTower?.oathSpecialMultiplier) || 1.35);
+                }
+
+                if (p.type === "echo") {
+                    const echoDamage = Math.max(1, Number(p.sourceTower?.echoExplosionDamage) || finalDamage * 0.8);
+                    e.echoMarkUntil = getGameTime() + 2200;
+                    e.echoMarkDamage = Math.max(Number(e.echoMarkDamage) || 0, echoDamage);
+                    e.echoMarkRadius = Math.max(Number(e.echoMarkRadius) || 0, Number(p.sourceTower?.echoExplosionRadius) || 66);
+                    e.echoMarkColor = p.color || "#5ee8ff";
+                }
+
+                if (p.type === "rapid_splinter") {
+                    const required = Math.max(2, Number(p.sourceTower?.splinterHitsRequired) || 4);
+                    e.splinterStacks = (Number(e.splinterStacks) || 0) + 1;
+                    e.lastSplinterAt = getGameTime();
+                    if (e.splinterStacks >= required) {
+                        e.splinterStacks = 0;
+                        applyBleed(e, Number(p.sourceTower?.splinterPower) || 0.65, Number(p.sourceTower?.splinterDuration) || 2600);
+                        addDamageText(e.x, e.y - (e.radius || 12) - 8, "ASTILLA", false, "#ffb36b");
+                    }
+                }
+
 
                 if (e.poisonedUntil && e.poisonedUntil > getGameTime() && p.owner === "tower") {
                     finalDamage *= 1.18;
@@ -6768,7 +10298,14 @@ function updateProjectiles() {
 function damageEnemy(enemy, amount, isCrit = false, textColor = null, source = "unknown") {
     if (enemy.untargetable) return;
     let finalAmount = amount * getEventEnemyTakenDamageMultiplier();
+    if (enemy.special === "visitor" && source === "ability") finalAmount *= 0.30;
     if (enemy.special && source === "player") finalAmount *= (player?.specialDamageMultiplier || 1);
+    if (enemy.acidVulnerableUntil && enemy.acidVulnerableUntil > getGameTime() && source !== "poison") {
+        finalAmount *= Math.max(1, Number(enemy.acidDamageMultiplier) || 1.16);
+    }
+    if (enemy.ruinVulnerableUntil && enemy.ruinVulnerableUntil > getGameTime() && (source === "tower" || source === "player")) {
+        finalAmount *= Math.max(1, Number(enemy.ruinDamageMultiplier) || 1.14);
+    }
 
     if (enemy.special === "shielded" && (enemy.shieldHp || 0) > 0 && source !== "ability") {
         enemy.shieldHp -= finalAmount;
@@ -6827,9 +10364,20 @@ function damageNearestTower(enemy, amount) {
     if (best) damageTower(best, amount, { name: "reflejo del Bicho Espejo", color: enemy.color });
 }
 
+function getLootOnlyAbilityRelics() {
+    return Object.keys(abilities || {}).filter(id => abilities[id]?.lootOnly && !abilities[id].owned).map(id => ({
+        id: `skill_${id}`,
+        name: `Habilidad: ${abilities[id].name}`,
+        family: "arcana",
+        desc: abilities[id].desc || "Desbloquea una habilidad especial.",
+        downside: "Ocupa un slot de habilidad si decidís equiparla.",
+        apply(){ unlockAbility(id, { autoEquip: true }); }
+    }));
+}
+
 function offerRelicChoice(source = "boss") {
     if (isRepeatingWave || pendingRelicChoice || !relicChoicePanel) return;
-    const pool = source === "visitor" ? VISITOR_RELICS : RELIC_DEFINITIONS.filter(r => !activeRelics.some(a => a.id === r.id));
+    const pool = source === "visitor" ? VISITOR_RELICS : RELIC_DEFINITIONS.filter(r => !activeRelics.some(a => a.id === r.id)).concat(getLootOnlyAbilityRelics());
     if (!pool.length) return;
     const options = pickWeightedRelics(pool, 3);
     pendingRelicChoice = { source, options };
@@ -6874,6 +10422,65 @@ function chooseRelic(index) {
     updateHud(true);
     autoSaveRun(true);
 }
+function triggerEchoDeathExplosion(enemy) {
+    if (!enemy || !enemy.echoMarkUntil || enemy.echoMarkUntil < getGameTime()) return;
+    const radius = Number(enemy.echoMarkRadius) || 66;
+    const damage = Number(enemy.echoMarkDamage) || 1;
+    const color = enemy.echoMarkColor || "#5ee8ff";
+    let hits = 0;
+
+    (enemies || []).forEach(other => {
+        if (!other || other === enemy || other.hp <= 0 || other.untargetable) return;
+        if (Math.hypot(other.x - enemy.x, other.y - enemy.y) <= radius + (other.radius || 0)) {
+            damageEnemy(other, damage, false, color, "tower");
+            other.hitFlash = 0.8;
+            hits++;
+        }
+    });
+
+    if (hits > 0) {
+        effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 8, maxRadius: radius, life: 18, color });
+        for (let i = enemies.length - 1; i >= 0; i--) {
+            if (enemies[i] && enemies[i] !== enemy && enemies[i].hp <= 0) killEnemy(i);
+        }
+    }
+}
+
+function triggerPlagueDeathSpread(enemy) {
+    if (!enemy || !enemy.plagueSource || enemy.hp > 0) return;
+    const source = enemy.plagueSource;
+    const radius = Math.max(45, Number(source.radius) || 92);
+    const damage = Math.max(0.35, Number(source.damage) || 1);
+    const duration = Math.max(700, Number(source.duration) || 1500);
+    const tickDelay = Math.max(420, Number(source.tickDelay) || 650);
+    let spread = 0;
+
+    (enemies || []).forEach(other => {
+        if (!other || other === enemy || other.hp <= 0 || other.untargetable) return;
+        if (Math.hypot(other.x - enemy.x, other.y - enemy.y) <= radius + (other.radius || 0)) {
+            other.poisonedUntil = Math.max(other.poisonedUntil || 0, getGameTime() + 1600);
+            damageEnemy(other, damage, false, "#67ff7a", "poison");
+            other.plagueSource = { radius, damage: damage * 0.72, duration, tickDelay };
+            other.hitFlash = 0.8;
+            spread++;
+        }
+    });
+
+    if (spread > 0) {
+        effects.push({ type: "circle", x: enemy.x, y: enemy.y, radius: 8, maxRadius: radius, life: 22, color: "#67ff7a" });
+        for (let i = enemies.length - 1; i >= 0; i--) {
+            if (enemies[i] && enemies[i] !== enemy && enemies[i].hp <= 0) killEnemy(i);
+        }
+    }
+}
+
+function clearVisitorBaseStructures(showMessage = false) {
+    const before = (enemies || []).length;
+    enemies = (enemies || []).filter(e => !(e && isVisitorStructure(e)));
+    const removed = before - enemies.length;
+    if (removed > 0 && showMessage) showVisitorAlert("La base del Visitante colapsó.");
+}
+
 function killEnemy(index) {
     const enemy = enemies[index];
     const killSource = runStats?.lastKillSource || "unknown";
@@ -6893,6 +10500,9 @@ function killEnemy(index) {
     }
 
     createDeathExplosion(enemy.x, enemy.y, enemy.color, enemy.isBoss ? 28 : 14);
+    triggerSiphonParasiteDeath(enemy);
+    triggerEchoDeathExplosion(enemy);
+    triggerPlagueDeathSpread(enemy);
 
     if (enemy.isBoss) {
         // Al morir un jefe, sus balas activas desaparecen para que no queden flotando
@@ -6914,6 +10524,7 @@ function killEnemy(index) {
         tryDropTitanShard(enemy);
     }
 
+    const shouldClearVisitorBaseAfterDeath = enemy.special === "visitor";
     if (enemy.special === "visitor") {
         lastVisitorDeathWave = wave;
         visitorSpawnedThisWave = false;
@@ -6923,6 +10534,7 @@ function killEnemy(index) {
 
     applyBloodThirstOnKill(enemy);
     enemies.splice(index, 1);
+    if (shouldClearVisitorBaseAfterDeath) clearVisitorBaseStructures(true);
 }
 
 
@@ -6951,7 +10563,7 @@ function getNearestSplitBarricadeNormal(enemy, childRadius) {
         if (!b || !b.active || b.hp <= 0 || b.isOpen) return;
         const seg = getBarricadeSegment(b);
         const hit = distancePointToSegment(enemy.x, enemy.y, seg.x1, seg.y1, seg.x2, seg.y2);
-        const distance = hit.distance - BARRICADE_THICKNESS / 2 - (enemy.radius || childRadius || 12);
+        const distance = hit.distance - BARRICADE_COLLISION_THICKNESS / 2 - (enemy.radius || childRadius || 12);
         if (distance < bestDistance) {
             let nx = enemy.x - hit.closestX;
             let ny = enemy.y - hit.closestY;
@@ -6972,13 +10584,14 @@ function getNearestSplitBarricadeNormal(enemy, childRadius) {
 function isValidSplitSpawnPosition(sourceX, sourceY, x, y, childRadius) {
     const probe = { radius: childRadius };
     if (isEnemyPositionBlockedBySolid(probe, x, y)) return false;
+    if (getBlockingVisitorStructureForEnemy(probe, x, y)) return false;
 
     for (const b of (barricades || [])) {
         if (!b || !b.active || b.hp <= 0 || b.isOpen) continue;
         const seg = getBarricadeSegment(b);
         const sourceSide = getSignedDistanceToBarricadeLine(sourceX, sourceY, b);
         const childSide = getSignedDistanceToBarricadeLine(x, y, b);
-        const safeSideMargin = BARRICADE_THICKNESS / 2 + 2;
+        const safeSideMargin = BARRICADE_COLLISION_THICKNESS / 2 + 2;
 
         // Si al nacer el hijo quedaría del otro lado de la pared, no lo aceptamos.
         // Este era el bug: el splitter moría pegado a la barricada y generaba hijos
@@ -7125,7 +10738,6 @@ function createSlowZone(x, y, radius, slowAmount, duration, sourceTower = null) 
         if (dist <= radius && !enemy.slowImmune) {
             enemy.slowMultiplier = slowAmount;
             enemy.slowUntil = expiresAt;
-            if (activeSideMission?.type === "ccHits") addMissionProgress(1);
         }
     });
 }
@@ -7143,7 +10755,13 @@ function createPoisonZone(x, y, radius, damage, duration, tickDelay, sourceTower
         tickDelay,
         nextTickAt: now,
         expiresAt,
-        sourceTower
+        sourceTower,
+        evolutionId: sourceTower?.evolutionId || "",
+        plagueSpreadRadius: sourceTower?.plagueSpreadRadius || 0,
+        plagueSpreadDamageMultiplier: sourceTower?.plagueSpreadDamageMultiplier || 0,
+        plagueSpreadDurationMultiplier: sourceTower?.plagueSpreadDurationMultiplier || 0,
+        acidVulnerabilityMultiplier: sourceTower?.acidVulnerabilityMultiplier || 0,
+        acidVulnerabilityDuration: sourceTower?.acidVulnerabilityDuration || 0
     });
 
     if (sourceTower) {
@@ -7182,7 +10800,19 @@ function updatePoisonZones() {
 
                 if (dist <= zone.radius) {
                     enemy.poisonedUntil = now + 1400;
-                    damageEnemy(enemy, zone.damage, false, "#8cff4a", "poison");
+                    if (zone.evolutionId === "poison_acid") {
+                        enemy.acidVulnerableUntil = Math.max(enemy.acidVulnerableUntil || 0, now + (Number(zone.acidVulnerabilityDuration) || 2200));
+                        enemy.acidDamageMultiplier = Math.max(Number(enemy.acidDamageMultiplier) || 1, Number(zone.acidVulnerabilityMultiplier) || 1.16);
+                    }
+                    if (zone.evolutionId === "poison_plague") {
+                        enemy.plagueSource = {
+                            radius: Number(zone.plagueSpreadRadius) || 92,
+                            damage: (Number(zone.damage) || 1) * (Number(zone.plagueSpreadDamageMultiplier) || 0.42),
+                            duration: (Number(zone.expiresAt) || now) - now > 0 ? Math.max(900, ((Number(zone.expiresAt) || now) - now) * (Number(zone.plagueSpreadDurationMultiplier) || 0.48)) : 1500,
+                            tickDelay: Number(zone.tickDelay) || 650
+                        };
+                    }
+                    damageEnemy(enemy, zone.damage, false, zone.evolutionId === "poison_acid" ? "#45c85b" : zone.evolutionId === "poison_plague" ? "#67ff7a" : "#8cff4a", "poison");
                 }
             });
 
@@ -7253,12 +10883,17 @@ function updateEclipseEffects() {
     effects.forEach(effect => {
         if (effect.type === "spear") {
             const alpha = Math.max(0, effect.life / 10);
-            ctx.strokeStyle = `rgba(255,226,138,${alpha})`;
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            ctx.strokeStyle = effect.color || "#ffe28a";
+            ctx.shadowColor = effect.color || "#ffe28a";
+            ctx.shadowBlur = 10;
             ctx.lineWidth = effect.width || 22;
             ctx.beginPath();
             ctx.moveTo(effect.x, effect.y);
             ctx.lineTo(effect.x + effect.dx * effect.length, effect.y + effect.dy * effect.length);
             ctx.stroke();
+            ctx.restore();
             return;
         }
         if (effect.type !== "eclipse" || effect.finalDone) return;
@@ -7465,10 +11100,15 @@ function showCenterMessage(text, duration = 1600, type = "default") {
     if (!centerMessage) return;
     const token = ++centerMessageToken;
     const raw = String(text || "");
-    const canUseBody = ["boss", "titan", "titan-reward", "visitor"].includes(type);
+    const canUseBody = ["boss", "titan", "titan-reward", "visitor"].includes(type) || String(type || "").startsWith("event") || String(type || "").startsWith("mission");
     const [firstLine, ...bodyParts] = raw.split("\n");
-    const title = canUseBody ? firstLine : raw.replace(/\s*\n\s*/g, " — ");
-    const body = canUseBody ? bodyParts.join(" ").trim() : "";
+    let title = canUseBody ? firstLine : raw.replace(/\s*\n\s*/g, " — ");
+    let body = canUseBody ? bodyParts.join(" ").trim() : "";
+    if (canUseBody && !body && raw.includes(" — ")) {
+        const parts = raw.split(/\s+—\s+/);
+        title = parts.shift();
+        body = parts.join(" — ").trim();
+    }
     centerMessage.className = "centerMessageToast";
     centerMessage.classList.add(`centerMessage-${type}`);
     if (!canUseBody) centerMessage.classList.add("centerMessageSingleLine");
@@ -7512,7 +11152,7 @@ function updateBossPressureSpawns(now) {
 function checkWaveComplete() {
     if (
         enemiesSpawned >= enemiesToSpawn &&
-        enemies.filter(e => !(e && e.special === "visitor" && e.hp > 0)).length === 0 &&
+        enemies.filter(e => !(e && e.hp > 0 && (e.special === "visitor" || isVisitorStructure(e)))).length === 0 &&
         waveInProgress
     ) {
         completeWave();
@@ -7523,17 +11163,19 @@ function awardMineIncome(completedWave = wave) {
     const activeMines = (mines || []).filter(mine => mine && mine.hp > 0);
     if (!activeMines.length) return 0;
     const perMine = getMineIncomeForWave(completedWave);
-    const total = Math.ceil(perMine * activeMines.length * (player?.mineIncomeMultiplier || 1));
+    let total = 0;
+    activeMines.forEach(mine => {
+        const income = Math.ceil(perMine * (player?.mineIncomeMultiplier || 1) * getCoreMineIncomeMultiplier(mine));
+        total += income;
+        mine.totalGold = (Number(mine.totalGold) || 0) + income;
+        mine.lastIncome = income;
+        mine.pulseUntil = getGameTime() + 1200;
+    });
     if (total <= 0) return 0;
 
     coins = Math.min(Number.MAX_SAFE_INTEGER, coins + total);
     waveStats.gold += total;
     if (runStats) runStats.goldEarned += total;
-    activeMines.forEach(mine => {
-        mine.totalGold = (Number(mine.totalGold) || 0) + perMine;
-        mine.lastIncome = perMine;
-        mine.pulseUntil = getGameTime() + 1200;
-    });
     addDamageText(player.x, player.y - 42, `+${formatMoney(total)} minas`, false, "#ffd76a");
     return total;
 }
@@ -7749,7 +11391,8 @@ function renderLeaderboard(scores = []) {
 async function loadLeaderboard() {
     try {
         setLeaderboardStatus("Cargando leaderboard...");
-        const response = await fetch("/api/leaderboard", { cache: "no-store" });
+        const league = activeClass?.beginnerLeague || selectedClassKey === "novato" ? "novatos" : "normal";
+        const response = await fetch(`/api/leaderboard?league=${encodeURIComponent(league)}`, { cache: "no-store" });
         const data = await response.json();
 
         if (!response.ok) throw new Error(data.message || "No se pudo cargar el leaderboard.");
@@ -7759,12 +11402,47 @@ async function loadLeaderboard() {
         if (data.configured === false) {
             setLeaderboardStatus("Leaderboard local listo. Falta configurar KV_REST_API_URL y KV_REST_API_TOKEN en Vercel.");
         } else {
-            setLeaderboardStatus("Top global actualizado.");
+            setLeaderboardStatus("Top actualizado.");
         }
     } catch (error) {
         console.log("Leaderboard load error:", error);
         renderLeaderboard([]);
         setLeaderboardStatus("No se pudo conectar al leaderboard global todavía.");
+    }
+}
+
+async function clearLeaderboardFromConsole() {
+    appendConsoleLog("Limpiando leaderboard...");
+    setLeaderboardStatus("Limpiando leaderboard...");
+    try {
+        let response = await fetch("/api/leaderboard", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "clear" })
+        });
+
+        if (!response.ok) {
+            response = await fetch("/api/leaderboard", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "clear", clear: true })
+            });
+        }
+
+        let data = {};
+        try { data = await response.json(); } catch (error) { data = {}; }
+
+        if (!response.ok) throw new Error(data.message || "El endpoint /api/leaderboard todavía no acepta limpieza.");
+
+        renderLeaderboard(Array.isArray(data.scores) ? data.scores : []);
+        setLeaderboardStatus("Leaderboard limpiado.");
+        appendConsoleLog("Leaderboard limpiado correctamente.");
+        showCenterMessage("LEADERBOARD LIMPIO", 1100, "minor");
+    } catch (error) {
+        console.log("Leaderboard clear error:", error);
+        renderLeaderboard([]);
+        setLeaderboardStatus("No pude limpiar online. Agregá soporte DELETE/action clear en /api/leaderboard.");
+        appendConsoleLog(`No pude limpiar online: ${error.message || error}`);
     }
 }
 
@@ -7822,11 +11500,25 @@ async function submitLeaderboardScore() {
             score: Math.max(0, Math.floor(score)),
             wave: Math.max(1, Math.floor(wave || 1)),
             version: "0.7.6.0",
-            beginner: Boolean(beginnerCommandUsed),
-            beginnerCommandUsed: Boolean(beginnerCommandUsed),
+            beginner: Boolean(beginnerCommandUsed || activeClass?.beginnerLeague),
+            beginnerCommandUsed: Boolean(beginnerCommandUsed || activeClass?.beginnerLeague),
+            league: activeClass?.beginnerLeague ? "novatos" : "normal",
             killedBy: String(lastDeathCause || "desconocido").slice(0, 80),
             deathCause: String(lastDeathCause || "desconocido").slice(0, 80),
-            className: activeClass?.name || "Errante"
+            className: activeClass?.name || "Errante",
+            buildName: detectMainBuild(),
+            survivalTimeMs: Math.max(0, Math.floor(totalRunTimeMs || getGameTime() || 0)),
+            kills: Math.max(0, Math.floor(runStats?.kills || 0)),
+            bossKills: Math.max(0, Math.floor(runStats?.bossKills || 0)),
+            missionsCompleted: Math.max(0, Math.floor(runStats?.missionsCompleted || 0)),
+            damageDealt: Math.max(0, Math.floor(runStats?.damageDealt || 0)),
+            goldEarned: Math.max(0, Math.floor(runStats?.goldEarned || 0)),
+            towersBuilt: Math.max(0, (towers || []).filter(t => t && t.owned).length),
+            barricadesBuilt: Math.max(0, (barricades || []).filter(b => b && b.active).length),
+            coresPlaced: Math.max(0, (cores || []).filter(Boolean).length),
+            relics: (activeRelics || []).map(r => r.name).slice(0, 12),
+            locale: navigator.language || "es-AR",
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || ""
         };
 
         const response = await fetch("/api/leaderboard", {
@@ -7938,6 +11630,9 @@ function renderFinalRunDetails(rawScore) {
     const box = document.getElementById("finalRunDetails");
     if (!box) return;
     const relicText = activeRelics.length ? activeRelics.map(r=>r.name).join(", ") : "Ninguna";
+    const evolutionText = Object.keys(towerEvolutionChoices || {}).length
+        ? Object.entries(towerEvolutionChoices).map(([baseKey, evoId]) => `${getTowerDefinition(baseKey)?.name || baseKey} → ${getTowerEvolutionDef(baseKey, evoId)?.name || evoId}`).join(", ")
+        : "Ninguna";
     const survivedEventsText = runStats?.survivedEvents?.length ? runStats.survivedEvents.slice(-3).join(", ") : "Ninguno";
     const buildName = detectMainBuild();
     const survivalText = formatSurvivalTime(totalRunTimeMs || getGameTime());
@@ -7948,6 +11643,7 @@ function renderFinalRunDetails(rawScore) {
         <div><strong>Daño total</strong><span>${formatCompactNumber(Math.floor(runStats?.damageDealt || 0))}</span></div>
         <div><strong>Oro ganado</strong><span>${formatMoney(Math.floor(runStats?.goldEarned || 0))}</span></div>
         <div><strong>Reliquias</strong><span>${escapeHtml(relicText)}</span></div>
+        <div><strong>Evoluciones</strong><span>${escapeHtml(evolutionText)}</span></div>
         <div><strong>Misiones</strong><span>${runStats?.missionsCompleted || 0} completadas</span></div>
         <div><strong>Eventos sobrevividos</strong><span>${escapeHtml(survivedEventsText)}</span></div>
         <div><strong>Puntaje base</strong><span>${formatCompactNumber(rawScore)}</span></div>`;
@@ -7960,6 +11656,7 @@ Puntaje: ${formatCompactNumber(score)}
 Daño total: ${formatCompactNumber(Math.floor(runStats?.damageDealt || 0))}
 Oro ganado: ${formatMoney(Math.floor(runStats?.goldEarned || 0))}
 Reliquias: ${relicText}
+Evoluciones: ${evolutionText}
 Misiones: ${runStats?.missionsCompleted || 0}
 Causa de muerte: ${lastDeathCause || "desconocida"}`;
 }
@@ -8015,7 +11712,7 @@ function useAbility(id) {
 
     const now = getGameTime();
 
-    if (now - ability.lastUsed < ability.cooldown * (player?.abilityCooldownMultiplier || 1) * (activeWaveEvent?.id === "mana_calm" ? 1.35 : 1)) return;
+    if (now - ability.lastUsed < ability.cooldown * (player?.abilityCooldownMultiplier || 1) * getCoreAbilityCooldownMultiplier() * (activeWaveEvent?.id === "mana_calm" ? 1.35 : 1)) return;
 
     ability.lastUsed = now;
     if (runStats) runStats.abilitiesUsedThisWave++;
@@ -8028,12 +11725,18 @@ function useAbility(id) {
     if (id === "meteor") useMeteor();
     if (id === "eclipse") useEclipse();
     if (id === "blink") useBlink();
+    if (id === "nova") useNovaVerde();
+    if (id === "guardian") useGuardianUmbral();
+    if (id === "timewarp") useRelojRoto();
+    if (id === "voidchain") useCadenaVacio();
+    if (id === "thornstorm") useTormentaEspinas();
+    if (id === "goldpulse") usePulsoDorado();
 
     updateHud();
 }
 
 function getAbilityDamage(base, waveScale = 1, playerScale = 1) {
-    return (base + wave * waveScale + player.damage * playerScale) * (player?.abilityPowerMultiplier || 1);
+    return (base + wave * waveScale + player.damage * playerScale) * (player?.abilityPowerMultiplier || 1) * getCoreAbilityPowerMultiplier();
 }
 
 
@@ -8055,6 +11758,7 @@ function useBlink() {
     // Blink atraviesa barricadas, pero no debe terminar dentro de torres, minas, base o enemigos.
     const blinkBlocked = (towers || []).some(t => t && t.owned && t.hp > 0 && Math.hypot(t.x - player.x, t.y - player.y) < TOWER_COLLISION_RADIUS + 18)
         || (mines || []).some(m => m && m.hp > 0 && Math.hypot(m.x - player.x, m.y - player.y) < (m.radius || MINE_COLLISION_RADIUS) + 18)
+        || (cores || []).some(c => c && Math.hypot(c.x - player.x, c.y - player.y) < CORE_RADIUS + 18)
         || (baseCore && basePlaced && baseCore.hp > 0 && Math.hypot(baseCore.x - player.x, baseCore.y - player.y) < BASE_RADIUS + 18)
         || (enemies || []).some(e => e && e.hp > 0 && Math.hypot(e.x - player.x, e.y - player.y) < (e.radius || 18) + 18);
     if (blinkBlocked) {
@@ -8089,7 +11793,6 @@ function useFreeze() {
         if (enemy.slowImmune) return;
         enemy.slowMultiplier = 0.25;
         enemy.slowUntil = now + 3500 + Math.min(1600, player.damage * 90);
-        if (activeSideMission?.type === "ccHits") addMissionProgress(1);
     });
 
     effects.push({
@@ -8264,6 +11967,109 @@ function useEclipse() {
     showCenterMessage("¡ECLIPSE!", 900);
 }
 
+
+function useNovaVerde() {
+    const radius = 145;
+    const damage = getAbilityDamage(18, 0.75, 3.2);
+    let hits = 0;
+    (enemies || []).forEach(enemy => {
+        if (!enemy || enemy.hp <= 0 || enemy.untargetable) return;
+        const dist = Math.hypot(enemy.x - player.x, enemy.y - player.y);
+        if (dist <= radius + (enemy.radius || 0)) {
+            hits++;
+            damageEnemy(enemy, damage, true, "#78f09b", "ability");
+            const dx = (enemy.x - player.x) / Math.max(1, dist);
+            const dy = (enemy.y - player.y) / Math.max(1, dist);
+            enemy.x += dx * (enemy.isBoss ? 18 : 48);
+            enemy.y += dy * (enemy.isBoss ? 18 : 48);
+        }
+    });
+    player.hp = Math.min(player.maxHp, player.hp + hits * 0.35 * (player.healingMultiplier || 1));
+    effects.push({ type:"circle", x:player.x, y:player.y, radius:12, maxRadius:radius, life:30, color:"#78f09b" });
+    for (let i = enemies.length - 1; i >= 0; i--) if (enemies[i].hp <= 0) killEnemy(i);
+    showCenterMessage("¡NOVA VERDE!", 900);
+}
+
+function useGuardianUmbral() {
+    const now = getGameTime();
+    player.guardianUmbralUntil = now + 6200;
+    (barricades || []).forEach(b => { if (b && b.active && b.hp > 0) b.hp = Math.min(b.maxHp, b.hp + Math.max(5, b.maxHp * 0.08)); });
+    (towers || []).forEach(t => { if (t && t.owned && t.hp > 0) t.hp = Math.min(t.maxHp, t.hp + Math.max(4, t.maxHp * 0.10)); });
+    effects.push({ type:"circle", x:player.x, y:player.y, radius:20, maxRadius:360, life:38, color:"#b78cff" });
+    showCenterMessage("¡GUARDIÁN UMBRAL!", 950);
+}
+
+function useRelojRoto() {
+    const now = getGameTime();
+    player.attackSpeedUntil = Math.max(player.attackSpeedUntil || 0, now + 4200);
+    (enemies || []).forEach(enemy => {
+        if (!enemy || enemy.hp <= 0 || enemy.slowImmune) return;
+        if (Math.hypot(enemy.x - player.x, enemy.y - player.y) <= 360 + (enemy.radius || 0)) {
+            enemy.slowMultiplier = Math.min(enemy.slowMultiplier || 1, enemy.isBoss ? 0.48 : 0.18);
+            enemy.slowUntil = Math.max(enemy.slowUntil || 0, now + 4200);
+            damageEnemy(enemy, getAbilityDamage(6, 0.22, 1.1), false, "#9be7ff", "ability");
+        }
+    });
+    effects.push({ type:"circle", x:player.x, y:player.y, radius:24, maxRadius:360, life:42, color:"#9be7ff" });
+    for (let i = enemies.length - 1; i >= 0; i--) if (enemies[i].hp <= 0) killEnemy(i);
+    showCenterMessage("¡RELOJ ROTO!", 900);
+}
+
+function useCadenaVacio() {
+    const radius = 210;
+    const damage = getAbilityDamage(16, 0.58, 2.8);
+    let hits = 0;
+    (enemies || []).forEach(enemy => {
+        if (!enemy || enemy.hp <= 0 || enemy.untargetable) return;
+        const dist = Math.hypot(enemy.x - mousePosition.x, enemy.y - mousePosition.y);
+        if (dist <= radius + (enemy.radius || 0)) {
+            hits++;
+            damageEnemy(enemy, damage * (enemy.isBoss ? 0.55 : 1), true, "#7d55ff", "ability");
+            enemy.x += (mousePosition.x - enemy.x) * (enemy.isBoss ? 0.035 : 0.11);
+            enemy.y += (mousePosition.y - enemy.y) * (enemy.isBoss ? 0.035 : 0.11);
+            effects.push({ type:"line", x1:mousePosition.x, y1:mousePosition.y, x2:enemy.x, y2:enemy.y, life:18, color:"#7d55ff" });
+        }
+    });
+    effects.push({ type:"circle", x:mousePosition.x, y:mousePosition.y, radius:10, maxRadius:radius, life:28, color:"#7d55ff" });
+    for (let i = enemies.length - 1; i >= 0; i--) if (enemies[i].hp <= 0) killEnemy(i);
+    showCenterMessage(hits ? "¡CADENA DEL VACÍO!" : "Sin objetivos", 850);
+}
+
+function useTormentaEspinas() {
+    const radius = 155;
+    const now = getGameTime();
+    (enemies || []).forEach(enemy => {
+        if (!enemy || enemy.hp <= 0 || enemy.untargetable) return;
+        if (Math.hypot(enemy.x - mousePosition.x, enemy.y - mousePosition.y) <= radius + (enemy.radius || 0)) {
+            enemy.slowMultiplier = Math.min(enemy.slowMultiplier || 1, 0.45);
+            enemy.slowUntil = Math.max(enemy.slowUntil || 0, now + 2600);
+            applyBleed(enemy, 1.35, 4200);
+            damageEnemy(enemy, getAbilityDamage(9, 0.35, 1.7), false, "#73ff9f", "ability");
+        }
+    });
+    effects.push({ type:"circle", x:mousePosition.x, y:mousePosition.y, radius:12, maxRadius:radius, life:90, color:"#73ff9f" });
+    for (let i = enemies.length - 1; i >= 0; i--) if (enemies[i].hp <= 0) killEnemy(i);
+    showCenterMessage("¡TORMENTA DE ESPINAS!", 900);
+}
+
+function usePulsoDorado() {
+    const radius = 175;
+    const damage = getAbilityDamage(12, 0.45, 2.0);
+    let gold = 0;
+    (enemies || []).forEach(enemy => {
+        if (!enemy || enemy.hp <= 0 || enemy.untargetable) return;
+        if (Math.hypot(enemy.x - player.x, enemy.y - player.y) <= radius + (enemy.radius || 0)) {
+            damageEnemy(enemy, damage, false, "#ffd84a", "ability");
+            gold += Math.ceil(1 + wave * 0.04 + (enemy.special ? 2 : 0));
+        }
+    });
+    gold = getGoldAmount(Math.min(180 + wave * 3, gold));
+    if (gold > 0) { coins += gold; if (runStats) runStats.goldEarned += gold; addDamageText(player.x, player.y - 48, `+${formatMoney(gold)}`, false, "#ffd84a"); }
+    effects.push({ type:"circle", x:player.x, y:player.y, radius:14, maxRadius:radius, life:30, color:"#ffd84a" });
+    for (let i = enemies.length - 1; i >= 0; i--) if (enemies[i].hp <= 0) killEnemy(i);
+    showCenterMessage("¡PULSO DORADO!", 900);
+}
+
 function damageEnemiesInArea(x, y, radius, damage, critText) {
     enemies.forEach(enemy => {
         const dist = Math.hypot(enemy.x - x, enemy.y - y);
@@ -8398,6 +12204,56 @@ function drawAetheriteBarricadeParticles(b, width, height) {
     ctx.restore();
 }
 
+function drawBufferBuffParticlesAround(x, y, radius = 26, color = "#73ff9f", seed = 0) {
+    const now = getGameTime() / 420 + seed;
+    ctx.save();
+    ctx.globalAlpha = 0.78;
+    ctx.fillStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 8;
+    for (let i = 0; i < 5; i++) {
+        const a = now + i * Math.PI * 0.72;
+        const pulse = Math.sin(now * 1.7 + i) * 3;
+        const px = x + Math.cos(a) * (radius + pulse);
+        const py = y + Math.sin(a) * (radius + pulse);
+        ctx.beginPath();
+        ctx.arc(px, py, 2.2, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    ctx.restore();
+}
+
+
+function drawCoreBuffAuraAround(x, y, radius = 34, seed = 0, color = "#ff9b43") {
+    const now = getGameTime();
+    const t = now / 520 + seed;
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.strokeStyle = "rgba(255,155,67,0.26)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 8]);
+    ctx.beginPath();
+    ctx.arc(x, y, radius + 7 + Math.sin(t) * 2, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 10;
+    for (let i = 0; i < 9; i++) {
+        const phase = (i / 9) * Math.PI * 2 + t * 1.4;
+        const wobble = Math.sin(t * 2.1 + i * 1.7) * 4;
+        const px = x + Math.cos(phase) * (radius + wobble);
+        const py = y + Math.sin(phase) * (radius + wobble);
+        const alpha = 0.34 + Math.sin(t * 2.6 + i) * 0.22;
+        ctx.globalAlpha = Math.max(0.16, Math.min(0.72, alpha));
+        ctx.fillStyle = i % 3 === 0 ? "#ffd08a" : color;
+        ctx.beginPath();
+        ctx.arc(px, py, 1.8 + Math.sin(t + i) * 0.7, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+}
+
 function drawBarricade() {
     (barricades || []).forEach(b => {
         if (!b.active || b.hp <= 0) return;
@@ -8432,6 +12288,15 @@ function drawBarricade() {
             drawAetheriteBarricadeParticles(b, drawWidth, drawHeight);
         }
         ctx.restore();
+
+        if (getCoreBuffsForTarget(b, "barricade").length) {
+            drawCoreBuffAuraAround(b.x, b.y, 42, Number(b.id) || b.x + b.y, "#ff9b43");
+        }
+
+        const liveBarricadeBuffs = getBufferEffectsForTarget(b, "barricade");
+        if (liveBarricadeBuffs.length) {
+            drawBufferBuffParticlesAround(b.x, b.y, 34, liveBarricadeBuffs[0].color || "#73ff9f", Number(b.id) || b.x + b.y);
+        }
 
         const hpPercent = b.maxHp > 0 ? Math.max(0, b.hp / b.maxHp) : 0;
         drawBarricadeHealthBar(b, hpPercent);
@@ -8494,6 +12359,38 @@ function drawBuildPreview() {
         ctx.fillStyle = "white";
         ctx.font = "bold 14px Arial";
         ctx.fillText(`Mina · +${formatMoney(getMineIncomeForWave())}/oleada · click coloca`, point.x - 150, point.y - radius - 12);
+    }
+
+    if (pendingCorePlacement) {
+        const point = getSnappedBuildPoint();
+        const def = getCoreDefinition(pendingCorePlacement.type);
+        const valid = isCorePositionValid(point.x, point.y, pendingCorePlacement.type);
+        ctx.save();
+        if (def && !def.global) {
+            ctx.fillStyle = valid ? "rgba(115,255,159,0.08)" : "rgba(255,80,80,0.07)";
+            ctx.beginPath();
+            ctx.arc(point.x, point.y, CORE_EFFECT_RADIUS, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = valid ? "rgba(115,255,159,0.35)" : "rgba(255,80,80,0.28)";
+            ctx.setLineDash([10, 10]);
+            ctx.beginPath();
+            ctx.arc(point.x, point.y, CORE_EFFECT_RADIUS, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+        ctx.fillStyle = valid ? "rgba(183,140,255,0.42)" : "rgba(255,80,80,0.38)";
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, CORE_RADIUS, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = valid ? (def?.color || "#b78cff") : "rgba(255,80,80,0.95)";
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, CORE_RADIUS, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = "white";
+        ctx.font = "bold 14px Arial";
+        ctx.fillText(`${def ? def.name : "Núcleo"} · click coloca · mínimo ${CORE_MIN_DISTANCE}px`, point.x - 190, point.y - CORE_RADIUS - 14);
+        ctx.restore();
     }
 }
 
@@ -8709,6 +12606,10 @@ function drawTowers() {
     towers.forEach(tower => {
         if (!tower.owned) return;
 
+        if (getCoreBuffsForTarget(tower, "tower").length) {
+            drawCoreBuffAuraAround(tower.x, tower.y, 34, Number(tower.id) || tower.x + tower.y, "#ff9b43");
+        }
+
         if (isStructureSelected("tower", tower.id)) {
             ctx.strokeStyle = "#ffe28a";
             ctx.lineWidth = 4;
@@ -8716,8 +12617,38 @@ function drawTowers() {
         }
 
         ensureTowerEconomy(tower);
+        ctx.save();
+        ctx.shadowColor = tower.color || "#ffffff";
+        ctx.shadowBlur = 8;
         ctx.fillStyle = tower.color;
         ctx.fillRect(tower.x - 18, tower.y - 18, 36, 36);
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = "rgba(255,255,255,0.78)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(tower.x - 18, tower.y - 18, 36, 36);
+        ctx.strokeStyle = "rgba(0,0,0,0.65)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(tower.x - 13, tower.y - 13, 26, 26);
+        ctx.fillStyle = "rgba(255,255,255,0.22)";
+        ctx.fillRect(tower.x - 14, tower.y - 14, 10, 10);
+        ctx.restore();
+
+        if (tower.type === "basic" || tower.type === "rapid" || tower.type === "double") {
+            ctx.fillStyle = "rgba(0,0,0,0.68)";
+            ctx.beginPath(); ctx.arc(tower.x, tower.y, 8, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = "rgba(255,255,255,0.85)";
+            ctx.beginPath(); ctx.arc(tower.x, tower.y, 3.8, 0, Math.PI * 2); ctx.fill();
+        }
+        if (tower.type === "slow" || tower.type === "poison" || tower.type === "siphon" || tower.type === "buffer") {
+            ctx.strokeStyle = tower.type === "poison" ? "#73ff9f" : tower.type === "siphon" ? "#ff5d86" : tower.type === "slow" ? "#9be7ff" : "#d8b8ff";
+            ctx.lineWidth = 3;
+            ctx.beginPath(); ctx.arc(tower.x, tower.y, 11, 0, Math.PI * 2); ctx.stroke();
+        }
+        if (tower.type === "ballista" || tower.type === "pierce") {
+            ctx.strokeStyle = "rgba(255,246,190,0.95)";
+            ctx.lineWidth = 4;
+            ctx.beginPath(); ctx.moveTo(tower.x - 12, tower.y + 12); ctx.lineTo(tower.x + 12, tower.y - 12); ctx.stroke();
+        }
 
         if (tower.type === "spear") {
             const dir = getDirectionVector(tower.rotation || 0);
@@ -8822,6 +12753,11 @@ function drawTowers() {
             ctx.stroke();
         }
 
+        const liveTowerBuffs = getBufferEffectsForTarget(tower, "tower");
+        if (liveTowerBuffs.length) {
+            drawBufferBuffParticlesAround(tower.x, tower.y, 31, liveTowerBuffs[0].color || "#73ff9f", Number(tower.id) || tower.x + tower.y);
+        }
+
         const hpPct = Math.max(0, Math.min(1, (tower.hp || tower.maxHp || 1) / Math.max(1, tower.maxHp || 1)));
         ctx.fillStyle = "rgba(0,0,0,0.72)";
         ctx.fillRect(tower.x - 20, tower.y + 23, 40, 5);
@@ -8846,12 +12782,14 @@ function drawTowers() {
 
 function drawSlowZones() {
     poisonZones.forEach(zone => {
-        ctx.fillStyle = "rgba(140, 255, 74, 0.13)";
+        const isAcid = zone.evolutionId === "poison_acid";
+        const isPlague = zone.evolutionId === "poison_plague";
+        ctx.fillStyle = isAcid ? "rgba(69, 200, 91, 0.15)" : isPlague ? "rgba(103, 255, 122, 0.15)" : "rgba(140, 255, 74, 0.13)";
         ctx.beginPath();
         ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2);
         ctx.fill();
 
-        ctx.strokeStyle = "rgba(140, 255, 74, 0.42)";
+        ctx.strokeStyle = isAcid ? "rgba(45, 170, 70, 0.54)" : isPlague ? "rgba(103, 255, 122, 0.52)" : "rgba(140, 255, 74, 0.42)";
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2);
@@ -8901,6 +12839,50 @@ function drawTitanShards() {
     });
 }
 
+
+function drawCores() {
+    (cores || []).forEach(core => {
+        if (!core) return;
+        const def = getCoreDefinition(core.type) || core;
+        const pulse = 0.5 + Math.sin(getGameTime() / 420 + (core.id || 0)) * 0.5;
+        ctx.save();
+        if (!def.global) {
+            ctx.fillStyle = `rgba(115,255,159,${0.035 + pulse * 0.025})`;
+            ctx.beginPath();
+            ctx.arc(core.x, core.y, core.effectRadius || CORE_EFFECT_RADIUS, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = "rgba(255,255,255,0.12)";
+            ctx.setLineDash([8, 12]);
+            ctx.beginPath();
+            ctx.arc(core.x, core.y, core.effectRadius || CORE_EFFECT_RADIUS, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+        ctx.shadowColor = def.color || core.color || "#b78cff";
+        ctx.shadowBlur = 18 + pulse * 12;
+        ctx.fillStyle = "rgba(12,12,18,0.94)";
+        ctx.beginPath();
+        ctx.arc(core.x, core.y, CORE_RADIUS, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = def.color || core.color || "#b78cff";
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(core.x, core.y, CORE_RADIUS - 2, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = def.color || core.color || "#b78cff";
+        ctx.font = "bold 22px Arial";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(def.label || core.label || "N", core.x, core.y + 1);
+        ctx.font = "bold 11px Arial";
+        ctx.fillStyle = "rgba(255,255,255,0.88)";
+        ctx.fillText(def.name || core.name || "Núcleo", core.x, core.y + CORE_RADIUS + 16);
+        ctx.restore();
+        ctx.textAlign = "left";
+        ctx.textBaseline = "alphabetic";
+    });
+}
+
 function drawMines() {
     (mines || []).forEach(mine => {
         if (!mine || mine.hp <= 0) return;
@@ -8922,6 +12904,10 @@ function drawMines() {
         ctx.arc(mine.x, mine.y, radius, 0, Math.PI * 2);
         ctx.stroke();
         ctx.restore();
+
+        if (getCoreBuffsForTarget(mine, "mine").length) {
+            drawCoreBuffAuraAround(mine.x, mine.y, radius + 13, Number(mine.id) || mine.x + mine.y, "#ffb84a");
+        }
 
         ctx.fillStyle = "#fff4cc";
         ctx.font = "bold 15px Arial";
@@ -9029,21 +13015,181 @@ function drawTitanShards() {
     });
 }
 
+function drawVisitorStructure(enemy) {
+    if (!enemy || enemy.hp <= 0) return;
+    ctx.save();
+    const pulse = 0.5 + Math.sin(getGameTime() * 0.006 + (enemy.id || 0)) * 0.5;
+    ctx.globalAlpha = enemy.hitFlash > 0 ? 0.96 : 0.88;
+    ctx.shadowColor = enemy.special === "visitor_tower" ? "#8f5bff" : enemy.special === "visitor_mine" ? "#2b0f34" : "rgba(0,0,0,0.8)";
+    ctx.shadowBlur = enemy.special === "visitor_tower" ? 12 + pulse * 7 : enemy.special === "visitor_mine" ? 9 + pulse * 5 : 6;
+
+    if (enemy.special === "visitor_wall" || isVisitorGateStructure(enemy)) {
+        const width = isVisitorGateStructure(enemy) ? 92 : 108;
+        const height = isVisitorGateStructure(enemy) ? 34 : 24;
+        ctx.translate(enemy.x, enemy.y);
+        ctx.rotate(enemy.orientation || 0);
+        ctx.fillStyle = enemy.color || "#2b2d38";
+        ctx.fillRect(-width / 2, -height / 2, width, height);
+        ctx.strokeStyle = isVisitorGateStructure(enemy) ? "#73ff9f" : "#8f5bff";
+        ctx.lineWidth = isVisitorGateStructure(enemy) ? 3 : 2;
+        ctx.strokeRect(-width / 2, -height / 2, width, height);
+        if (isVisitorGateStructure(enemy)) {
+            if (enemy.isOpen) {
+                ctx.globalAlpha *= 0.42;
+                ctx.strokeStyle = "#73ff9f";
+                ctx.strokeRect(-width / 2 - 4, -height / 2 - 4, width + 8, height + 8);
+            }
+            ctx.fillStyle = "rgba(255,255,255,0.82)";
+            ctx.font = "bold 10px Arial";
+            ctx.textAlign = "center";
+            ctx.fillText(enemy.isOpen ? "PASO" : "COMPUERTA", 0, 4);
+        }
+        ctx.rotate(-(enemy.orientation || 0));
+        ctx.translate(-enemy.x, -enemy.y);
+    } else {
+        ctx.fillStyle = enemy.color || "#37214f";
+        ctx.beginPath();
+        ctx.arc(enemy.x, enemy.y, enemy.radius || 24, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = enemy.special === "visitor_mine" ? "#050505" : "#d8b8ff";
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        ctx.fillStyle = "#11131c";
+        ctx.beginPath();
+        ctx.arc(enemy.x, enemy.y, Math.max(6, (enemy.radius || 24) * 0.38), 0, Math.PI * 2);
+        ctx.fill();
+        if (enemy.special === "visitor_mine") {
+            ctx.fillStyle = "#4a235a";
+            ctx.font = "bold 12px Arial";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText("$", enemy.x, enemy.y + 1);
+        }
+    }
+
+    ctx.shadowBlur = 0;
+    const hpPct = Math.max(0, Math.min(1, enemy.hp / Math.max(1, enemy.maxHp || enemy.hp)));
+    const barW = enemy.special === "visitor_tower" || enemy.special === "visitor_mine" ? 50 : 58;
+    const barY = enemy.y - (enemy.radius || 24) - 18;
+    ctx.fillStyle = "rgba(0,0,0,0.78)";
+    ctx.fillRect(enemy.x - barW / 2, barY, barW, 5);
+    ctx.fillStyle = "#b78cff";
+    ctx.fillRect(enemy.x - barW / 2, barY, barW * hpPct, 5);
+    ctx.restore();
+}
+
+function drawBossEnemyVisual(enemy, radius) {
+    if (!enemy || (!enemy.isBoss && enemy.special !== "doombringer" && enemy.bossVariant !== "titan")) return false;
+    const isTitan = enemy.special === "doombringer" || enemy.bossVariant === "titan" || /tit[aá]n|titan/i.test(enemy.name || enemy.deathName || "");
+    const time = getGameTime();
+    const pulse = 0.5 + Math.sin(time * 0.006 + (enemy.id || 0)) * 0.5;
+    const core = isTitan ? "#151019" : (enemy.color || "#ff7b00");
+    const rim = isTitan ? "#b64dff" : "#ffcf6b";
+    const eye = isTitan ? "#f1d7ff" : "#fff0b0";
+
+    ctx.save();
+    ctx.shadowColor = rim;
+    ctx.shadowBlur = isTitan ? 18 : 14;
+
+    ctx.fillStyle = core;
+    ctx.beginPath();
+    ctx.arc(enemy.x, enemy.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = rim;
+    ctx.lineWidth = isTitan ? 4 : 3;
+    ctx.beginPath();
+    ctx.arc(enemy.x, enemy.y, radius + 3 + pulse * 3, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Silueta un poco más amenazante que una pelota: corona/hombros/ojos.
+    ctx.fillStyle = isTitan ? "#07050a" : "rgba(80,35,10,0.92)";
+    ctx.beginPath();
+    ctx.moveTo(enemy.x - radius * 0.72, enemy.y - radius * 0.18);
+    ctx.lineTo(enemy.x - radius * 0.40, enemy.y - radius * 0.72);
+    ctx.lineTo(enemy.x, enemy.y - radius * 0.36);
+    ctx.lineTo(enemy.x + radius * 0.40, enemy.y - radius * 0.72);
+    ctx.lineTo(enemy.x + radius * 0.72, enemy.y - radius * 0.18);
+    ctx.lineTo(enemy.x + radius * 0.44, enemy.y + radius * 0.62);
+    ctx.lineTo(enemy.x - radius * 0.44, enemy.y + radius * 0.62);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = eye;
+    ctx.beginPath();
+    ctx.arc(enemy.x - radius * 0.22, enemy.y - radius * 0.10, Math.max(2.2, radius * 0.095), 0, Math.PI * 2);
+    ctx.arc(enemy.x + radius * 0.22, enemy.y - radius * 0.10, Math.max(2.2, radius * 0.095), 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = isTitan ? "rgba(210,150,255,0.55)" : "rgba(255,230,150,0.48)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(enemy.x - radius * 0.42, enemy.y + radius * 0.28);
+    ctx.lineTo(enemy.x - radius * 0.14, enemy.y + radius * 0.44);
+    ctx.lineTo(enemy.x + radius * 0.14, enemy.y + radius * 0.44);
+    ctx.lineTo(enemy.x + radius * 0.42, enemy.y + radius * 0.28);
+    ctx.stroke();
+
+    ctx.restore();
+    return true;
+}
+
 function drawEnemies() {
     enemies.forEach(enemy => {
         let radius = enemy.radius;
-        if (enemy.untargetable && enemy.special !== "visitor") ctx.globalAlpha = 0.28;
+        if (enemy.untargetable && enemy.special !== "visitor") ctx.globalAlpha = player?.visitorEye ? 0.52 : 0.28;
+
+        if (player?.visitorEye && enemy.special && enemy.special !== "visitor" && !isVisitorStructure(enemy)) {
+            ctx.save();
+            const pulse = 0.5 + Math.sin(getGameTime() * 0.012 + (enemy.id || 0)) * 0.5;
+            const markerColor = enemy.isBoss ? "#ff55ff" : "#ffe28a";
+            const markerY = enemy.y - (enemy.radius || 14) - 17 - pulse * 2;
+
+            // Ojo del Visitante: indicador discreto, sin círculo alrededor del enemigo.
+            // Antes el aro grande era visualmente molesto cuando había muchos especiales.
+            ctx.globalAlpha = enemy.special === "invisible" && enemy.untargetable ? 0.78 : 0.92;
+            ctx.fillStyle = markerColor;
+            ctx.strokeStyle = "rgba(0,0,0,0.82)";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(enemy.x, markerY - 6);
+            ctx.lineTo(enemy.x + 5, markerY);
+            ctx.lineTo(enemy.x, markerY + 6);
+            ctx.lineTo(enemy.x - 5, markerY);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.globalAlpha = 0.65;
+            ctx.strokeStyle = markerColor;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(enemy.x - Math.max(7, (enemy.radius || 14) * 0.55), enemy.y + (enemy.radius || 14) + 5);
+            ctx.lineTo(enemy.x + Math.max(7, (enemy.radius || 14) * 0.55), enemy.y + (enemy.radius || 14) + 5);
+            ctx.stroke();
+            ctx.restore();
+        }
 
         if (enemy.hitFlash > 0) {
             radius += 3;
         }
 
+        if (isVisitorStructure(enemy)) {
+            drawVisitorStructure(enemy);
+            ctx.globalAlpha = 1;
+            return;
+        }
+
         const spriteDrawn = enemy.special === "visitor" ? drawVisitorSprite(enemy) : drawEnemySprite(enemy, radius);
         if (!spriteDrawn) {
-            ctx.fillStyle = enemy.hitFlash > 0 ? "white" : enemy.color;
-            ctx.beginPath();
-            ctx.arc(enemy.x, enemy.y, radius, 0, Math.PI * 2);
-            ctx.fill();
+            const bossDrawn = drawBossEnemyVisual(enemy, radius);
+            if (!bossDrawn) {
+                ctx.fillStyle = enemy.hitFlash > 0 ? "white" : getEnemyDisplayColor(enemy);
+                ctx.beginPath();
+                ctx.arc(enemy.x, enemy.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
         }
 
         if (enemy.special === "healer") {
@@ -9371,8 +13517,8 @@ function getBarricadeStatusText() {
     if (!active.length) return "Sin barricadas";
 
     return active.map(b => {
-        const kindLabel = b.kind === "regen" ? "Regen" : b.kind === "explosive" ? "Explosiva" : b.kind === "thorns" ? "Espinas" : "Estándar";
-        const tierLabel = b.kind === "standard" ? ` ${barricadeTiers[Math.max(0, b.tier)]?.name || "Madera"}` : "";
+        const kindLabel = b.kind === "regen" ? "Regen" : b.kind === "explosive" ? "Explosiva" : b.kind === "thorns" ? "Espinas" : b.kind === "door" ? "Puerta" : "Estándar";
+        const tierLabel = barricadeUsesTierProgression(b.kind) ? ` ${barricadeTiers[Math.max(0, b.tier)]?.name || "Madera"}` : "";
         const levelLabel = b.level > 0 ? ` +${b.level}` : "";
         return `${b.name}: ${kindLabel}${tierLabel}${levelLabel}`;
     }).join(" · ");
@@ -9812,6 +13958,25 @@ function updateTowerShopVisibility() {
     if (mineGoldCostText) { if (mineAtLimit) { mineGoldCostText.textContent = "MAX"; mineGoldCostText.classList.remove("freeCost"); } else setCostText(mineGoldCostText, minePrice, freeMine); }
     if (mineLimitText) mineLimitText.textContent = `${currentMineCount}/${MINE_LIMIT} minas · +${formatMoney(getMineIncomeForWave())} c/u próxima oleada`;
 
+
+    Object.entries(coreDefinitions).forEach(([type, def]) => {
+        const btn = coreButtons?.[type];
+        const costText = coreCostTexts?.[type];
+        const owned = isCoreOwned(type);
+        const price = owned ? 0 : getEffectiveCost(CORE_COST, "cores");
+        if (btn) {
+            const disabled = !buildPhaseActive || !!pendingCorePlacement || owned;
+            const title = !buildPhaseActive ? "Solo durante el descanso entre oleadas." : owned ? "Ya compraste este tipo de núcleo en esta run." : pendingCorePlacement ? "Ya estás colocando un núcleo." : `${def.desc} Debe estar a ${CORE_MIN_DISTANCE}px de otros núcleos.`;
+            setShopButtonAffordability(btn, price, disabled, title);
+            btn.classList.toggle("ownedCore", owned);
+        }
+        if (costText) {
+            if (owned) { costText.textContent = "ÚNICO"; costText.classList.remove("freeCost"); }
+            else setCostText(costText, price, false);
+        }
+    });
+    if (coreLimitText) coreLimitText.textContent = `${(cores || []).length}/${Object.keys(coreDefinitions).length} núcleos · distancia mínima ${CORE_MIN_DISTANCE}px`;
+
     if (repeatWaveBtn) {
         const targetWave = getRepeatTargetWave();
         const repeats = getRepeatCountForWave(targetWave);
@@ -9852,7 +14017,9 @@ function renderTowerSlotsPanel() {
             spent: Math.round(tower.spent || 0),
             upgradeCost: tower.upgradeCost,
             buffDamage: tower.buffDamage,
-            buffSpeed: tower.buffSpeed
+            buffSpeed: tower.buffSpeed,
+            evolutionId: tower.evolutionId,
+            evolutionChoice: getTowerEvolutionChoice(getTowerBaseKey(tower))
         }))
     });
 
@@ -9869,7 +14036,7 @@ function renderTowerSlotsPanel() {
         const buffText = tower.type === "buffer" ? `<br><small>Buff: +${Math.round((tower.buffDamage || 0) * 100)}% daño / +${Math.round((tower.buffSpeed || 0) * 100)}% velocidad</small>` : "";
         return `
             <div class="towerSlotCard">
-                <strong>Slot ${index + 1}: ${tower.name}</strong><br>
+                <strong>Slot ${index + 1}: ${tower.name}</strong>${tower.evolutionId ? ` <em class="towerEvolutionBadge">Evo</em>` : ""}<br>
                 <small>Nivel ${tower.level} · Pos: ${Math.round(tower.x)},${Math.round(tower.y)} · Gastado: ${formatMoney(tower.spent || 0)} · Venta: ${formatMoney(refund)}</small>${buffText}<br>
                 <button type="button" data-tower-action="upgrade" data-index="${index}" class="${coins < tower.upgradeCost ? "cantAfford" : ""}" title="${coins < tower.upgradeCost ? `Faltan ${formatMissingMoney(tower.upgradeCost - coins)} monedas` : ""}" ${coins < tower.upgradeCost ? "disabled" : ""}>Mejorar (${formatMoney(tower.upgradeCost)})</button>
                 <button type="button" data-tower-action="move" data-index="${index}">Mover</button>
@@ -9879,55 +14046,60 @@ function renderTowerSlotsPanel() {
 }
 
 function updateAbilityShopVisibility() {
-    setShopButtonAffordability(buyBombBtn, abilities.bomb.cost, abilities.bomb.owned, abilities.bomb.owned ? "Ya compraste esta habilidad" : "");
-    setShopButtonAffordability(buyFreezeBtn, abilities.freeze.cost, abilities.freeze.owned, abilities.freeze.owned ? "Ya compraste esta habilidad" : "");
-    setShopButtonAffordability(buyTsunamiBtn, abilities.tsunami.cost, abilities.tsunami.owned, abilities.tsunami.owned ? "Ya compraste esta habilidad" : "");
-    setShopButtonAffordability(buyLightningBtn, abilities.lightning.cost, abilities.lightning.owned, abilities.lightning.owned ? "Ya compraste esta habilidad" : "");
-    setShopButtonAffordability(buyMeteorBtn, abilities.meteor.cost, abilities.meteor.owned, abilities.meteor.owned ? "Ya compraste esta habilidad" : "");
-    setShopButtonAffordability(buyEclipseBtn, abilities.eclipse.cost, abilities.eclipse.owned, abilities.eclipse.owned ? "Ya compraste esta habilidad" : "");
-    if (buyBlinkBtn && abilities.blink) setShopButtonAffordability(buyBlinkBtn, abilities.blink.cost, abilities.blink.owned, abilities.blink.owned ? "Ya compraste esta habilidad" : "");
-
-    if (abilities.bomb.owned) buyBombBtn.innerHTML = `Bomba comprada<br><small>${abilities.bomb.key} para usar</small>`;
-    if (abilities.freeze.owned) buyFreezeBtn.innerHTML = `Congelar comprado<br><small>${abilities.freeze.key} para usar</small>`;
-    if (abilities.tsunami.owned) buyTsunamiBtn.innerHTML = `Tsunami comprado<br><small>${abilities.tsunami.key} para usar</small>`;
-    if (abilities.lightning.owned) buyLightningBtn.innerHTML = `Rayo comprado<br><small>${abilities.lightning.key} para usar</small>`;
-    if (abilities.meteor.owned) buyMeteorBtn.innerHTML = `Meteorito comprado<br><small>${abilities.meteor.key} para usar</small>`;
-    if (buyEclipseBtn && abilities.eclipse.owned) buyEclipseBtn.innerHTML = `Eclipse comprado<br><small>${abilities.eclipse.key} para usar</small>`;
-    if (buyBlinkBtn && abilities.blink?.owned) buyBlinkBtn.innerHTML = `Blink comprado<br><small>${abilities.blink.key} para usar</small>`;
+    const shopButtons = [
+        [buyBombBtn, "bomb"], [buyFreezeBtn, "freeze"], [buyTsunamiBtn, "tsunami"], [buyLightningBtn, "lightning"],
+        [buyMeteorBtn, "meteor"], [buyEclipseBtn, "eclipse"], [buyBlinkBtn, "blink"]
+    ];
+    shopButtons.forEach(([btn, id]) => {
+        if (!btn || !abilities?.[id]) return;
+        const ability = abilities[id];
+        setShopButtonAffordability(btn, ability.cost, ability.owned, ability.owned ? "Ya aprendiste esta habilidad. Usá el panel de slots para moverla." : "");
+        const label = ability.owned ? `${ability.name} aprendida` : `Comprar ${ability.name}`;
+        btn.innerHTML = `${label}<br><small>${ability.key || "—"} · ${escapeHtml(ability.desc || "Habilidad")}</small><br><span>${ability.owned ? "Aprendida" : formatMoney(ability.cost)}</span>${ability.owned ? "" : '<span class="currencyLabel"> monedas</span>'}`;
+    });
+    renderAbilityLoadoutManager();
 }
 
 function updateAbilityBar() {
     const now = getGameTime();
-
-    Object.keys(abilities).forEach(id => {
-        const ability = abilities[id];
-        const slot = abilitySlots[id];
+    ensureAbilityLoadout();
+    abilitySlotElements.forEach((slot, index) => {
         if (!slot) return;
-
+        const id = abilityLoadout[index];
+        const ability = id ? abilities[id] : null;
         slot.classList.remove("locked", "ready", "cooldown");
-
-        if (!ability.owned) {
+        const keyLabel = getAbilitySlotKeyLabel(index);
+        if (!ability || !ability.owned) {
             slot.classList.add("locked");
-            slot.textContent = `${ability.key} · ${ability.name} bloqueada`;
+            slot.textContent = `${keyLabel} · Vacío`;
+            slot.title = "Slot vacío. Equipá una habilidad desde la tienda.";
             return;
         }
-
-        const remaining = ability.cooldown - (now - ability.lastUsed);
-
+        const cooldown = ability.cooldown * (player?.abilityCooldownMultiplier || 1) * getCoreAbilityCooldownMultiplier() * (activeWaveEvent?.id === "mana_calm" ? 1.35 : 1);
+        const remaining = cooldown - (now - ability.lastUsed);
         if (remaining > 0) {
             slot.classList.add("cooldown");
-            slot.textContent = `${ability.key} · ${ability.name} ${Math.ceil(remaining / 1000)}s`;
+            slot.textContent = `${keyLabel} · ${ability.name} ${Math.ceil(remaining / 1000)}s`;
         } else {
             slot.classList.add("ready");
-            slot.textContent = `${ability.key} · ${ability.name} lista`;
+            slot.textContent = `${keyLabel} · ${ability.name}`;
         }
+        slot.title = ability.desc || ability.name;
     });
 }
 
+function getCurrentWorldFloorColor() {
+    // Color de piso por evento. Si no hay evento activo o no estamos en oleada, vuelve al default.
+    if (!waveInProgress || !activeWaveEvent) return "#263c26";
+    if (activeWaveEvent.id === "blood_rain") return "#3b1717";       // Lluvia Carmesí: sangre oscura.
+    if (activeWaveEvent.id === "mana_calm") return "#101f3b";        // Calma de Maná: azul marino.
+    if (activeWaveEvent.id === "titan_hunger") return "#202b34";     // Hambre del Titán: azul grisáceo oscuro.
+    return "#263c26";
+}
+
 function drawWorldGrid() {
-    // Fondo limpio: sin tiles, sin grilla y sin piso especial.
-    // Mantenerlo sólido ayuda a leer mejor las barricadas y las formas de la base.
-    ctx.fillStyle = "#263c26";
+    // Fondo limpio: sin tiles, sin grilla. Los eventos importantes pueden teñir el piso.
+    ctx.fillStyle = getCurrentWorldFloorColor();
     ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
 }
 
@@ -9953,64 +14125,120 @@ function drawBossSpawnZone() {
 }
 
 function drawMinimap() {
-    const scale = visualSettings.minimapScale || 0.82;
-    const w = Math.round(150 * scale);
-    const h = Math.round(w * (WORLD_HEIGHT / WORLD_WIDTH));
-    const x = GAME_WIDTH - w - 14;
-    // Va justo arriba del inventario/barra inferior para que no se pisen.
-    const bottomOffset = getBottomUiGameHeight();
-    const y = Math.max(54, GAME_HEIGHT - h - bottomOffset - 12);
+    const { x, y, w, h, sx, sy } = getMinimapBounds();
     ctx.save();
     ctx.setTransform(canvas.width / GAME_WIDTH, 0, 0, canvas.height / GAME_HEIGHT, 0, 0);
-    const blindMinimap = activeWaveEvent?.id === "blindness" && waveInProgress;
 
-    // Durante Ceguera del Abismo, el minimapa queda completamente inutilizable:
-    // nada de terreno, cámara, jugador, estructuras ni enemigos. Solo oscuridad y una duda enorme.
-    if (blindMinimap) {
-        ctx.fillStyle = "rgba(0,0,0,0.96)";
-        ctx.fillRect(x, y, w, h);
-        ctx.strokeStyle = "rgba(255,77,77,0.72)";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(x, y, w, h);
-
-        ctx.save();
-        ctx.shadowColor = "rgba(255,77,77,0.95)";
-        ctx.shadowBlur = 14;
-        ctx.font = `900 ${Math.max(34, Math.round(54 * scale))}px Arial`;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillStyle = "#ff4d4d";
-        ctx.fillText("?", x + w / 2, y + h / 2 + 1);
-        ctx.restore();
-
-        ctx.restore();
-        return;
-    }
-
-    ctx.fillStyle = "rgba(0,0,0,0.72)";
+    // Minimap limpio: fondo plano, sin tiles/cuadraditos ni fog of war.
+    ctx.fillStyle = "rgba(0,0,0,0.88)";
     ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = "rgba(255,255,255,0.45)";
+    ctx.fillStyle = "rgba(46,59,46,0.78)";
+    ctx.fillRect(x + 1, y + 1, Math.max(0, w - 2), Math.max(0, h - 2));
+
+    ctx.strokeStyle = minimapInspectActive ? "rgba(115,255,159,0.9)" : "rgba(255,255,255,0.45)";
+    ctx.lineWidth = minimapInspectActive ? 2 : 1;
     ctx.strokeRect(x, y, w, h);
-    const sx = w / WORLD_WIDTH;
-    const sy = h / WORLD_HEIGHT;
-    const bz = getBossSpawnRect(0);
-    ctx.fillStyle = "rgba(150,150,150,0.55)";
-    ctx.fillRect(x + bz.left * sx, y + bz.top * sy, (bz.right - bz.left) * sx, (bz.bottom - bz.top) * sy);
+
+    const mapX = wx => x + wx * sx;
+    const mapY = wy => y + wy * sy;
+
     const dot = (wx, wy, color, r = 2) => {
         ctx.fillStyle = color;
         ctx.beginPath();
-        ctx.arc(x + wx * sx, y + wy * sy, r, 0, Math.PI * 2);
+        ctx.arc(mapX(wx), mapY(wy), r, 0, Math.PI * 2);
         ctx.fill();
     };
-    if (player) dot(player.x, player.y, "#66d9ff", 4);
-    enemies.forEach(e => dot(e.x, e.y, e.special === "visitor" ? "#ffffff" : (e.isBoss ? "#ff55ff" : "#ff3333"), e.special === "visitor" ? 4.2 : (e.isBoss ? 3.8 : 2)));
-    towers.forEach(t => dot(t.x, t.y, "#ffffff", 1.7));
-    (traps || []).forEach(trap => dot(trap.x, trap.y, trap.type === "snare" ? "#9be7ff" : "#ff6b6b", 1.4));
-    (mines || []).forEach(mine => { if (mine.hp > 0) dot(mine.x, mine.y, "#ffd76a", 1.7); });
+
+    const line = (x1, y1, x2, y2, color, width = 1.2) => {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.beginPath();
+        ctx.moveTo(mapX(x1), mapY(y1));
+        ctx.lineTo(mapX(x2), mapY(y2));
+        ctx.stroke();
+    };
+
+    // Construcciones propias: el jugador y toda su base van en blanco.
+    const playerMapColor = "#ffffff";
+    if (baseCore && basePlaced && baseCore.hp > 0) dot(baseCore.x, baseCore.y, playerMapColor, 3.8);
+    (barricades || []).forEach(b => {
+        if (!b || !b.active || b.hp <= 0) return;
+        const seg = getBarricadeSegment(b);
+        line(seg.x1, seg.y1, seg.x2, seg.y2, playerMapColor, b.kind === "door" ? 1.8 : 1.35);
+    });
+    (towers || []).forEach(t => {
+        if (!t || !t.owned || t.hp <= 0) return;
+        dot(t.x, t.y, playerMapColor, 2.25);
+    });
+    (traps || []).forEach(trap => dot(trap.x, trap.y, playerMapColor, 1.55));
+    (mines || []).forEach(mine => { if (mine.hp > 0) dot(mine.x, mine.y, playerMapColor, 1.85); });
+    (cores || []).forEach(core => { if (core) dot(core.x, core.y, core.color || "#b78cff", 3.25); });
+
+    // Base del Visitante: negra, para distinguirla como facción enemiga propia.
+    const visitorBaseMapColor = "#050505";
+    getVisitorStructures().forEach(s => {
+        if (s.visitorStructureType === "tower" || s.visitorStructureType === "mine") {
+            dot(s.x, s.y, visitorBaseMapColor, s.visitorStructureType === "mine" ? 2.1 : 2.7);
+        } else {
+            const shape = getVisitorStructureRect(s);
+            if (shape && shape.type === "rect") {
+                const halfW = (shape.width || 70) / 2;
+                const ca = Math.cos(shape.angle || 0);
+                const sa = Math.sin(shape.angle || 0);
+                line(s.x - ca * halfW, s.y - sa * halfW, s.x + ca * halfW, s.y + sa * halfW, visitorBaseMapColor, 1.55);
+            } else {
+                dot(s.x, s.y, visitorBaseMapColor, 2.2);
+            }
+        }
+    });
+
+    const skull = (wx, wy, color, size = 8) => {
+        // Calavera dibujada a mano: la emoji quedaba muy gruesa en tamaños chicos.
+        const mx = mapX(wx);
+        const my = mapY(wy);
+        const r = Math.max(3.2, size * 0.38);
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.strokeStyle = color === "#000000" ? "rgba(255,255,255,0.72)" : "rgba(0,0,0,0.72)";
+        ctx.lineWidth = 0.75;
+        ctx.beginPath();
+        ctx.arc(mx, my - r * 0.18, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = color === "#000000" ? "rgba(255,255,255,0.9)" : "rgba(0,0,0,0.88)";
+        ctx.beginPath();
+        ctx.arc(mx - r * 0.35, my - r * 0.22, Math.max(0.8, r * 0.18), 0, Math.PI * 2);
+        ctx.arc(mx + r * 0.35, my - r * 0.22, Math.max(0.8, r * 0.18), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillRect(mx - r * 0.18, my + r * 0.12, r * 0.36, r * 0.16);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(mx - r * 0.46, my + r * 0.82);
+        ctx.lineTo(mx + r * 0.46, my + r * 0.82);
+        ctx.moveTo(mx - r * 0.24, my + r * 1.04);
+        ctx.lineTo(mx + r * 0.24, my + r * 1.04);
+        ctx.stroke();
+        ctx.restore();
+    };
+
+    // Enemigos: normales rojos; jefes, titanes y visitante con calavera.
+    (enemies || []).forEach(e => {
+        if (!e || e.hp <= 0 || isVisitorStructure(e)) return;
+        if (e.special === "visitor") { skull(e.x, e.y, "#000000", 10); return; }
+        if (e.special === "doombringer" || e.bossVariant === "titan" || /tit[aá]n|titan/i.test(e.name || e.deathName || "")) { skull(e.x, e.y, "#b64dff", 10); return; }
+        if (e.isBoss) { skull(e.x, e.y, "#ffb000", 10); return; }
+        dot(e.x, e.y, "#ff2020", 2.05);
+    });
+
     (titanShards || []).forEach(shard => dot(shard.x, shard.y, "#b64dff", 2.2));
-    barricades.forEach(b => { if (b.active && b.hp > 0) dot(b.x, b.y, "#aaaaaa", 1.6); });
-    ctx.strokeStyle = "rgba(115,255,159,0.7)";
+    if (player) dot(player.x, player.y, playerMapColor, 4.2);
+
+    // Rectángulo de cámara actual.
+    ctx.strokeStyle = "rgba(115,255,159,0.8)";
+    ctx.lineWidth = 1.2;
     ctx.strokeRect(x + camera.x * sx, y + camera.y * sy, getCameraVisibleWidth() * sx, getCameraVisibleHeight() * sy);
+
     ctx.restore();
 }
 
@@ -10023,11 +14251,13 @@ function draw() {
     const zoom = getCameraZoom();
     ctx.scale(zoom, zoom);
     ctx.translate(-camera.x, -camera.y);
+    updateMapExploration();
     drawWorldGrid();
     drawBossSpawnZone();
     drawPath();
     drawBase();
     drawBarricade();
+    drawCores();
     drawMines();
     drawTraps();
     drawTitanShards();
@@ -10039,6 +14269,8 @@ function draw() {
     drawProjectiles();
     drawBossProjectiles();
     drawVisualEffects();
+    drawFogOfWarOverlay();
+    drawAreaSelectionDrag();
     ctx.restore();
 
     drawFlyingCoins();
@@ -10048,20 +14280,7 @@ function draw() {
 
 
 function drawWaveEventOverlay() {
-    if (activeWaveEvent?.id === "blindness" && waveInProgress) {
-        const center = player ? getWorldToScreenPoint(player.x, player.y) : { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 };
-        const innerRadius = 118;
-        const softRadius = 238;
-        const grd = ctx.createRadialGradient(center.x, center.y, innerRadius, center.x, center.y, softRadius);
-        grd.addColorStop(0, "rgba(0,0,0,0)");
-        grd.addColorStop(0.46, "rgba(0,0,0,0.18)");
-        grd.addColorStop(0.78, "rgba(0,0,0,0.82)");
-        grd.addColorStop(1, "rgba(0,0,0,0.96)");
-        ctx.save();
-        ctx.fillStyle = grd;
-        ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-        ctx.restore();
-    }
+    // Ceguera ya no tapa el mapa/cámara porque no usamos fog of war.
 }
 function gameLoop() {
     const realNow = performance.now();
@@ -10125,6 +14344,7 @@ function gameLoop() {
     updateVisualEffects();
     updateFlyingCoins();
     updateHud();
+    updateVisitorHud();
     autoSaveRun();
     draw();
 
@@ -10268,6 +14488,61 @@ function spawnEnemyFromConsole(name) {
     }
 }
 
+
+function addVisitorGoldFromConsole(amountText = "") {
+    const visitor = getLivingVisitor();
+    if (!visitor) {
+        appendConsoleLog("No hay un Visitante vivo ahora. Usá: spawn visitante, y después: visitor add 5000.");
+        return;
+    }
+
+    const rawAmount = String(amountText || "").trim().replace(/[.,]/g, "");
+    const amount = Math.floor(Number(rawAmount));
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+        appendConsoleLog("Uso correcto: visitor add 5000. La cantidad debe ser un número mayor a 0.");
+        return;
+    }
+
+    const currentGold = Math.max(0, Math.floor(Number(visitor.visitorGold) || 0));
+    const safeAmount = Math.min(amount, Math.max(0, Number.MAX_SAFE_INTEGER - currentGold));
+
+    if (safeAmount <= 0) {
+        appendConsoleLog("El Visitante ya tiene demasiado oro. No se agregó nada.");
+        return;
+    }
+
+    disqualifyRunFromLeaderboard("visitor add");
+    visitor.visitorGold = Math.min(Number.MAX_SAFE_INTEGER, currentGold + safeAmount);
+    visitor.nextVisitorBuildAt = Math.min(Number(visitor.nextVisitorBuildAt) || Infinity, getGameTime() + 250);
+    visitor.visitorLastPlan = "Debug: recibió oro";
+
+    appendConsoleLog(`Comando activado: +${formatMoney(safeAmount)} oro para El Visitante. Total: ${formatMoney(Math.floor(visitor.visitorGold || 0))}.`);
+    showVisitorAlert(`El Visitante recibió ${formatMoney(safeAmount)} oro.`);
+    updateVisitorHud();
+    autoSaveRun(true);
+}
+
+function killVisitorFromConsole() {
+    const index = (enemies || []).findIndex(e => e && e.hp > 0 && e.special === "visitor");
+    if (index < 0) {
+        appendConsoleLog("No hay Visitante vivo para eliminar.");
+        return false;
+    }
+
+    disqualifyRunFromLeaderboard("kill visitante");
+    const previousKillSource = runStats ? runStats.lastKillSource : null;
+    if (runStats) runStats.lastKillSource = "debug";
+    killEnemy(index);
+    if (runStats) runStats.lastKillSource = previousKillSource;
+    clearVisitorProjectiles();
+    appendConsoleLog("Comando activado: El Visitante fue eliminado. Esta run no entra al leaderboard normal.");
+    showCenterMessage("VISITANTE ELIMINADO", 900, "visitor");
+    updateHud(true);
+    autoSaveRun(true);
+    return true;
+}
+
 function runConsoleCommand(rawCommand) {
     const command = (rawCommand || "").trim().toLowerCase();
     if (!command) return;
@@ -10347,6 +14622,27 @@ function runConsoleCommand(rawCommand) {
         return;
     }
 
+    if (command === "visitor" || command === "visitante") {
+        appendConsoleLog("Comandos del Visitante: visitor add 5000, kill visitante. También podés usar: spawn visitante.");
+        return;
+    }
+
+    if (command.startsWith("visitor add") || command.startsWith("visitante add")) {
+        const amountText = command.replace(/^(visitor|visitante)\s+add\s*/i, "").trim();
+        addVisitorGoldFromConsole(amountText);
+        return;
+    }
+
+    if (command === "kill visitante" || command === "kill visitor" || command === "killvisitante") {
+        killVisitorFromConsole();
+        return;
+    }
+
+    if (command === "clearlb") {
+        clearLeaderboardFromConsole();
+        return;
+    }
+
     if (command === "add" || command.startsWith("add ")) {
         const parts = command.split(/\s+/);
 
@@ -10386,9 +14682,9 @@ function runConsoleCommand(rawCommand) {
 
         disqualifyRunFromLeaderboard("endwave");
         enemiesSpawned = enemiesToSpawn;
-        enemies = [];
+        enemies = (enemies || []).filter(e => e && e.hp > 0 && (e.special === "visitor" || isVisitorStructure(e)));
         projectiles = [];
-        bossProjectiles = [];
+        bossProjectiles = (bossProjectiles || []).filter(p => p && (p.isVisitorProjectile || p.sourceSpecial === "visitor" || p.sourceSpecial === "visitor_tower"));
         slowZones = [];
         poisonZones = [];
         fireZones = [];
@@ -10442,10 +14738,16 @@ function killAllEnemiesFromConsole() {
     }
 
     let killed = 0;
+    const survivors = [];
 
     while (enemies.length > 0) {
         const enemy = enemies.pop();
         if (!enemy) continue;
+
+        if (enemy.special === "visitor" || isVisitorStructure(enemy)) {
+            survivors.push(enemy);
+            continue;
+        }
 
         const goldReward = getGoldAmount(enemy.reward || 0);
         coins += goldReward;
@@ -10467,7 +14769,8 @@ function killAllEnemiesFromConsole() {
         killed++;
     }
 
-    if (bossProjectiles) bossProjectiles = [];
+    enemies = survivors.reverse();
+    if (bossProjectiles) bossProjectiles = (bossProjectiles || []).filter(p => p && (p.isVisitorProjectile || p.sourceSpecial === "visitor" || p.sourceSpecial === "visitor_tower"));
     checkWaveComplete();
     return killed;
 }
@@ -10482,7 +14785,7 @@ function resetRunFromConsole() {
     isInMainMenu = false;
     isPaused = false;
 
-    menu.classList.add("hidden");
+    hideMainMenuLayout();
     gameArea.classList.remove("hidden");
     shop.classList.add("hidden");
     waveSummaryPanel.classList.add("hidden");
@@ -10500,7 +14803,19 @@ function jumpToWave(targetWave) {
     currentGoldMultiplier = 1;
     repeatCountsByWave[wave] = repeatCountsByWave[wave] || 0;
 
-    enemies = [];
+    const persistentVisitorForces = (enemies || []).filter(e => e && e.hp > 0 && (e.special === "visitor" || isVisitorStructure(e)));
+    persistentVisitorForces.forEach(e => {
+        if (e.special === "visitor") {
+            e.retreating = false;
+            e.untargetable = false;
+            e.retreatX = null;
+            e.retreatY = null;
+            e.visitorPlanningCenterX = null;
+            e.visitorPlanningCenterY = null;
+            e.lastVisitorShotAt = getGameTime() + 650;
+        }
+    });
+    enemies = persistentVisitorForces;
     projectiles = [];
     bossProjectiles = [];
     slowZones = [];
@@ -10530,7 +14845,7 @@ function jumpToWave(targetWave) {
 
 
 function isInBuildPlacementMode() {
-    return Boolean(pendingBarricadePlacement || pendingTrapPlacement || pendingMinePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null);
+    return Boolean(pendingBarricadePlacement || pendingTrapPlacement || pendingMinePlacement || pendingCorePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null);
 }
 
 
@@ -10555,19 +14870,73 @@ function clearStructureSelection() {
     updateStructurePanel();
 }
 
+function getTowerSelectionBucket(entity) {
+    return `${entity?.type || "tower"}|lvl:${Number(entity?.level) || 1}`;
+}
+
+function getBarricadeSelectionBucket(entity) {
+    return `${entity?.kind || "standard"}|tier:${Number(entity?.tier) || 0}|lvl:${Number(entity?.level) || 0}`;
+}
+
 function selectStructure(type, entity, multiSame = false) {
     if (!entity) { clearStructureSelection(); return; }
     if (type === "tower") {
-        const sourceType = entity.type;
+        const bucket = getTowerSelectionBucket(entity);
         selectedStructureType = "tower";
-        selectedStructureIds = (multiSame ? (towers || []).filter(t => t.owned && t.type === sourceType) : [entity]).map(t => String(t.id));
+        selectedStructureIds = (multiSame ? (towers || []).filter(t => t.owned && getTowerSelectionBucket(t) === bucket) : [entity]).map(t => String(t.id));
     } else {
-        const sourceKind = entity.kind || "standard";
+        const bucket = getBarricadeSelectionBucket(entity);
         selectedStructureType = "barricade";
-        selectedStructureIds = (multiSame ? (barricades || []).filter(b => b.active && b.hp > 0 && (b.kind || "standard") === sourceKind) : [entity]).map(b => String(b.id));
+        selectedStructureIds = (multiSame ? (barricades || []).filter(b => b.active && b.hp > 0 && getBarricadeSelectionBucket(b) === bucket) : [entity]).map(b => String(b.id));
     }
     updateStructurePanel();
 }
+
+function toggleStructureSelection(type, entity) {
+    if (!entity) { clearStructureSelection(); return; }
+
+    const id = String(entity.id);
+    if (selectedStructureType !== type) {
+        selectedStructureType = type;
+        selectedStructureIds = [id];
+        updateStructurePanel();
+        return;
+    }
+
+    if (selectedStructureIds.includes(id)) {
+        selectedStructureIds = selectedStructureIds.filter(selectedId => selectedId !== id);
+    } else {
+        selectedStructureIds.push(id);
+    }
+
+    if (!selectedStructureIds.length) {
+        selectedStructureType = null;
+    }
+
+    updateStructurePanel();
+}
+
+function toggleStructureSelectionGroup(type, entity) {
+    if (!entity) { clearStructureSelection(); return; }
+    const ids = type === "tower"
+        ? (towers || []).filter(t => t.owned && getTowerSelectionBucket(t) === getTowerSelectionBucket(entity)).map(t => String(t.id))
+        : (barricades || []).filter(b => b.active && b.hp > 0 && getBarricadeSelectionBucket(b) === getBarricadeSelectionBucket(entity)).map(b => String(b.id));
+
+    if (selectedStructureType !== type) {
+        selectedStructureType = type;
+        selectedStructureIds = ids;
+        updateStructurePanel();
+        return;
+    }
+
+    const allSelected = ids.every(id => selectedStructureIds.includes(id));
+    if (allSelected) selectedStructureIds = selectedStructureIds.filter(id => !ids.includes(id));
+    else selectedStructureIds = Array.from(new Set(selectedStructureIds.concat(ids)));
+
+    if (!selectedStructureIds.length) selectedStructureType = null;
+    updateStructurePanel();
+}
+
 
 function toggleStructureSelection(type, entity) {
     if (!entity) { clearStructureSelection(); return; }
@@ -10611,38 +14980,95 @@ function findBarricadeAtWorldPoint(x, y) {
     return null;
 }
 
-function handleStructureClickSelection(event) {
-    // Durante una oleada no se pueden seleccionar ni tocar estructuras: evita paneles,
-    // toggles de puertas y clicks accidentales que traban la pelea.
-    if (!buildPhaseActive || waveInProgress) return false;
 
+function getStructuresInWorldRect(rect) {
+    if (!rect) return { type:null, items:[] };
+    const x1 = Math.min(rect.startX, rect.endX), x2 = Math.max(rect.startX, rect.endX);
+    const y1 = Math.min(rect.startY, rect.endY), y2 = Math.max(rect.startY, rect.endY);
+    const towerItems = (towers || []).filter(t => t && t.owned && t.hp > 0 && t.x >= x1 && t.x <= x2 && t.y >= y1 && t.y <= y2);
+    const barricadeItems = (barricades || []).filter(b => {
+        if (!b || !b.active || b.hp <= 0) return false;
+        const seg = getBarricadeSegment(b);
+        return (b.x >= x1 && b.x <= x2 && b.y >= y1 && b.y <= y2) ||
+            (seg.x1 >= x1 && seg.x1 <= x2 && seg.y1 >= y1 && seg.y1 <= y2) ||
+            (seg.x2 >= x1 && seg.x2 <= x2 && seg.y2 >= y1 && seg.y2 <= y2) ||
+            barricadeIntersectsRect(b, { x:x1, y:y1, width:x2-x1, height:y2-y1 }, 0);
+    });
+    if (towerItems.length && (!barricadeItems.length || towerItems.length >= barricadeItems.length)) return { type:"tower", items:towerItems };
+    if (barricadeItems.length) return { type:"barricade", items:barricadeItems };
+    return { type:null, items:[] };
+}
+
+function selectStructuresInArea(rect) {
+    const result = getStructuresInWorldRect(rect);
+    if (!result.items.length) { clearStructureSelection(); return false; }
+    selectedStructureType = result.type;
+    selectedStructureIds = result.items.map(item => String(item.id));
+    updateStructurePanel();
+    showCenterMessage(`${result.items.length} ${result.type === "tower" ? "torres" : "barricadas"} seleccionadas`, 750, "minor");
+    return true;
+}
+
+function drawAreaSelectionDrag() {
+    if (!areaSelectionDrag || !areaSelectionDrag.active) return;
+    const x = Math.min(areaSelectionDrag.startX, areaSelectionDrag.endX);
+    const y = Math.min(areaSelectionDrag.startY, areaSelectionDrag.endY);
+    const w = Math.abs(areaSelectionDrag.endX - areaSelectionDrag.startX);
+    const h = Math.abs(areaSelectionDrag.endY - areaSelectionDrag.startY);
+    ctx.save();
+    ctx.fillStyle = "rgba(115,255,159,0.10)";
+    ctx.strokeStyle = "rgba(115,255,159,0.85)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 5]);
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeRect(x, y, w, h);
+    ctx.restore();
+}
+
+function handleStructureClickSelection(event) {
     const multiSame = event.ctrlKey || event.metaKey;
-    const addSingle = event.shiftKey;
+    const toggleSameGroup = event.shiftKey;
+
+    // Durante oleada solo permitimos abrir/cerrar puertas propias. El resto del panel de construcción
+    // sigue bloqueado para no trabar la pelea.
+    if (!buildPhaseActive || waveInProgress) {
+        if (waveInProgress) {
+            const b = findBarricadeAtWorldPoint(mousePosition.x, mousePosition.y);
+            if (b && b.kind === "door" && !multiSame && !toggleSameGroup) {
+                b.isOpen = !b.isOpen;
+                showCenterMessage(b.isOpen ? "Puerta abierta" : "Puerta cerrada", 650, "minor");
+                updateHud(true);
+                autoSaveRun(true);
+                return true;
+            }
+        }
+        return false;
+    }
 
     const tower = findTowerAtWorldPoint(mousePosition.x, mousePosition.y);
     if (tower) {
-        if (addSingle) {
-            toggleStructureSelection("tower", tower);
-            showCenterMessage(isStructureSelected("tower", tower.id) ? `Agregada ${tower.name}` : `Quitada ${tower.name}`, 650);
+        if (toggleSameGroup) {
+            toggleStructureSelectionGroup("tower", tower);
+            showCenterMessage(`Grupo ${tower.name} (mismo nivel) alternado`, 650, "minor");
         } else {
             selectStructure("tower", tower, multiSame);
-            showCenterMessage(multiSame ? `Seleccionadas torres ${tower.name}` : `${tower.name} seleccionada`, 650);
+            showCenterMessage(multiSame ? `Seleccionadas torres ${tower.name} del mismo nivel` : `${tower.name} seleccionada`, 650, "minor");
         }
         return true;
     }
     const b = findBarricadeAtWorldPoint(mousePosition.x, mousePosition.y);
     if (b) {
         ensureBarricadeEconomy(b);
-        if (b.kind === "door" && !multiSame && !addSingle) {
+        if (b.kind === "door" && !multiSame && !toggleSameGroup) {
             b.isOpen = !b.isOpen;
-            showCenterMessage(b.isOpen ? "Puerta abierta" : "Puerta cerrada", 650);
+            showCenterMessage(b.isOpen ? "Puerta abierta" : "Puerta cerrada", 650, "minor");
         }
-        if (addSingle) {
-            toggleStructureSelection("barricade", b);
-            showCenterMessage(isStructureSelected("barricade", b.id) ? `Agregada ${getBarricadeKindLabel(b.kind)}` : `Quitada ${getBarricadeKindLabel(b.kind)}`, 650);
+        if (toggleSameGroup) {
+            toggleStructureSelectionGroup("barricade", b);
+            showCenterMessage(`Grupo ${getBarricadeKindLabel(b.kind)} (mismo tier/nivel) alternado`, 650, "minor");
         } else {
             selectStructure("barricade", b, multiSame);
-            showCenterMessage(multiSame ? `Seleccionadas barricadas ${getBarricadeKindLabel(b.kind)}` : `${getBarricadeKindLabel(b.kind)} seleccionada`, 650);
+            showCenterMessage(multiSame ? `Seleccionadas barricadas ${getBarricadeKindLabel(b.kind)} del mismo tier` : `${getBarricadeKindLabel(b.kind)} seleccionada`, 650, "minor");
         }
         return true;
     }
@@ -10653,18 +15079,23 @@ function getTowerUpgradePreview(tower) {
     if (!tower) return "";
     ensureTowerEconomy(tower);
     const hp = `HP ${Math.ceil(tower.hp || 0)}/${Math.ceil(tower.maxHp || 0)}`;
-    if (tower.type === "buffer") return `Nivel ${tower.level || 1} · ${hp} · buff ${Math.round((tower.buffDamage || 0) * 100)}% daño / ${Math.round((tower.buffSpeed || 0) * 100)}% vel.`;
-    if (tower.type === "blade") return `Nivel ${tower.level || 1} · ${hp} · daño/tick ${formatCompactNumber(tower.damage || 0, 2)} · área ${Math.round(tower.range || 0)} · tick ${Math.round(tower.fireDelay || 0)}ms`;
-    if (tower.type === "spear") return `Nivel ${tower.level || 1} · ${hp} · mira ${getRotationLabel(tower.rotation || 0)} · daño ${formatCompactNumber(tower.damage || 0, 2)} · alcance ${Math.round(tower.range || 0)}`;
-    if (tower.type === "laser") return `Nivel ${tower.level || 1} · ${hp} · DPS ${formatCompactNumber(tower.damage || 0, 2)} · alcance ${Math.round(tower.range || 0)} · objetivo único`;
-    return `Nivel ${tower.level || 1} · ${hp} · daño ${formatCompactNumber(tower.damage || 0, 2)} · rango ${Math.round(tower.range || 0)} · delay ${Math.round(tower.fireDelay || 0)}ms`;
+    const evoText = tower.evolutionId ? ` · ${tower.evolutionName || "Evolucionada"}` : (getTowerEvolutionChoice(getTowerBaseKey(tower)) && (Number(tower.level)||1) < TOWER_EVOLUTION_LEVEL ? ` · Evoluciona a nivel ${TOWER_EVOLUTION_LEVEL}` : "");
+    if (tower.type === "buffer") {
+        const defenseText = tower.evolutionId === "buffer_sanctuary" ? ` · defensa ${Math.round((tower.sanctuaryDefense || 0.18) * 100)}% · regen ${formatCompactNumber(tower.sanctuaryRegenPerSecond || 0.28, 2)}/s` : "";
+        return `Nivel ${tower.level || 1}${evoText} · ${hp} · buff ${Math.round((tower.buffDamage || 0) * 100)}% daño / ${Math.round((tower.buffSpeed || 0) * 100)}% vel.${defenseText}`;
+    }
+    const buffText = getBufferBuffTextForTarget(tower, "tower") + getCoreBuffTextForTarget(tower, "tower");
+    if (tower.type === "blade") return `Nivel ${tower.level || 1}${evoText} · ${hp} · daño/tick ${formatCompactNumber(tower.damage || 0, 2)} · área ${Math.round(tower.range || 0)} · tick ${Math.round(tower.fireDelay || 0)}ms${buffText}`;
+    if (tower.type === "spear") return `Nivel ${tower.level || 1}${evoText} · ${hp} · mira ${getRotationLabel(tower.rotation || 0)} · daño ${formatCompactNumber(tower.damage || 0, 2)} · alcance ${Math.round(tower.range || 0)}${buffText}`;
+    if (tower.type === "laser") return `Nivel ${tower.level || 1}${evoText} · ${hp} · DPS ${formatCompactNumber(tower.damage || 0, 2)} · alcance ${Math.round(tower.range || 0)} · objetivo único${buffText}`;
+    return `Nivel ${tower.level || 1}${evoText} · ${hp} · daño ${formatCompactNumber(tower.damage || 0, 2)} · rango ${Math.round(tower.range || 0)} · delay ${Math.round(tower.fireDelay || 0)}ms${buffText}`;
 }
 
 function getBarricadeInfoText(b) {
     ensureBarricadeEconomy(b);
     const hp = `${Math.ceil(b.hp || 0)}/${Math.ceil(b.maxHp || 0)}`;
     const level = b.kind === "standard" ? `Tier ${Math.max(0, (b.tier || 0) + 1)} · +${b.level || 0}` : `Nivel ${Math.max(1, (b.level || 0) + 1)}`;
-    return `${getBarricadeKindLabel(b.kind)}${b.kind === "door" ? (b.isOpen ? " abierta" : " cerrada") : ""} · ${level} · HP ${hp}`;
+    return `${getBarricadeKindLabel(b.kind)}${b.kind === "door" ? (b.isOpen ? " abierta" : " cerrada") : ""} · ${level} · HP ${hp}${getBufferBuffTextForTarget(b, "barricade")}${getCoreBuffTextForTarget(b, "barricade")}`;
 }
 
 function updateStructurePanel() {
@@ -10683,14 +15114,17 @@ function updateStructurePanel() {
     if (selectedStructureType === "tower") {
         selected.forEach(ensureTowerEconomy);
         const first = selected[0];
+        const lockedByEvolution = selected.some(isTowerEvolutionLockedAtCap);
         const upgradeTotal = selected.reduce((sum, t) => sum + (Number(t.upgradeCost) || 0), 0);
         const sellTotal = selected.reduce((sum, t) => sum + Math.floor((Number(t.spent) || 0) * TOWER_SELL_REFUND), 0);
         const damaged = selected.filter(t => t.hp < t.maxHp);
         const repairTotal = damaged.reduce((sum, t) => sum + getTowerRepairCost(t), 0);
         structurePanelTitle.textContent = multiple ? `${selected.length} torretas ${first.name}` : first.name;
-        structurePanelInfo.innerHTML = `${multiple ? "Selección múltiple" : getTowerUpgradePreview(first)}<br><small>Ctrl+click selecciona todas las torres iguales · Shift+click agrega/quita una.</small>`;
+        const evolutionHtml = getTowerEvolutionPanelHtmlForSelection(selected);
+        const lockText = lockedByEvolution ? `<br><em class="towerEvolutionLockText">Elegí una evolución para seguir mejorando esta torre.</em>` : "";
+        structurePanelInfo.innerHTML = `${multiple ? "Selección múltiple" : getTowerUpgradePreview(first)}${evolutionHtml ? `<br>${evolutionHtml}` : ""}${lockText}<br><small>Ctrl+click selecciona torres del mismo nivel · Shift+click alterna todo el grupo.</small>`;
         structurePanelActions.innerHTML = `
-            <button type="button" data-structure-action="upgrade" ${coins < upgradeTotal ? "disabled" : ""}>Mejorar ${multiple ? "todas" : ""} (${formatMoney(upgradeTotal)})</button>
+            <button type="button" data-structure-action="upgrade" ${lockedByEvolution || coins < upgradeTotal ? "disabled" : ""}>${lockedByEvolution ? "Evolución requerida" : `Mejorar ${multiple ? "todas" : ""} (${formatMoney(upgradeTotal)})`}</button>
             <button type="button" data-structure-action="repair" ${damaged.length === 0 || coins < repairTotal ? "disabled" : ""}>Reparar ${multiple ? "dañadas" : ""} (${formatMoney(repairTotal)})</button>
             ${!multiple ? `<button type="button" data-structure-action="move">Mover</button>` : ""}
             <button type="button" data-structure-action="rotate">Rotar ${multiple ? "todas" : ""}</button>
@@ -10706,7 +15140,7 @@ function updateStructurePanel() {
     const repairTotal = damaged.reduce((sum, b) => sum + getBarricadeRepairCost(b), 0);
     const sellTotal = selected.reduce((sum, b) => sum + getBarricadeSellRefund(b), 0);
     structurePanelTitle.textContent = multiple ? `${selected.length} barricadas ${getBarricadeKindLabel(first.kind)}` : `Barricada ${getBarricadeKindLabel(first.kind)}`;
-    structurePanelInfo.innerHTML = `${multiple ? "Selección múltiple" : getBarricadeInfoText(first)}<br><small>Ctrl+click selecciona todas las barricadas iguales · Shift+click agrega/quita una.</small>`;
+    structurePanelInfo.innerHTML = `${multiple ? "Selección múltiple" : getBarricadeInfoText(first)}<br><small>Ctrl+click selecciona barricadas del mismo tier/nivel · Shift+click alterna todo el grupo.</small>`;
     structurePanelActions.innerHTML = `
         <button type="button" data-structure-action="upgrade" ${coins < upgradeTotal ? "disabled" : ""}>Mejorar ${multiple ? "todas" : ""} (${formatMoney(upgradeTotal)})</button>
         <button type="button" data-structure-action="repair" ${damaged.length === 0 || coins < repairTotal ? "disabled" : ""}>Reparar ${multiple ? "dañadas" : ""} (${formatMoney(repairTotal)})</button>
@@ -10718,7 +15152,9 @@ function getTowerRepairCost(tower) {
     ensureTowerEconomy(tower);
     if (!tower || tower.hp >= tower.maxHp) return 0;
     const missingRatio = Math.max(0, Math.min(1, (tower.maxHp - tower.hp) / Math.max(1, tower.maxHp)));
-    return Math.max(1, Math.ceil((Number(tower.cost) || 80) * TOWER_REPAIR_COST_FACTOR * missingRatio));
+    const base = Math.max(Number(tower.upgradeCost) || 0, Number(tower.cost) || 80);
+    const levelPressure = 1 + Math.min(2.8, Math.max(0, (Number(tower.level) || 1) - 1) * 0.12);
+    return Math.max(1, Math.ceil(base * TOWER_REPAIR_COST_FACTOR * missingRatio * levelPressure));
 }
 
 function repairTowerSelected() {
@@ -10742,10 +15178,12 @@ function getBarricadeRepairCost(b) {
     const missingRatio = Math.max(0, Math.min(1, (b.maxHp - b.hp) / Math.max(1, b.maxHp)));
     const tier = Math.max(0, Number(b.tier) || 0);
     const level = Math.max(0, Number(b.level) || 0);
-    // Reparar una muralla más avanzada debe doler más: evita que obsidiana + reparación infinita sea una pared gratis.
-    const upgradePressure = b.kind === "standard" ? tier * 0.22 + level * 0.18 : 0.18 + level * 0.24;
-    const repairMultiplier = 1 + Math.min(2.35, upgradePressure);
-    return Math.max(1, Math.ceil((Number(b.buildCost) || getBarricadeBaseCost(b.kind)) * 0.42 * missingRatio * repairMultiplier));
+    // Reparar una muralla avanzada debe doler de verdad: subir tiers/levels no puede volver infinito el spam de reparación.
+    const tiered = barricadeUsesTierProgression(b.kind);
+    const upgradePressure = tiered ? tier * 0.36 + level * 0.28 : 0.28 + level * 0.32;
+    const repairMultiplier = 1 + Math.min(3.6, upgradePressure);
+    const upgradeBasis = Math.max(Number(b.upgradeCost) || 0, Number(b.buildCost) || getBarricadeBaseCost(b.kind));
+    return Math.max(1, Math.ceil(upgradeBasis * 0.40 * missingRatio * repairMultiplier * (isPointInCoreRange("fortress", b.x, b.y) ? 0.68 : 1)));
 }
 
 function getBarricadeSellRefund(b) {
@@ -10799,6 +15237,12 @@ function upgradeTowerSelected() {
     const selected = getSelectedStructures();
     if (!selected.length || selectedStructureType !== "tower") return;
     selected.forEach(ensureTowerEconomy);
+    const locked = selected.filter(isTowerEvolutionLockedAtCap);
+    if (locked.length) {
+        showCenterMessage(locked.length > 1 ? "Hay torres que necesitan evolución" : "Elegí una evolución antes de seguir mejorando", 1100, "minor");
+        updateStructurePanel();
+        return;
+    }
     const total = selected.reduce((sum, t) => sum + Number(t.upgradeCost || 0), 0);
     if (coins < total) { showCenterMessage(`Faltan ${formatMissingMoney(total - coins)} monedas`, 850); updateStructurePanel(); return; }
     selected.forEach(t => {
@@ -10825,6 +15269,17 @@ function handleStructurePanelAction(action) {
     if (!buildPhaseActive || waveInProgress) {
         clearStructureSelection();
         showCenterMessage("Solo podés editar estructuras en descanso", 900);
+        return;
+    }
+    if (String(action || "").startsWith("evolve:")) {
+        const evoId = String(action).split(":")[1];
+        const selected = getSelectedStructures();
+        const baseKey = getEvolutionEligibleBaseKeyFromSelection(selected);
+        if (selectedStructureType === "tower" && baseKey) {
+            chooseTowerEvolutionForBase(baseKey, evoId);
+        } else {
+            showCenterMessage("Seleccioná torres iguales de nivel 25+", 900, "minor");
+        }
         return;
     }
     if (action === "upgrade") {
@@ -10857,6 +15312,7 @@ function getCurrentBuildModeLabel() {
     if (pendingBarricadePlacement) return "Colocando barricadas · R rota";
     if (pendingTrapPlacement) return "Colocando trampas";
     if (pendingMinePlacement) return "Colocando minas";
+    if (pendingCorePlacement) { const def = getCoreDefinition(pendingCorePlacement.type); return `Colocando ${def ? def.name : "núcleo"}`; }
     if (pendingTowerPurchase) {
         const def = getTowerDefinition(pendingTowerPurchase.defKey);
         return `Colocando ${def ? def.name : "torre"} · R rota`;
@@ -10890,7 +15346,12 @@ function updateMousePosition(event) {
 }
 
 canvas.addEventListener("mousemove", event => {
+    if (updateMinimapInspectDrag(event)) return;
     updateMousePosition(event);
+    if (areaSelectionDrag && areaSelectionDrag.active) {
+        areaSelectionDrag.endX = mousePosition.x;
+        areaSelectionDrag.endY = mousePosition.y;
+    }
 });
 
 canvas.addEventListener("wheel", event => {
@@ -10907,6 +15368,16 @@ canvas.addEventListener("wheel", event => {
 function handleCanvasPlacementPointer(event) {
     event.preventDefault();
     canvas.blur();
+
+    if (event.button === 0 && gameStarted && !isElementVisible(shop) && !isElementVisible(consolePanel) && !isInBuildPlacementMode()) {
+        const canvasPoint = getCanvasLogicalPoint(event);
+        const minimapPoint = getMinimapWorldPointFromCanvasPoint(canvasPoint);
+        if (minimapPoint) {
+            startMinimapInspect(minimapPoint);
+            return;
+        }
+    }
+
     updateMousePosition(event);
 
     if (pendingBarricadePlacement) {
@@ -10939,7 +15410,17 @@ function handleCanvasPlacementPointer(event) {
         return;
     }
 
-    if (pendingBarricadePlacement || pendingTrapPlacement || pendingMinePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null) {
+    if (pendingCorePlacement) {
+        event.preventDefault();
+        if (event.button === 2) {
+            cancelCorePlacement(false);
+            return;
+        }
+        finishCorePlacement();
+        return;
+    }
+
+    if (pendingBarricadePlacement || pendingTrapPlacement || pendingMinePlacement || pendingCorePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null) {
         event.preventDefault();
         if (event.button === 2) {
             cancelTowerPlacement(false);
@@ -10951,6 +15432,10 @@ function handleCanvasPlacementPointer(event) {
         if (pendingTowerPurchase) finishTowerPlacement(tile);
         else finishTowerMove(tile);
         return;
+    }
+
+    if (event.button === 0 && buildPhaseActive && !waveInProgress && !isInBuildPlacementMode()) {
+        areaSelectionDrag = { active:true, startX:mousePosition.x, startY:mousePosition.y, endX:mousePosition.x, endY:mousePosition.y, startedAt:getGameTime() };
     }
 
     if (event.button === 0 && handleStructureClickSelection(event)) {
@@ -10970,21 +15455,29 @@ canvas.addEventListener("pointerdown", event => {
 });
 
 canvas.addEventListener("contextmenu", event => {
-    if (pendingBarricadePlacement || pendingTrapPlacement || pendingMinePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null) {
+    if (pendingBarricadePlacement || pendingTrapPlacement || pendingMinePlacement || pendingCorePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null) {
         event.preventDefault();
         cancelBarricadePlacement(false);
         cancelTrapPlacement(false);
         cancelMinePlacement(false);
+        cancelCorePlacement(false);
         cancelTowerPlacement(false);
         cancelTowerMove(false);
     }
 });
 
 window.addEventListener("mouseup", () => {
+    if (minimapInspectActive) stopMinimapInspect(true);
+    if (areaSelectionDrag && areaSelectionDrag.active) {
+        const drag = areaSelectionDrag;
+        areaSelectionDrag = null;
+        if (Math.abs(drag.endX - drag.startX) > 18 && Math.abs(drag.endY - drag.startY) > 18) selectStructuresInArea(drag);
+    }
     isMouseDown = false;
 });
 
 canvas.addEventListener("mouseleave", () => {
+    if (minimapInspectActive) stopMinimapInspect(true);
     isMouseDown = false;
 });
 
@@ -11003,7 +15496,8 @@ function handleShopTabHotkeys(event) {
         Digit1: "barricades",
         Digit2: "towers",
         Digit3: "traps",
-        Digit4: "mines"
+        Digit4: "mines",
+        Digit5: "cores"
     };
 
     if (event.code === "KeyX") {
@@ -11069,6 +15563,11 @@ window.addEventListener("keydown", event => {
 
         if (pendingMinePlacement) {
             cancelMinePlacement(false);
+            return;
+        }
+
+        if (pendingCorePlacement) {
+            cancelCorePlacement(false);
             return;
         }
 
@@ -11153,6 +15652,12 @@ window.addEventListener("keydown", event => {
     if (isControlCode(event.code)) {
         event.preventDefault();
         pressedKeys.add(event.code);
+    }
+
+    if (event.code === "Space" && minimapInspectActive) {
+        event.preventDefault();
+        stopMinimapInspect(true);
+        return;
     }
 
     if (event.code === "Space" && !isControlCode("Space")) {
@@ -11272,6 +15777,7 @@ function openShop(sectionId = "stats") {
     cancelBarricadePlacement(false);
     cancelTrapPlacement(false);
     cancelMinePlacement(false);
+    cancelCorePlacement(false);
     cancelTowerPlacement(false);
     waveSummaryPanel.classList.add("hidden");
     pausePanel.classList.add("hidden");
@@ -11295,6 +15801,7 @@ function openConstruction(sectionId = "towers") {
     cancelBarricadePlacement(false);
     cancelTrapPlacement(false);
     cancelMinePlacement(false);
+    cancelCorePlacement(false);
     cancelTowerPlacement(false);
     waveSummaryPanel.classList.add("hidden");
     pausePanel.classList.add("hidden");
@@ -11380,6 +15887,7 @@ if (cancelBuildBtn) cancelBuildBtn.addEventListener("click", () => {
     cancelBarricadePlacement(false);
     cancelTrapPlacement(false);
     cancelMinePlacement(false);
+    cancelCorePlacement(false);
     cancelTowerPlacement(false);
     cancelTowerMove(false);
     showCenterMessage("Construcción cancelada", 650);
@@ -11406,6 +15914,11 @@ if (structurePanelActions) structurePanelActions.addEventListener("click", event
     if (performance.now() - lastStructurePanelPointerActionAt < 350) { event.preventDefault(); return; }
     handleStructurePanelActionEvent(event);
 });
+if (structurePanelInfo) structurePanelInfo.addEventListener("pointerdown", handleStructurePanelActionEvent);
+if (structurePanelInfo) structurePanelInfo.addEventListener("click", event => {
+    if (performance.now() - lastStructurePanelPointerActionAt < 350) { event.preventDefault(); return; }
+    handleStructurePanelActionEvent(event);
+});
 
 newRunBtn.addEventListener("click", () => {
     clearSavedRun();
@@ -11418,7 +15931,7 @@ newRunBtn.addEventListener("click", () => {
     isInMainMenu = true;
     gameOverScreen.classList.add("hidden");
     gameArea.classList.add("hidden");
-    menu.classList.remove("hidden");
+    showMainMenuLayout();
     renderClassSelection();
     updateStartButtonSavedState();
 });
@@ -11515,6 +16028,7 @@ function beginBarricadePlacement(kind = "standard", costKey = "upgradeBarricade"
     pendingTowerPurchase = null;
     pendingTrapPlacement = null;
     pendingMinePlacement = null;
+    pendingCorePlacement = null;
     closeShop();
     waveSummaryPanel.classList.add("hidden");
     showCenterMessage("Colocá barricadas · R rota · seguí colocando hasta quedarte sin monedas", 1400);
@@ -11603,7 +16117,7 @@ function upgradeBarricadeInstance(target, kind, resetKind = false) {
         target.level = 0;
     }
 
-    if (kind === "standard") {
+    if (barricadeUsesTierProgression(kind)) {
         const maxTierIndex = getMaxStandardBarricadeTierIndex();
         if (target.tier < maxTierIndex) {
             target.tier += 1;
@@ -11622,10 +16136,10 @@ function upgradeBarricadeInstance(target, kind, resetKind = false) {
     const tier = barricadeTiers[Math.max(0, target.tier)];
     const level = Math.max(0, target.level || 0);
     const baseHp = kind === "door" ? 17 : kind === "regen" ? 42 : kind === "explosive" ? 48 : kind === "thorns" ? 40 : 58;
-    const tierHp = kind === "standard" ? Math.max(0, target.tier) * 28 : 0;
-    const levelHp = level * (kind === "door" ? 9 : kind === "standard" ? 30 : kind === "regen" ? 21 : kind === "explosive" ? 24 : 20);
+    const tierHp = kind === "standard" ? Math.max(0, target.tier) * 28 : kind === "door" ? Math.max(0, target.tier) * 23 : 0;
+    const levelHp = level * (kind === "door" ? 13 : kind === "standard" ? 30 : kind === "regen" ? 21 : kind === "explosive" ? 24 : 20);
 
-    target.color = kind === "door" ? "#6a4a2a" : kind === "regen" ? "#8a5cff" : kind === "explosive" ? "#d9792b" : kind === "thorns" ? "#9c6b35" : tier.color;
+    target.color = kind === "door" ? (tier?.color || "#6a4a2a") : kind === "regen" ? "#8a5cff" : kind === "explosive" ? "#d9792b" : kind === "thorns" ? "#9c6b35" : tier.color;
     target.maxHp = baseHp + tierHp + levelHp;
     target.hp = target.maxHp;
     target.regenPerSecond = kind === "regen" ? 0.9 + level * 0.22 : 0;
@@ -11636,7 +16150,7 @@ function upgradeBarricadeInstance(target, kind, resetKind = false) {
     target.lastRegenTime = getGameTime();
 
     const kindLabel = kind === "door" ? "puerta" : kind === "regen" ? "regenerativa" : kind === "explosive" ? "explosiva" : kind === "thorns" ? "con espinas" : "estándar";
-    const tierLabel = kind === "standard" ? ` ${tier.name}` : "";
+    const tierLabel = barricadeUsesTierProgression(kind) ? ` ${tier.name}` : "";
     const levelLabel = level > 0 ? ` +${level}` : "";
     showCenterMessage(`Barricada ${kindLabel}${tierLabel}${levelLabel}`, 850);
 }
@@ -11671,6 +16185,7 @@ towerDefinitions.forEach((def, index) => {
 buyTrapSnareBtn?.addEventListener("click", () => beginTrapPlacement("snare"));
 buyTrapBleedBtn?.addEventListener("click", () => beginTrapPlacement("bleed"));
 buyMineGoldBtn?.addEventListener("click", () => beginMinePlacement());
+Object.entries(coreButtons || {}).forEach(([type, btn]) => btn?.addEventListener("click", () => beginCorePlacement(type)));
 
 function handleTowerSlotActionClick(event) {
     const button = event.target.closest("button[data-tower-action]");
@@ -11744,6 +16259,7 @@ function beginTrapPlacement(typeKey) {
     pendingTowerPurchase = null;
     pendingBarricadePlacement = null;
     pendingMinePlacement = null;
+    pendingCorePlacement = null;
     closeShop();
     showCenterMessage(`Colocá ${def.name} · seguí colocando o cancelá`, 1000);
     updateBuildCancelUI();
@@ -11833,6 +16349,7 @@ function beginMinePlacement() {
 function cancelMinePlacement(showShopAgain = false) {
     if (!pendingMinePlacement) return;
     pendingMinePlacement = null;
+    pendingCorePlacement = null;
     updateBuildCancelUI();
     if (showShopAgain && hasActiveRun) openConstruction("mines");
     updateHud(true);
@@ -11876,6 +16393,63 @@ function finishMinePlacement() {
     autoSaveRun(true);
 }
 
+
+function beginCorePlacement(type) {
+    if (!canStartBuildPlacement("colocar núcleos")) return;
+    const def = getCoreDefinition(type);
+    if (!def) return;
+    if (isCoreOwned(type)) {
+        showCenterMessage("Ya tenés ese núcleo. Es único por run.", 900, "minor");
+        return;
+    }
+    const price = getEffectiveCost(CORE_COST, "cores");
+    if (coins < price) {
+        showCenterMessage(`Faltan ${formatMissingMoney(price - coins)} monedas`, 900, "minor");
+        return;
+    }
+    clearStructureSelection();
+    pendingCorePlacement = { type, price };
+    pendingTowerPurchase = null;
+    pendingTrapPlacement = null;
+    pendingBarricadePlacement = null;
+    pendingMinePlacement = null;
+    closeShop();
+    showCenterMessage(`Colocá ${def.name} · no se puede quitar`, 1200);
+    updateBuildCancelUI();
+    updateHud(true);
+}
+
+function cancelCorePlacement(showShopAgain = false) {
+    if (!pendingCorePlacement) return;
+    pendingCorePlacement = null;
+    updateBuildCancelUI();
+    if (showShopAgain && hasActiveRun) openConstruction("cores");
+    updateHud(true);
+}
+
+function finishCorePlacement() {
+    if (!pendingCorePlacement) return;
+    const type = pendingCorePlacement.type;
+    const def = getCoreDefinition(type);
+    const point = getSnappedBuildPoint();
+    if (!def) { cancelCorePlacement(false); return; }
+    if (isCoreOwned(type)) { showCenterMessage("Ese núcleo ya existe", 850, "minor"); cancelCorePlacement(false); return; }
+    if (!isCorePositionValid(point.x, point.y, type)) {
+        showCenterMessage(`No se puede poner ahí · necesita ${CORE_MIN_DISTANCE}px de otros núcleos`, 900, "minor");
+        return;
+    }
+    const price = getEffectiveCost(CORE_COST, "cores");
+    if (coins < price) { showCenterMessage("Monedas insuficientes", 850, "minor"); cancelCorePlacement(false); return; }
+    coins -= price;
+    const core = createCore(type, point.x, point.y, price);
+    if (core) cores.push(core);
+    pendingCorePlacement = null;
+    showCenterMessage(`${def.name} activado · permanente`, 1200);
+    updateBuildCancelUI();
+    updateHud(true);
+    autoSaveRun(true);
+}
+
 function buyTower(defKey) {
     beginTowerPlacement(defKey);
 }
@@ -11885,6 +16459,12 @@ function upgradeTower(index, silent = false) {
     if (!tower) return;
 
     tower.upgradeCost = Number(tower.upgradeCost) || Math.floor((tower.cost || 100) * 1.35);
+
+    if (isTowerEvolutionLockedAtCap(tower)) {
+        if (!silent) showCenterMessage("Elegí una evolución antes de seguir mejorando", 1000, "minor");
+        updateStructurePanel();
+        return;
+    }
 
     if (coins < tower.upgradeCost) {
         if (!silent) showCenterMessage(`Faltan ${formatMissingMoney(tower.upgradeCost - coins)} monedas`, 800);
@@ -11896,6 +16476,7 @@ function upgradeTower(index, silent = false) {
     ensureTowerEconomy(tower);
     const oldMaxHp = Number(tower.maxHp) || getTowerBaseMaxHp(tower);
     tower.level = (Number(tower.level) || 1) + 1;
+    applyKnownEvolutionToTower(tower);
 
     if (tower.type === "basic") {
         tower.damage += 0.65;
@@ -11947,7 +16528,7 @@ function upgradeTower(index, silent = false) {
 
     if (tower.type === "siphon") {
         tower.damage += 0.35;
-        tower.drainAmount += 1.05;
+        tower.drainAmount += 0.38;
         tower.range += 10;
         tower.fireDelay = Math.max(520, tower.fireDelay - 45);
     }
@@ -11979,6 +16560,100 @@ function upgradeTower(index, silent = false) {
         tower.buffDamage += 0.025;
         tower.buffSpeed += 0.018;
     }
+
+    if (tower.evolutionId === "basic_echo") {
+        tower.echoExplosionRadius = Math.min(115, (Number(tower.echoExplosionRadius) || 66) + 1.3);
+        tower.echoExplosionDamage = (Number(tower.echoExplosionDamage) || Math.max(2.5, tower.damage)) + 0.45;
+    }
+    if (tower.evolutionId === "basic_oath") {
+        tower.oathSpecialMultiplier = Math.min(1.8, (Number(tower.oathSpecialMultiplier) || 1.35) + 0.012);
+    }
+    if (tower.evolutionId === "slow_glacier") {
+        tower.slowAmount = Math.max(0.18, (Number(tower.slowAmount) || 0.28) - 0.006);
+        tower.slowDuration += 120;
+        tower.areaRadius = Math.min(58, Number(tower.areaRadius) || 48);
+    }
+    if (tower.evolutionId === "slow_mist") {
+        tower.mistRadius = Math.min(235, (Number(tower.mistRadius) || 132) + 4);
+        tower.mistSlowDuration = Math.min(1100, (Number(tower.mistSlowDuration) || 520) + 30);
+    }
+    if (tower.evolutionId === "rapid_splinters") {
+        tower.splinterPower = Math.min(1.75, (Number(tower.splinterPower) || 0.65) + 0.035);
+        tower.splinterDuration = Math.min(5200, (Number(tower.splinterDuration) || 2600) + 55);
+    }
+    if (tower.evolutionId === "rapid_turbine") {
+        tower.turbineBurstDuration = Math.min(2300, (Number(tower.turbineBurstDuration) || 1550) + 18);
+        tower.turbineRestDuration = Math.max(620, (Number(tower.turbineRestDuration) || 900) - 8);
+    }
+    if (tower.evolutionId === "poison_plague") {
+        tower.plagueSpreadRadius = Math.min(160, (Number(tower.plagueSpreadRadius) || 92) + 2.1);
+        tower.plagueSpreadDamageMultiplier = Math.min(0.68, (Number(tower.plagueSpreadDamageMultiplier) || 0.42) + 0.008);
+    }
+    if (tower.evolutionId === "poison_acid") {
+        tower.acidVulnerabilityMultiplier = Math.min(1.36, (Number(tower.acidVulnerabilityMultiplier) || 1.16) + 0.006);
+        tower.acidVulnerabilityDuration = Math.min(4200, (Number(tower.acidVulnerabilityDuration) || 2200) + 60);
+    }
+    if (tower.evolutionId === "laser_judgement") {
+        tower.judgementMaxCharge = Math.min(3.0, (Number(tower.judgementMaxCharge) || 2.15) + 0.025);
+        tower.judgementChargeGain = Math.min(0.16, (Number(tower.judgementChargeGain) || 0.085) + 0.002);
+    }
+    if (tower.evolutionId === "laser_prism") {
+        tower.prismRange = Math.min(210, (Number(tower.prismRange) || 120) + 2.5);
+        if ((Number(tower.level) || 1) >= 35) tower.prismBranches = Math.min(3, Number(tower.prismBranches) || 2);
+    }
+    if (tower.evolutionId === "pierce_astral") {
+        tower.astralPierceHits = Math.min(8, (Number(tower.astralPierceHits) || 5) + ((Number(tower.level) || 1) % 6 === 0 ? 1 : 0));
+        tower.astralDamageGrowth = Math.min(0.24, (Number(tower.astralDamageGrowth) || 0.13) + 0.003);
+    }
+    if (tower.evolutionId === "pierce_ruin") {
+        tower.ruinDamageMultiplier = Math.min(1.32, (Number(tower.ruinDamageMultiplier) || 1.15) + 0.004);
+        tower.ruinDuration = Math.min(4400, (Number(tower.ruinDuration) || 2600) + 45);
+    }
+    if (tower.evolutionId === "double_sync") {
+        tower.syncThreatMultiplier = Math.min(1.75, (Number(tower.syncThreatMultiplier) || 1.32) + 0.01);
+    }
+    if (tower.evolutionId === "double_crossfire") {
+        tower.crossfireDamageMultiplier = Math.min(1.08, (Number(tower.crossfireDamageMultiplier) || 0.92) + 0.004);
+        tower.fireDelay = Math.max(620, tower.fireDelay - 10);
+    }
+    if (tower.evolutionId === "blade_saw") {
+        tower.range = Math.min(150, (Number(tower.range) || 92) + 2.2);
+        tower.fireDelay = Math.max(260, tower.fireDelay - 7);
+    }
+    if (tower.evolutionId === "blade_guillotine") {
+        tower.guillotineMultiplier = Math.min(3.35, (Number(tower.guillotineMultiplier) || 2.25) + 0.026);
+        tower.range = Math.min(112, (Number(tower.range) || 76) + 1.2);
+    }
+    if (tower.evolutionId === "spear_wanderer") {
+        tower.roamingSpearSpeed = Math.min(8.2, (Number(tower.roamingSpearSpeed) || 6.0) + 0.035);
+        tower.roamingSpearDamageMultiplier = Math.min(1.12, (Number(tower.roamingSpearDamageMultiplier) || 0.82) + 0.006);
+        tower.range = Math.min(430, (Number(tower.range) || 335) + 2.2);
+    }
+    if (tower.evolutionId === "spear_hunter") {
+        tower.hunterSpearDamageMultiplier = Math.min(1.72, (Number(tower.hunterSpearDamageMultiplier) || 1.12) + 0.014);
+        tower.hunterSpearLaneWidth = Math.min(72, (Number(tower.hunterSpearLaneWidth) || 48) + 0.45);
+        tower.fireDelay = Math.max(620, tower.fireDelay - 12);
+    }
+    if (tower.evolutionId === "siphon_heart") {
+        tower.crimsonHeartHealMultiplier = Math.min(1.65, (Number(tower.crimsonHeartHealMultiplier) || 1.18) + 0.010);
+        tower.drainAmount += 0.22;
+    }
+    if (tower.evolutionId === "siphon_parasite") {
+        tower.parasiteDamageMultiplier = Math.min(0.72, (Number(tower.parasiteDamageMultiplier) || 0.34) + 0.008);
+        tower.parasiteDuration = Math.min(6200, (Number(tower.parasiteDuration) || 3600) + 55);
+    }
+    if (tower.evolutionId === "buffer_warbanner") {
+        tower.buffDamage += 0.014;
+        tower.buffSpeed += 0.010;
+        tower.range += 4;
+    }
+    if (tower.evolutionId === "buffer_sanctuary") {
+        tower.sanctuaryDefense = Math.min(0.34, (Number(tower.sanctuaryDefense) || 0.18) + 0.004);
+        tower.sanctuaryRegenPerSecond = Math.min(1.15, (Number(tower.sanctuaryRegenPerSecond) || 0.28) + 0.018);
+        tower.range += 4;
+    }
+
+    clampTowerRange(tower);
 
     const hpGain = tower.type === "blade" ? 8 : tower.type === "spear" ? 7 : tower.type === "laser" ? 8 : tower.type === "ballista" ? 7 : 5;
     tower.maxHp = Math.max(oldMaxHp + hpGain, Number(tower.maxHp) || 0);
@@ -12012,6 +16687,24 @@ buyLightningBtn.addEventListener("click", () => buyAbility("lightning"));
 buyMeteorBtn.addEventListener("click", () => buyAbility("meteor"));
 if (buyEclipseBtn) buyEclipseBtn.addEventListener("click", () => buyAbility("eclipse"));
 if (buyBlinkBtn) buyBlinkBtn.addEventListener("click", () => buyAbility("blink"));
+if (abilityLoadoutPanel) abilityLoadoutPanel.addEventListener("change", event => {
+    const select = event.target?.closest?.("[data-ability-slot-select]");
+    if (!select) return;
+    const index = Number(select.dataset.abilitySlotSelect);
+    const id = select.value || null;
+    ensureAbilityLoadout();
+    if (!id) abilityLoadout[index] = null;
+    else equipAbilityToSlot(id, index);
+    updateAbilityKeysFromLoadout();
+    renderAbilityLoadoutManager();
+    updateHud(true);
+    autoSaveRun(true);
+});
+if (abilityLoadoutPanel) abilityLoadoutPanel.addEventListener("click", event => {
+    const btn = event.target?.closest?.("[data-ability-unequip]");
+    if (!btn) return;
+    unequipAbility(btn.dataset.abilityUnequip);
+});
 
 function pauseGame() {
     if (!gameStarted || !hasActiveRun) return;
@@ -12064,7 +16757,7 @@ function backToMainMenuWithoutLosingProgress() {
     confirmRestartBox.classList.add("hidden");
 
     gameArea.classList.add("hidden");
-    menu.classList.remove("hidden");
+    showMainMenuLayout();
 
     autoSaveRun(true);
     updateStartButtonSavedState();
@@ -12088,7 +16781,7 @@ function restartRunFromPause() {
     waveSummaryPanel.classList.add("hidden");
     gameOverScreen.classList.add("hidden");
     gameArea.classList.add("hidden");
-    menu.classList.remove("hidden");
+    showMainMenuLayout();
 
     renderClassSelection();
     updateStartButtonSavedState();
@@ -12097,13 +16790,11 @@ function restartRunFromPause() {
 
 function buyAbility(id) {
     const ability = abilities[id];
-
-    if (ability.owned) return;
-
+    if (!ability) return;
+    if (ability.owned) { renderAbilityLoadoutManager(); showCenterMessage("Mové la habilidad desde Slots", 850, "minor"); return; }
     if (spendCoins(ability.cost, "abilities")) {
-        ability.owned = true;
-        updateHud(true);
-        autoSaveRun(true);
+        unlockAbility(id, { autoEquip: true });
+        showCenterMessage(`Habilidad aprendida: ${ability.name}`, 900, "minor");
     }
 }
 

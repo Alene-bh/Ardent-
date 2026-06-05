@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ranking completo · Ardent Tower Defense</title>
+  <link rel="icon" href="ardent.ico" type="image/x-icon" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="rankingPage">
+  <main class="rankingShell">
+    <div class="rankingTopbar">
+      <a class="rankingBackLink" href="index.html">← Volver al juego</a>
+      <strong>Ardent Tower Defense</strong>
+    </div>
+
+    <section class="pixelPanel rankingHero">
+      <h1>Ranking completo</h1>
+      <p>Acá se ven las mejores runs con más contexto: liga, país o bandera si el servidor lo guarda, clase, wave, causa de muerte y datos específicos de la partida.</p>
+      <div class="rankingControls">
+        <select id="leagueSelect" aria-label="Liga">
+          <option value="normal">Ranking normal</option>
+          <option value="novatos">Sendero Verde / novatos</option>
+          <option value="all">Todos</option>
+        </select>
+        <button id="refreshFullLeaderboardBtn" type="button">Actualizar ranking</button>
+      </div>
+      <p id="fullLeaderboardStatus" class="rankingStatus">Cargando ranking...</p>
+    </section>
+
+    <section class="pixelPanel rankingTableWrap">
+      <table class="rankingTable">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Jugador</th>
+            <th>País</th>
+            <th>Puntaje</th>
+            <th>Run</th>
+            <th>Build</th>
+            <th>Detalles</th>
+            <th>Fecha</th>
+          </tr>
+        </thead>
+        <tbody id="fullLeaderboardBody">
+          <tr><td colspan="8">Cargando...</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+<script>
+const body = document.getElementById("fullLeaderboardBody");
+const statusEl = document.getElementById("fullLeaderboardStatus");
+const leagueSelect = document.getElementById("leagueSelect");
+const refreshBtn = document.getElementById("refreshFullLeaderboardBtn");
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch] || ch));
+}
+function fmtNumber(value) {
+  const n = Number(value) || 0;
+  return n.toLocaleString("es-AR");
+}
+function fmtTime(ms) {
+  const sec = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}m ${String(s).padStart(2, "0")}s`;
+}
+function countryFlag(code) {
+  const cc = String(code || "").trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(cc)) return "🌐";
+  return cc.replace(/./g, c => String.fromCodePoint(127397 + c.charCodeAt(0)));
+}
+function getCountryText(entry) {
+  const code = entry.countryCode || entry.country_code || entry.country || entry.regionCode || "";
+  const countryName = entry.countryName || entry.countryLabel || (String(entry.country || "").length > 2 ? entry.country : "");
+  const city = entry.city || entry.region || "";
+  const flag = countryFlag(String(code).slice(0,2));
+  const label = [countryName || String(code).toUpperCase() || "Sin dato", city].filter(Boolean).join(" · ");
+  return `<span class="rankingFlag">${flag}</span>${escapeHtml(label)}`;
+}
+function getDetails(entry) {
+  const bits = [];
+  if (entry.kills != null) bits.push(`${fmtNumber(entry.kills)} kills`);
+  if (entry.bossKills != null) bits.push(`${fmtNumber(entry.bossKills)} bosses`);
+  if (entry.missionsCompleted != null) bits.push(`${fmtNumber(entry.missionsCompleted)} misiones`);
+  if (entry.goldEarned != null) bits.push(`${fmtNumber(entry.goldEarned)} oro`);
+  if (entry.damageDealt != null) bits.push(`${fmtNumber(entry.damageDealt)} daño`);
+  if (entry.coresPlaced != null) bits.push(`${fmtNumber(entry.coresPlaced)} núcleos`);
+  return bits.length ? bits.join(" · ") : "Datos extra no disponibles";
+}
+function normalizeScores(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data.scores)) return data.scores;
+  if (Array.isArray(data.entries)) return data.entries;
+  return [];
+}
+async function fetchLeague(league) {
+  const res = await fetch(`/api/leaderboard?league=${encodeURIComponent(league)}`, { cache: "no-store" });
+  let data = {};
+  try { data = await res.json(); } catch (e) { data = {}; }
+  if (!res.ok) throw new Error(data.message || `No se pudo cargar ${league}.`);
+  return normalizeScores(data).map(x => ({ ...x, league: x.league || league }));
+}
+async function loadFullLeaderboard() {
+  const league = leagueSelect.value;
+  statusEl.textContent = "Cargando ranking...";
+  body.innerHTML = `<tr><td colspan="8">Cargando...</td></tr>`;
+  try {
+    let scores = [];
+    if (league === "all") {
+      const results = await Promise.allSettled([fetchLeague("normal"), fetchLeague("novatos")]);
+      scores = results.flatMap(r => r.status === "fulfilled" ? r.value : []);
+    } else {
+      scores = await fetchLeague(league);
+    }
+    scores.sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0));
+    render(scores);
+    statusEl.textContent = scores.length ? `Mostrando ${scores.length} runs.` : "Todavía no hay runs guardadas en esta liga.";
+  } catch (error) {
+    console.error(error);
+    body.innerHTML = `<tr><td colspan="8">No se pudo conectar con el leaderboard todavía.</td></tr>`;
+    statusEl.textContent = "No se pudo cargar el ranking online. Revisá el endpoint /api/leaderboard.";
+  }
+}
+function render(scores) {
+  if (!scores.length) {
+    body.innerHTML = `<tr><td colspan="8">Todavía no hay puntuaciones guardadas.</td></tr>`;
+    return;
+  }
+  body.innerHTML = scores.map((entry, idx) => {
+    const name = escapeHtml(String(entry.name || "Jugador").slice(0, 24));
+    const league = entry.beginner || entry.beginnerCommandUsed || entry.league === "novatos" ? "Sendero Verde" : "Normal";
+    const date = entry.date || entry.createdAt || entry.timestamp;
+    const dateText = date ? new Date(date).toLocaleString("es-AR") : "Sin fecha";
+    const killedBy = entry.killedBy || entry.deathCause || "desconocido";
+    const className = entry.className || entry.class || "Errante";
+    const buildName = entry.buildName || entry.build || "Sin detectar";
+    const wave = entry.wave || "?";
+    const survival = entry.survivalTimeMs ? fmtTime(entry.survivalTimeMs) : "sin dato";
+    const relics = Array.isArray(entry.relics) && entry.relics.length ? `<div class="rankingMuted">Reliquias: ${escapeHtml(entry.relics.slice(0,4).join(", "))}</div>` : "";
+    return `<tr>
+      <td class="rankingRank">${idx + 1}</td>
+      <td><div class="rankingName">${name}</div><div class="rankingMuted">${escapeHtml(league)}</div></td>
+      <td>${getCountryText(entry)}</td>
+      <td class="rankingScore">${fmtNumber(entry.score)}</td>
+      <td>Wave ${escapeHtml(wave)}<div class="rankingMuted">${escapeHtml(survival)}</div></td>
+      <td>${escapeHtml(className)}<div class="rankingMuted">${escapeHtml(buildName)}</div></td>
+      <td>${escapeHtml(getDetails(entry))}<div class="rankingMuted">Murió por: ${escapeHtml(killedBy)}</div>${relics}</td>
+      <td>${escapeHtml(dateText)}</td>
+    </tr>`;
+  }).join("");
+}
+refreshBtn.addEventListener("click", loadFullLeaderboard);
+leagueSelect.addEventListener("change", loadFullLeaderboard);
+loadFullLeaderboard();
+</script>
+</body>
+</html>

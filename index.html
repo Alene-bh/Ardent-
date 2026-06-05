@@ -5,6 +5,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Ardent Tower Defense</title>
+    <link rel="icon" href="ardent.ico" type="image/x-icon" />
     <link rel="stylesheet" href="style.css" />
 </head>
 
@@ -12,11 +13,11 @@
     <div id="gameWrapper">
         <h1>Ardent Tower Defense</h1>
 
-        <div id="menu">
+        <div id="menuLayout">
+        <div id="menu" class="pixelPanel menuMainPanel">
             <h2>Sobreviví al asedio</h2>
             <p>
-                Cada run arranca desde cero. Construí muros y torres,
-                sobreviví a oleadas desde todos los bordes y superá tu récord.
+                Explorá el mapa, levantá bases, combiná torres, habilidades y reliquias, y sobreviví al asedio del Abismo.
             </p>
 
             <p class="recordText">
@@ -104,21 +105,25 @@
 
             <div id="classSelectionPanel" class="classSelectionPanel">
                 <h3>Elegí tu clase</h3>
-                <p class="classSelectionHint">Cada clase cambia el estilo de tu run. Elegí cómo querés enfrentar al Abismo.</p>
+                <p class="classSelectionHint">Cada clase cambia daño, economía, construcción o dificultad. Elegí una identidad para tu run.</p>
                 <div id="classCardsBox" class="classCardsBox"></div>
                 <p id="selectedClassInfo" class="selectedClassInfo"></p>
             </div>
 
             <button id="startGameBtn">Jugar</button>
 
-            <div class="leaderboardBox menuLeaderboardBox">
+        </div>
+
+            <aside class="leaderboardBox menuLeaderboardBox pixelPanel">
                 <div class="leaderboardHeader">
-                    <h3>Leaderboard global</h3>
+                    <h3>Leaderboard</h3>
                     <button id="refreshLeaderboardBtn" class="smallHudButton" type="button">Actualizar</button>
                 </div>
+                <p class="leaderboardHint">Normal y Sendero Verde viven en tablas separadas. Tocá ranking completo para ver bandera, país y datos de run.</p>
+                <a class="leaderboardFullButton" href="leaderboard.html">Ver ranking completo</a>
                 <p id="leaderboardStatusText" class="leaderboardStatus">Cargando leaderboard...</p>
                 <ol id="leaderboardList" class="leaderboardList"></ol>
-            </div>
+            </aside>
         </div>
 
         <div id="gameArea" class="hidden">
@@ -130,7 +135,7 @@
                     <span id="hpHudBox" class="hpHudBox">
                         <span class="hpHudBars"><span class="hpHudBar"><span id="hpBarFill" class="hpHudFill"></span><strong id="hpText" class="hpHudText">20/20</strong></span><span class="staminaHudBar"><span id="staminaBarFill" class="staminaHudFill"></span></span></span>
                     </span>
-                    <span>Barricada: <strong id="barricadeText">0/0</strong></span>
+                    <span id="barricadeHudBox" class="hiddenHudStat">Barricada: <strong id="barricadeText">0/0</strong></span>
                     <span id="coinsHudBox" class="coinsHudBox"><img id="coinHudIcon" class="coinHudIcon" src="assets/sprites/coin.gif" alt="Monedas" onerror="this.style.display='none'"><strong id="coinsText" class="coinsHudText">0</strong></span>
                     <span>Puntos: <strong id="scoreText">0</strong></span>
 
@@ -158,14 +163,14 @@
                 </div>
 
                 <div id="bottomGameUi">
-                    <div id="abilityBar">
-                        <div class="abilitySlot locked" id="abilityBombSlot">1 · Bomba</div>
-                        <div class="abilitySlot locked" id="abilityFreezeSlot">2 · Freezeo</div>
-                        <div class="abilitySlot locked" id="abilityTsunamiSlot">3 · Tsunami</div>
-                        <div class="abilitySlot locked" id="abilityLightningSlot">4 · Rayo</div>
-                        <div class="abilitySlot locked" id="abilityMeteorSlot">5 · Meteorito</div>
-                        <div class="abilitySlot locked" id="abilityEclipseSlot">6 · Eclipse</div>
-                        <div class="abilitySlot locked" id="abilityBlinkSlot">E · Blink</div>
+                    <div id="abilityBar" class="abilityBarSlots">
+                        <div class="abilitySlot locked" id="abilityBombSlot" data-ability-slot="0">1 · Vacío</div>
+                        <div class="abilitySlot locked" id="abilityFreezeSlot" data-ability-slot="1">2 · Vacío</div>
+                        <div class="abilitySlot locked" id="abilityTsunamiSlot" data-ability-slot="2">3 · Vacío</div>
+                        <div class="abilitySlot locked" id="abilityLightningSlot" data-ability-slot="3">4 · Vacío</div>
+                        <div class="abilitySlot locked" id="abilityMeteorSlot" data-ability-slot="4">5 · Vacío</div>
+                        <div class="abilitySlot locked" id="abilityEclipseSlot" data-ability-slot="5">6 · Vacío</div>
+                        <div class="abilitySlot locked" id="abilityBlinkSlot" data-ability-slot="6">E · Vacío</div>
                     </div>
 
                     <div id="inventoryBar">
@@ -235,6 +240,7 @@
                         <button class="shopTabButton" data-shop-tab="towers">Torres</button>
                         <button class="shopTabButton" data-shop-tab="traps">Trampas</button>
                         <button class="shopTabButton" data-shop-tab="mines">Minas</button>
+                        <button class="shopTabButton" data-shop-tab="cores">Núcleos</button>
                         <button class="shopTabButton" data-shop-tab="abilities">Habilidades</button>
                     </div>
 
@@ -478,6 +484,46 @@
                             </div>
                         </section>
 
+                        <section class="shopSection coreShop" data-shop-section="cores">
+                            <h3>Núcleos</h3>
+                            <p class="coreShopHint">Estructuras permanentes de late game. Cada núcleo cuesta 10.000 monedas, no se puede quitar y solo puede existir uno de cada tipo. Además, deben colocarse lejos entre sí para obligarte a crear bases secundarias.</p>
+
+                            <button id="buyCoreMilitaryBtn">
+                                Núcleo Militar<br>
+                                <small>Potencia torres cercanas: más daño, velocidad y alcance.</small><br>
+                                <span id="coreMilitaryCostText">10000</span><span class="currencyLabel"> monedas</span>
+                            </button>
+
+                            <button id="buyCoreEconomicBtn">
+                                Núcleo Económico<br>
+                                <small>Mejora minas cercanas y aumenta su generación de oro.</small><br>
+                                <span id="coreEconomicCostText">10000</span><span class="currencyLabel"> monedas</span>
+                            </button>
+
+                            <button id="buyCoreArcaneBtn">
+                                Núcleo Arcano<br>
+                                <small>En su rango: habilidades más fuertes y menor cooldown.</small><br>
+                                <span id="coreArcaneCostText">10000</span><span class="currencyLabel"> monedas</span>
+                            </button>
+
+                            <button id="buyCoreFortressBtn">
+                                Núcleo Fortaleza<br>
+                                <small>Mejora barricadas cercanas y abarata/re fuerza reparaciones.</small><br>
+                                <span id="coreFortressCostText">10000</span><span class="currencyLabel"> monedas</span>
+                            </button>
+
+                            <button id="buyCoreCursedBtn" class="cursedCoreButton">
+                                Núcleo Maldito<br>
+                                <small>Buff global enorme al jugador, pero atrae especiales.</small><br>
+                                <span id="coreCursedCostText">10000</span><span class="currencyLabel"> monedas</span>
+                            </button>
+
+                            <div class="coreInfoBox">
+                                <strong id="coreLimitText">0/5 núcleos</strong>
+                                <small>Distancia mínima entre núcleos: grande. No se venden, no se mueven y no se destruyen por decisión del jugador.</small>
+                            </div>
+                        </section>
+
                         <section class="shopSection abilitiesShop" data-shop-section="abilities">
                             <h3>Habilidades</h3>
 
@@ -522,13 +568,15 @@
                                 <small><span id="blinkKeyText">E</span> · Dash corto que atraviesa paredes</small><br>
                                 <span id="blinkCostText">800</span><span class="currencyLabel"> monedas</span>
                             </button>
+
+                            <div id="abilityLoadoutPanel" class="abilityLoadoutPanel"></div>
                         </section>
                     </div>
 
                     <button id="nextWaveBtn" class="nextWaveButton">Siguiente oleada</button>
                 </div>
 
-                <div id="gameOverScreen" class="overlayPanel hidden">
+                <div id="gameOverScreen" class="overlayPanel hidden gameOverPixelPanel">
                     <h2>Run terminada</h2>
                     <p id="deathMessageText">El jugador cayó.</p>
                     <p>Puntos de esta run: <strong id="finalScoreText">0</strong></p>
