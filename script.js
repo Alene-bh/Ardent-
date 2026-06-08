@@ -31,6 +31,11 @@ const BOSS_SPAWN_ZONE = {
 const TRAP_COLLISION_RADIUS = 18;
 const MINE_COLLISION_RADIUS = 24;
 const MINE_MAX_HP = 120;
+// Anti-sniper: el disparo manual del jugador tiene alcance real en mundo.
+// Antes podía clickear la base/Visitante desde la seguridad de su base y las balas
+// viajaban media galaxia hasta pegar. Ahora las balas del jugador mueren al llegar
+// a este rango, mientras que torres/proyectiles especiales conservan su lógica.
+const PLAYER_PROJECTILE_MAX_RANGE = 620;
 const TOWER_ROTATION_STEP = Math.PI / 2;
 
 // Balance infinito: las oleadas deben volverse más intensas, no más largas.
@@ -8662,6 +8667,8 @@ function shoot(targetX, targetY, owner = "player", tower = null) {
             projectiles.push({
                 x: player.x,
                 y: player.y,
+                startX: player.x,
+                startY: player.y,
                 radius: 6,
                 speed: 7,
                 damage,
@@ -8674,7 +8681,8 @@ function shoot(targetX, targetY, owner = "player", tower = null) {
                 hitsLeft: 1,
                 hitEnemies: [],
                 bornAt: getGameTime(),
-                maxAge: 5200
+                maxAge: 1900,
+                maxDistance: PLAYER_PROJECTILE_MAX_RANGE
             });
         });
     }
@@ -10454,6 +10462,14 @@ El Abismo perdió el pulso por un instante.`, 1200, "titan-reward");
     resolveEnemyCollisions();
 }
 
+function hasProjectileExceededRange(projectile) {
+    if (!projectile || !Number.isFinite(projectile.maxDistance)) return false;
+    if (!Number.isFinite(projectile.startX)) projectile.startX = projectile.x;
+    if (!Number.isFinite(projectile.startY)) projectile.startY = projectile.y;
+    const travelled = Math.hypot(projectile.x - projectile.startX, projectile.y - projectile.startY);
+    return travelled > projectile.maxDistance;
+}
+
 function updateProjectiles() {
     for (let i = projectiles.length - 1; i >= 0; i--) {
         const p = projectiles[i];
@@ -10465,6 +10481,11 @@ function updateProjectiles() {
 
         p.x += p.dx * p.speed * gameSpeed * frameScale;
         p.y += p.dy * p.speed * gameSpeed * frameScale;
+
+        if (hasProjectileExceededRange(p)) {
+            projectiles.splice(i, 1);
+            continue;
+        }
 
         if (p.x < -80 || p.x > WORLD_WIDTH + 80 || p.y < -80 || p.y > WORLD_HEIGHT + 80) {
             projectiles.splice(i, 1);
