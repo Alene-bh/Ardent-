@@ -1657,6 +1657,7 @@ const towerSlots = createTowerPlacementTiles();
 
 let pendingTowerPurchase = null;
 let pendingTowerMoveIndex = null;
+let pendingMineMoveId = null;
 let selectedStructureIds = [];
 let selectedStructureType = null;
 let areaSelectionDrag = null;
@@ -3532,6 +3533,7 @@ function shouldVisitorPrioritizeTerritoryBuild(visitor, target = null) {
     const cost = getVisitorConstructionCost(nextSlot.type === "door" ? "door" : nextSlot.type, visitor);
     if ((visitor.visitorGold || 0) < cost) return false;
     if (target?.openingAssault && isVisitorInsideOwnBase(visitor)) return false;
+    if (target?.forceAssault || target?.aggressiveAssault) return false;
 
     // Si el jugador está encima o hay un objetivo realmente cercano, pelea.
     // Si el objetivo está lejos, usa ese oro para expandirse primero.
@@ -3574,7 +3576,7 @@ function getVisitorIntentionalShotTarget(visitor, target, routeActive = false) {
     if (!shot) return null;
 
     const dist = Math.hypot(shot.x - visitor.x, shot.y - visitor.y);
-    const maxRange = target.type === "player" ? 520 : 470;
+    const maxRange = target.aggressiveAssault ? (target.type === "player" ? 590 : 560) : (target.type === "player" ? 520 : 470);
     if (dist > maxRange || dist < 42) return null;
 
     // Evita el bug de girar/disparar a puntos de ruta dentro de su base.
@@ -5172,7 +5174,7 @@ function getMineIncomeForWave(targetWave = wave) {
     return Math.ceil(baseIncome * BUILD_ECONOMY_GOLD_MULTIPLIER);
 }
 
-function isMinePositionValid(x, y) {
+function isMinePositionValid(x, y, ignoredMine = null) {
     const mineRect = getEntityRect({ x, y, radius: MINE_COLLISION_RADIUS });
     if (!isBuildRectInsideWorld(mineRect)) return false;
     if (isCircleInBossSpawnZone(x, y, MINE_COLLISION_RADIUS, 8)) return false;
@@ -5182,7 +5184,7 @@ function isMinePositionValid(x, y) {
     if ((towers || []).some(t => Math.hypot(t.x - x, t.y - y) < TOWER_COLLISION_RADIUS + MINE_COLLISION_RADIUS + 8)) return false;
     if ((barricades || []).some(b => b.active && b.hp > 0 && !b.isOpen && circleIntersectsBarricade(x, y, MINE_COLLISION_RADIUS + 6, b, 0))) return false;
     if ((traps || []).some(trap => Math.hypot(trap.x - x, trap.y - y) < TRAP_COLLISION_RADIUS + MINE_COLLISION_RADIUS + 6)) return false;
-    if ((mines || []).some(mine => Math.hypot(mine.x - x, mine.y - y) < MINE_COLLISION_RADIUS * 2 + 10)) return false;
+    if ((mines || []).some(mine => mine !== ignoredMine && Math.hypot(mine.x - x, mine.y - y) < MINE_COLLISION_RADIUS * 2 + 10)) return false;
     if ((cores || []).some(core => core && Math.hypot(core.x - x, core.y - y) < CORE_RADIUS + MINE_COLLISION_RADIUS + 12)) return false;
     return true;
 }
@@ -5650,6 +5652,7 @@ function prepareRepeatWave(targetWave, source = "manual") {
     cancelBarricadePlacement(false);
     cancelTrapPlacement(false);
     cancelMinePlacement(false);
+    cancelMineMove(false);
     cancelCorePlacement(false);
     cancelTowerPlacement(false);
     showCenterMessage(`${source === "auto" ? "Auto repitiendo" : "Repitiendo"} oleada ${normalizedWave}`, 900);
@@ -7235,6 +7238,11 @@ const VISITOR_MIN_CHASE_BASE_DISTANCE = 520;
 const VISITOR_TERRITORY_WARNING_MS = 5000;
 const VISITOR_BUILD_VISION_RANGE = 560;
 const VISITOR_BUILD_HAND_RANGE = 74;
+// Agresividad del Visitante: cuando ya tiene una base mínima deja de jugar
+// solamente a construir y empieza a presionar la base del jugador.
+const VISITOR_ASSAULT_REPATH_MS = 1600;
+const VISITOR_ASSAULT_MIN_SHELL_RATIO = 0.62;
+const VISITOR_ASSAULT_MAX_BUILD_BIAS_MS = 9000;
 
 // Movimiento humano del Visitante: evita el temblor de recalcular dirección cada frame.
 // La IA ahora fija un objetivo, camina hacia él, se detiene un instante y recién ahí ejecuta.
@@ -7357,6 +7365,24 @@ function applyVisitorHumanMovement(visitor, targetX, targetY, move, options = {}
     return visitor.isMoving;
 }
 
+
+function continueVisitorHumanGoalMovement(visitor) {
+    if (!visitor || visitor.hp <= 0) return false;
+    if (!Number.isFinite(visitor.visitorGoalX) || !Number.isFinite(visitor.visitorGoalY)) return false;
+
+    const move = Math.max(
+        0.72,
+        Math.min(1.65, visitor.speed || visitor.baseSpeed || 1)
+    ) * gameSpeed * frameScale;
+
+    return applyVisitorHumanMovement(
+        visitor,
+        visitor.visitorGoalX,
+        visitor.visitorGoalY,
+        move,
+        { arriveRadius: visitor.visitorGoalArriveRadius || 24, memory: 0.78 }
+    );
+}
 
 function isPlayerInsideOwnBaseArea() {
     if (!player || player.hp <= 0) return false;
@@ -7566,6 +7592,158 @@ function getVisitorObservationTarget(visitor) {
     };
 }
 
+
+function getPlayerBaseAssaultCandidates(visitor, options = {}) {
+    if (!visitor) return [];
+    const hpPct = visitor.maxHp ? visitor.hp / Math.max(1, visitor.maxHp) : 1;
+    const now = getGameTime();
+    const aggressive = Boolean(options.aggressive);
+    const candidates = [];
+
+    const add = (entry) => {
+        if (!entry || !Number.isFinite(entry.x) || !Number.isFinite(entry.y)) return;
+        if (!entry.object && entry.type !== "player") return;
+        candidates.push(entry);
+    };
+
+    // La base es el objetivo estratégico. En modo agresivo pasa a ser prioridad real,
+    // no un plan lejano que el Visitante posterga eternamente por construir otro outpost.
+    if (basePlaced && baseCore && baseCore.hp > 0) {
+        const baseDist = Math.hypot(visitor.x - baseCore.x, visitor.y - baseCore.y);
+        const baseDamageBonus = (1 - (baseCore.hp / Math.max(1, baseCore.maxHp || baseCore.hp))) * 260;
+        add({
+            type: "base",
+            object: baseCore,
+            x: baseCore.x,
+            y: baseCore.y,
+            radius: BASE_RADIUS,
+            score: baseDist - (aggressive ? 520 : 140) - baseDamageBonus,
+            strategic: true
+        });
+    }
+
+    // Primero abre camino: torres peligrosas, minas cercanas y paredes dañadas son buenos blancos.
+    (towers || []).forEach(t => {
+        if (!t || !t.owned || t.hp <= 0) return;
+        const dist = Math.hypot(visitor.x - t.x, visitor.y - t.y);
+        const hpMissing = 1 - (t.hp / Math.max(1, t.maxHp || t.hp));
+        const nearBaseBonus = baseCore ? Math.max(0, 260 - Math.hypot(t.x - baseCore.x, t.y - baseCore.y)) : 0;
+        add({
+            type: "tower",
+            object: t,
+            x: t.x,
+            y: t.y,
+            radius: TOWER_COLLISION_RADIUS,
+            score: dist - 240 - nearBaseBonus * 0.8 - hpMissing * 180,
+            strategic: true
+        });
+    });
+
+    (mines || []).forEach(m => {
+        if (!m || m.hp <= 0) return;
+        const dist = Math.hypot(visitor.x - m.x, visitor.y - m.y);
+        const nearBaseBonus = baseCore ? Math.max(0, 230 - Math.hypot(m.x - baseCore.x, m.y - baseCore.y)) : 0;
+        add({
+            type: "mine",
+            object: m,
+            x: m.x,
+            y: m.y,
+            radius: m.radius || MINE_COLLISION_RADIUS,
+            score: dist - 155 - nearBaseBonus * 0.65,
+            strategic: true
+        });
+    });
+
+    (barricades || []).forEach(b => {
+        if (!b || !b.active || b.hp <= 0 || b.isOpen) return;
+        const c = getClosestPointOnBarricade(visitor.x, visitor.y, b);
+        const dist = Math.hypot(visitor.x - c.x, visitor.y - c.y);
+        const damagedBonus = (1 - (b.hp / Math.max(1, b.maxHp || b.hp))) * 150;
+        const nearBaseBonus = baseCore ? Math.max(0, 320 - Math.hypot(c.x - baseCore.x, c.y - baseCore.y)) : 0;
+        add({
+            type: "barricade",
+            object: b,
+            x: c.x,
+            y: c.y,
+            radius: 12,
+            score: dist - 85 - damagedBonus - nearBaseBonus * 0.5,
+            strategic: true
+        });
+    });
+
+    if (player && player.hp > 0 && canVisitorSeePlayer(visitor)) {
+        const playerDist = Math.hypot(visitor.x - player.x, visitor.y - player.y);
+        // Si el jugador está defendiendo dentro de su base, el Visitante no se queda mirándolo:
+        // lo usa como blanco secundario, pero prefiere romper estructuras.
+        const insideBasePenalty = isPlayerInsideOwnBaseArea() ? 520 : 0;
+        add({
+            type: "player",
+            object: player,
+            x: player.x,
+            y: player.y,
+            radius: 23,
+            score: playerDist - 360 + insideBasePenalty,
+            strategic: !insideBasePenalty
+        });
+    }
+
+    candidates.sort((a, b) => a.score - b.score);
+    return candidates;
+}
+
+function shouldVisitorGoAggressive(visitor) {
+    if (!visitor || !waveInProgress || !player || player.hp <= 0) return false;
+    const hpPct = visitor.maxHp ? visitor.hp / Math.max(1, visitor.maxHp) : 1;
+    if (hpPct <= VISITOR_LOW_HP_RETREAT_RATIO + 0.08) return false;
+    if (!Number.isFinite(visitor.visitorAssaultBornAt)) visitor.visitorAssaultBornAt = getGameTime();
+
+    const shell = getVisitorMainShellCompletion(visitor);
+    const hasSupport = getVisitorStructures("tower").length > 0 || getVisitorStructures("wall").length >= 2 || getVisitorStructures("door").length > 0;
+    const builtEnough = shell.complete || shell.ratio >= VISITOR_ASSAULT_MIN_SHELL_RATIO || hasSupport;
+    const hasWaitedEnough = getGameTime() - visitor.visitorAssaultBornAt >= VISITOR_ASSAULT_MAX_BUILD_BIAS_MS;
+
+    return builtEnough || hasWaitedEnough || wave >= 18;
+}
+
+function getVisitorAggressiveAssaultTarget(visitor) {
+    if (!shouldVisitorGoAggressive(visitor)) return null;
+
+    const now = getGameTime();
+    if (
+        visitor.visitorAssaultTarget &&
+        now < (visitor.nextVisitorAssaultRepathAt || 0) &&
+        visitor.visitorAssaultTarget.object &&
+        (visitor.visitorAssaultTarget.type === "player" || visitor.visitorAssaultTarget.object.hp > 0)
+    ) {
+        const cached = visitor.visitorAssaultTarget;
+        return {
+            ...cached,
+            x: cached.type === "barricade" ? cached.x : (cached.object.x ?? cached.x),
+            y: cached.type === "barricade" ? cached.y : (cached.object.y ?? cached.y),
+            aggressiveAssault: true,
+            forceAssault: true
+        };
+    }
+
+    visitor.nextVisitorAssaultRepathAt = now + VISITOR_ASSAULT_REPATH_MS;
+    const candidates = getPlayerBaseAssaultCandidates(visitor, { aggressive: true });
+    const best = candidates[0] || null;
+    if (!best) return null;
+
+    best.aggressiveAssault = true;
+    best.forceAssault = true;
+    visitor.visitorAssaultTarget = best;
+
+    if (best.type === "base") visitor.visitorLastPlan = "Asaltando el núcleo del jugador";
+    else if (best.type === "tower") visitor.visitorLastPlan = "Rompiendo torres defensivas";
+    else if (best.type === "barricade") visitor.visitorLastPlan = "Abriendo paso hacia tu base";
+    else if (best.type === "mine") visitor.visitorLastPlan = "Desactivando minas del jugador";
+    else if (best.type === "player") visitor.visitorLastPlan = "Cazando al jugador";
+    else visitor.visitorLastPlan = "Presionando al jugador";
+
+    return best;
+}
+
 function getVisitorTarget(visitor) {
     const hpPct = visitor && visitor.maxHp ? visitor.hp / Math.max(1, visitor.maxHp) : 1;
 
@@ -7577,6 +7755,9 @@ function getVisitorTarget(visitor) {
 
     const openingAssault = getVisitorOpeningAssaultTarget(visitor);
     if (openingAssault) return openingAssault;
+
+    const aggressiveAssault = getVisitorAggressiveAssaultTarget(visitor);
+    if (aggressiveAssault) return aggressiveAssault;
 
     // Si saliste lejos de tu base y entra en su rango de visión, te prioriza como rival directo.
     if (shouldVisitorPrioritizePlayer(visitor)) {
@@ -7672,11 +7853,21 @@ function updateVisitorAI(visitor, now) {
     }
     awardVisitorPassiveWaveIncome(visitor, now);
     const target = getVisitorTarget(visitor);
-    if (tryVisitorTerritoryBuildAction(visitor, target)) return;
+    if (tryVisitorTerritoryBuildAction(visitor, target)) {
+        continueVisitorHumanGoalMovement(visitor);
+        return;
+    }
     maybeUpgradeVisitor(visitor, now);
     if (!target) {
         const observe = getVisitorObservationTarget(visitor);
-        if (observe) setVisitorHumanGoal(visitor, observe.x, observe.y, "Observando desde un outpost", { arriveRadius: 34, state: "observe" });
+        if (observe) {
+            setVisitorHumanGoal(visitor, observe.x, observe.y, "Observando desde un outpost", { arriveRadius: 34, state: "observe" });
+            continueVisitorHumanGoalMovement(visitor);
+        } else {
+            visitor.lastMoveX = 0;
+            visitor.lastMoveY = 0;
+            visitor.isMoving = false;
+        }
         return;
     }
     let targetX = target.x;
@@ -7724,7 +7915,7 @@ function updateVisitorAI(visitor, now) {
     }
     let mx = 0;
     let my = 0;
-    const preferred = visitorDoorRouteActive ? 12 : target.type === "visitor_base" ? 34 : target.type === "outpost_observe" ? 58 : target.type === "player" ? 310 : 255;
+    const preferred = visitorDoorRouteActive ? 12 : target.type === "visitor_base" ? 34 : target.type === "outpost_observe" ? 58 : target.type === "player" ? (target.aggressiveAssault ? 235 : 310) : (target.aggressiveAssault ? 205 : 255);
     if (visitorDoorRouteActive) {
         mx += nx;
         my += ny;
@@ -7805,7 +7996,8 @@ function updateVisitorAI(visitor, now) {
         visitor.lastVisitorShotAt = now;
         visitor.lastAimX = shotTarget.x;
         visitor.lastAimY = shotTarget.y;
-        fireEnemyProjectile(visitor, shotTarget.x, shotTarget.y, { damage: Math.max(2, visitor.visitorDamage || 4), color: "#7b0712", speed: 5.2, radius: 6, visitorProjectile: true });
+        const assaultDamageBonus = target.aggressiveAssault && target.type !== "player" ? 1.22 : 1;
+        fireEnemyProjectile(visitor, shotTarget.x, shotTarget.y, { damage: Math.max(2, visitor.visitorDamage || 4) * assaultDamageBonus, color: "#7b0712", speed: target.aggressiveAssault ? 5.55 : 5.2, radius: 6, visitorProjectile: true });
     }
 }
 
@@ -12437,6 +12629,25 @@ function drawBuildPreview() {
         ctx.fillText(`Mina · +${formatMoney(getMineIncomeForWave())}/oleada · click coloca`, point.x - 150, point.y - radius - 12);
     }
 
+    if (pendingMineMoveId !== null) {
+        const point = getSnappedBuildPoint();
+        const mine = getStructureById(pendingMineMoveId, "mine");
+        const valid = mine && isMinePositionValid(point.x, point.y, mine);
+        const radius = MINE_COLLISION_RADIUS;
+        ctx.fillStyle = valid ? "rgba(255,215,106,0.38)" : "rgba(255,80,80,0.35)";
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = valid ? "rgba(255,215,106,0.95)" : "rgba(255,80,80,0.95)";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = "white";
+        ctx.font = "bold 14px Arial";
+        ctx.fillText(`Mover mina · click confirma · Esc/click derecho cancela`, point.x - 160, point.y - radius - 12);
+    }
+
     if (pendingCorePlacement) {
         const point = getSnappedBuildPoint();
         const def = getCoreDefinition(pendingCorePlacement.type);
@@ -12964,6 +13175,7 @@ function drawMines() {
         if (!mine || mine.hp <= 0) return;
         const radius = mine.radius || MINE_COLLISION_RADIUS;
         const pulse = mine.pulseUntil && mine.pulseUntil > getGameTime();
+        const selected = isStructureSelected("mine", mine.id);
 
         ctx.save();
         ctx.shadowColor = pulse ? "rgba(255, 208, 120, 0.95)" : "rgba(255, 149, 0, 0.55)";
@@ -12974,8 +13186,8 @@ function drawMines() {
         ctx.arc(mine.x, mine.y, radius, 0, Math.PI * 2);
         ctx.fill();
 
-        ctx.strokeStyle = pulse ? "#ffd78a" : "#ffcf80";
-        ctx.lineWidth = pulse ? 3 : 2;
+        ctx.strokeStyle = selected ? "#ffffff" : (pulse ? "#ffd78a" : "#ffcf80");
+        ctx.lineWidth = selected ? 4 : (pulse ? 3 : 2);
         ctx.beginPath();
         ctx.arc(mine.x, mine.y, radius, 0, Math.PI * 2);
         ctx.stroke();
@@ -14921,19 +15133,20 @@ function jumpToWave(targetWave) {
 
 
 function isInBuildPlacementMode() {
-    return Boolean(pendingBarricadePlacement || pendingTrapPlacement || pendingMinePlacement || pendingCorePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null);
+    return Boolean(pendingBarricadePlacement || pendingTrapPlacement || pendingMinePlacement || pendingMineMoveId !== null || pendingCorePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null);
 }
 
 
 function getStructureById(id, type = null) {
     if (type === "tower") return (towers || []).find(t => String(t.id) === String(id)) || null;
     if (type === "barricade") return (barricades || []).find(b => String(b.id) === String(id)) || null;
-    return (towers || []).find(t => String(t.id) === String(id)) || (barricades || []).find(b => String(b.id) === String(id)) || null;
+    if (type === "mine") return (mines || []).find(m => String(m.id) === String(id)) || null;
+    return (towers || []).find(t => String(t.id) === String(id)) || (barricades || []).find(b => String(b.id) === String(id)) || (mines || []).find(m => String(m.id) === String(id)) || null;
 }
 
 function getSelectedStructures() {
-    const pool = selectedStructureType === "tower" ? (towers || []) : selectedStructureType === "barricade" ? (barricades || []) : [];
-    return pool.filter(item => item && selectedStructureIds.includes(String(item.id)) && (selectedStructureType === "tower" || (item.active && item.hp > 0)));
+    const pool = selectedStructureType === "tower" ? (towers || []) : selectedStructureType === "barricade" ? (barricades || []) : selectedStructureType === "mine" ? (mines || []) : [];
+    return pool.filter(item => item && selectedStructureIds.includes(String(item.id)) && (selectedStructureType === "tower" || selectedStructureType === "mine" || (item.active && item.hp > 0)));
 }
 
 function isStructureSelected(type, id) {
@@ -14962,6 +15175,9 @@ function selectStructure(type, entity, multiSame = false) {
         const bucket = getTowerSelectionBucket(entity);
         selectedStructureType = "tower";
         selectedStructureIds = (multiSame ? (towers || []).filter(t => t.owned && getTowerSelectionBucket(t) === bucket) : [entity]).map(t => String(t.id));
+    } else if (type === "mine") {
+        selectedStructureType = "mine";
+        selectedStructureIds = (multiSame ? (mines || []).filter(m => m && m.hp > 0) : [entity]).map(m => String(m.id));
     } else {
         const bucket = getBarricadeSelectionBucket(entity);
         selectedStructureType = "barricade";
@@ -14998,7 +15214,9 @@ function toggleStructureSelectionGroup(type, entity) {
     if (!entity) { clearStructureSelection(); return; }
     const ids = type === "tower"
         ? (towers || []).filter(t => t.owned && getTowerSelectionBucket(t) === getTowerSelectionBucket(entity)).map(t => String(t.id))
-        : (barricades || []).filter(b => b.active && b.hp > 0 && getBarricadeSelectionBucket(b) === getBarricadeSelectionBucket(entity)).map(b => String(b.id));
+        : type === "mine"
+            ? (mines || []).filter(m => m && m.hp > 0).map(m => String(m.id))
+            : (barricades || []).filter(b => b.active && b.hp > 0 && getBarricadeSelectionBucket(b) === getBarricadeSelectionBucket(entity)).map(b => String(b.id));
 
     if (selectedStructureType !== type) {
         selectedStructureType = type;
@@ -15049,6 +15267,15 @@ function findTowerAtWorldPoint(x, y) {
     return null;
 }
 
+function findMineAtWorldPoint(x, y) {
+    for (let i = (mines || []).length - 1; i >= 0; i--) {
+        const mine = mines[i];
+        if (!mine || mine.hp <= 0) continue;
+        if (Math.hypot(x - mine.x, y - mine.y) <= (mine.radius || MINE_COLLISION_RADIUS) + 7) return mine;
+    }
+    return null;
+}
+
 function findBarricadeAtWorldPoint(x, y) {
     for (let i = (barricades || []).length - 1; i >= 0; i--) {
         const b = barricades[i];
@@ -15064,6 +15291,7 @@ function getStructuresInWorldRect(rect) {
     const x1 = Math.min(rect.startX, rect.endX), x2 = Math.max(rect.startX, rect.endX);
     const y1 = Math.min(rect.startY, rect.endY), y2 = Math.max(rect.startY, rect.endY);
     const towerItems = (towers || []).filter(t => t && t.owned && t.hp > 0 && t.x >= x1 && t.x <= x2 && t.y >= y1 && t.y <= y2);
+    const mineItems = (mines || []).filter(m => m && m.hp > 0 && m.x >= x1 && m.x <= x2 && m.y >= y1 && m.y <= y2);
     const barricadeItems = (barricades || []).filter(b => {
         if (!b || !b.active || b.hp <= 0) return false;
         const seg = getBarricadeSegment(b);
@@ -15072,7 +15300,8 @@ function getStructuresInWorldRect(rect) {
             (seg.x2 >= x1 && seg.x2 <= x2 && seg.y2 >= y1 && seg.y2 <= y2) ||
             barricadeIntersectsRect(b, { x:x1, y:y1, width:x2-x1, height:y2-y1 }, 0);
     });
-    if (towerItems.length && (!barricadeItems.length || towerItems.length >= barricadeItems.length)) return { type:"tower", items:towerItems };
+    if (towerItems.length && towerItems.length >= barricadeItems.length && towerItems.length >= mineItems.length) return { type:"tower", items:towerItems };
+    if (mineItems.length && mineItems.length >= barricadeItems.length) return { type:"mine", items:mineItems };
     if (barricadeItems.length) return { type:"barricade", items:barricadeItems };
     return { type:null, items:[] };
 }
@@ -15083,7 +15312,7 @@ function selectStructuresInArea(rect) {
     selectedStructureType = result.type;
     selectedStructureIds = result.items.map(item => String(item.id));
     updateStructurePanel();
-    showCenterMessage(`${result.items.length} ${result.type === "tower" ? "torres" : "barricadas"} seleccionadas`, 750, "minor");
+    showCenterMessage(`${result.items.length} ${result.type === "tower" ? "torres" : result.type === "mine" ? "minas" : "barricadas"} seleccionadas`, 750, "minor");
     return true;
 }
 
@@ -15137,6 +15366,22 @@ function handleStructureClickSelection(event) {
         }
         return true;
     }
+
+    const mine = findMineAtWorldPoint(mousePosition.x, mousePosition.y);
+    if (mine) {
+        if (selectAllSame) {
+            selectStructure("mine", mine, true);
+            showCenterMessage("Seleccionadas TODAS las minas", 650, "minor");
+        } else if (addOne) {
+            toggleStructureSelection("mine", mine);
+            showCenterMessage("Mina sumada/quitada de la selección", 650, "minor");
+        } else {
+            selectStructure("mine", mine, false);
+            showCenterMessage("Mina seleccionada", 650, "minor");
+        }
+        return true;
+    }
+
     const b = findBarricadeAtWorldPoint(mousePosition.x, mousePosition.y);
     if (b) {
         ensureBarricadeEconomy(b);
@@ -15212,6 +15457,23 @@ function updateStructurePanel() {
             <button type="button" data-structure-action="repair" ${damaged.length === 0 || coins < repairTotal ? "disabled" : ""}>Reparar ${multiple ? "dañadas" : ""} (${formatMoney(repairTotal)})</button>
             ${!multiple ? `<button type="button" data-structure-action="move">Mover</button>` : ""}
             <button type="button" data-structure-action="rotate">Rotar ${multiple ? "todas" : ""}</button>
+            <button type="button" data-structure-action="sell" class="dangerMiniButton">Vender ${multiple ? "todas" : ""} (${formatMoney(sellTotal)})</button>
+        `;
+        return;
+    }
+
+    if (selectedStructureType === "mine") {
+        const first = selected[0];
+        const damaged = selected.filter(m => m.hp < (m.maxHp || MINE_MAX_HP));
+        const repairTotal = damaged.reduce((sum, m) => sum + getMineRepairCost(m), 0);
+        const sellTotal = selected.reduce((sum, m) => sum + getMineSellRefund(m), 0);
+        const hp = `${Math.ceil(first.hp || 0)}/${Math.ceil(first.maxHp || MINE_MAX_HP)}`;
+        const income = getMineIncomeForWave();
+        structurePanelTitle.textContent = multiple ? `${selected.length} minas` : "Mina de eco";
+        structurePanelInfo.innerHTML = `${multiple ? "Selección múltiple" : `HP ${hp} · genera aprox. ${formatMoney(income)}/oleada`}<br><small>Podés mover una mina durante el descanso. Ctrl+click selecciona todas las minas.</small>`;
+        structurePanelActions.innerHTML = `
+            <button type="button" data-structure-action="repair" ${damaged.length === 0 || coins < repairTotal ? "disabled" : ""}>Reparar ${multiple ? "dañadas" : ""} (${formatMoney(repairTotal)})</button>
+            ${!multiple ? `<button type="button" data-structure-action="move">Mover</button>` : ""}
             <button type="button" data-structure-action="sell" class="dangerMiniButton">Vender ${multiple ? "todas" : ""} (${formatMoney(sellTotal)})</button>
         `;
         return;
@@ -15349,6 +15611,83 @@ function sellTowerSelected() {
     updateHud(true); autoSaveRun(true);
 }
 
+function getMineRepairCost(mine) {
+    if (!mine || mine.hp >= (mine.maxHp || MINE_MAX_HP)) return 0;
+    const missingRatio = Math.max(0, Math.min(1, ((mine.maxHp || MINE_MAX_HP) - mine.hp) / Math.max(1, mine.maxHp || MINE_MAX_HP)));
+    const base = Math.max(60, Number(mine.cost) || getMineCostForCount());
+    return Math.max(1, Math.ceil(base * 0.34 * missingRatio));
+}
+
+function getMineSellRefund(mine) {
+    return Math.floor((Number(mine?.cost) || getMineCostForCount()) * TOWER_SELL_REFUND);
+}
+
+function repairMineSelected() {
+    const selected = getSelectedStructures().filter(m => selectedStructureType === "mine" && m.hp < (m.maxHp || MINE_MAX_HP));
+    if (!selected.length) return;
+    const total = selected.reduce((sum, m) => sum + getMineRepairCost(m), 0);
+    if (coins < total) { showCenterMessage(`Faltan ${formatMissingMoney(total - coins)} monedas`, 850); updateStructurePanel(); return; }
+    coins -= total;
+    selected.forEach(m => { m.hp = m.maxHp || MINE_MAX_HP; });
+    showCenterMessage(selected.length > 1 ? `${selected.length} minas reparadas` : "Mina reparada", 800);
+    updateHud(true); updateStructurePanel(); autoSaveRun(true);
+}
+
+function sellMineSelected() {
+    const selected = getSelectedStructures();
+    if (!selected.length || selectedStructureType !== "mine") return;
+    const ids = new Set(selected.map(m => String(m.id)));
+    coins += selected.reduce((sum, m) => sum + getMineSellRefund(m), 0);
+    mines = (mines || []).filter(m => !ids.has(String(m.id)));
+    costs.mineGold = getMineCostForCount((mines || []).length);
+    clearStructureSelection();
+    showCenterMessage(selected.length > 1 ? `${selected.length} minas vendidas` : "Mina vendida", 800);
+    updateHud(true); autoSaveRun(true);
+}
+
+function beginMineMove(mine) {
+    if (!mine || mine.hp <= 0) return;
+    pendingMineMoveId = String(mine.id);
+    pendingMinePlacement = null;
+    pendingTowerPurchase = null;
+    pendingTrapPlacement = null;
+    pendingBarricadePlacement = null;
+    pendingCorePlacement = null;
+    pendingTowerMoveIndex = null;
+    closeShop();
+    if (waveSummaryPanel) waveSummaryPanel.classList.add("hidden");
+    showCenterMessage("Mové la mina · click confirma", 900, "minor");
+    updateBuildCancelUI();
+    updateHud(true);
+}
+
+function cancelMineMove(showShopAgain = false) {
+    if (pendingMineMoveId === null) return;
+    pendingMineMoveId = null;
+    updateBuildCancelUI();
+    if (showShopAgain && hasActiveRun) openConstruction("mines");
+    updateHud(true);
+}
+
+function finishMineMove() {
+    if (pendingMineMoveId === null) return;
+    const mine = getStructureById(pendingMineMoveId, "mine");
+    if (!mine) { cancelMineMove(false); return; }
+    const point = getSnappedBuildPoint();
+    if (!isMinePositionValid(point.x, point.y, mine)) {
+        showCenterMessage("No se puede mover la mina ahí", 750, "minor");
+        return;
+    }
+    mine.x = point.x;
+    mine.y = point.y;
+    pendingMineMoveId = null;
+    selectStructure("mine", mine, false);
+    updateBuildCancelUI();
+    showCenterMessage("Mina movida", 750, "minor");
+    updateHud(true);
+    autoSaveRun(true);
+}
+
 function handleStructurePanelAction(action) {
     if (!buildPhaseActive || waveInProgress) {
         clearStructureSelection();
@@ -15368,19 +15707,22 @@ function handleStructurePanelAction(action) {
     }
     if (action === "upgrade") {
         if (selectedStructureType === "tower") upgradeTowerSelected();
-        else upgradeBarricadeSelected();
+        else if (selectedStructureType === "barricade") upgradeBarricadeSelected();
     }
     if (action === "repair") {
         if (selectedStructureType === "tower") repairTowerSelected();
+        else if (selectedStructureType === "mine") repairMineSelected();
         else repairBarricadeSelected();
     }
     if (action === "sell") {
         if (selectedStructureType === "tower") sellTowerSelected();
+        else if (selectedStructureType === "mine") sellMineSelected();
         else sellBarricadeSelected();
     }
     if (action === "move") {
         const selected = getSelectedStructures();
         if (selectedStructureType === "tower" && selected.length === 1) beginTowerMove(towers.indexOf(selected[0]));
+        if (selectedStructureType === "mine" && selected.length === 1) beginMineMove(selected[0]);
     }
     if (action === "rotate") {
         const selected = getSelectedStructures();
@@ -15396,6 +15738,7 @@ function getCurrentBuildModeLabel() {
     if (pendingBarricadePlacement) return "Colocando barricadas · R rota";
     if (pendingTrapPlacement) return "Colocando trampas";
     if (pendingMinePlacement) return "Colocando minas";
+    if (pendingMineMoveId !== null) return "Moviendo mina";
     if (pendingCorePlacement) { const def = getCoreDefinition(pendingCorePlacement.type); return `Colocando ${def ? def.name : "núcleo"}`; }
     if (pendingTowerPurchase) {
         const def = getTowerDefinition(pendingTowerPurchase.defKey);
@@ -15494,6 +15837,16 @@ function handleCanvasPlacementPointer(event) {
         return;
     }
 
+    if (pendingMineMoveId !== null) {
+        event.preventDefault();
+        if (event.button === 2) {
+            cancelMineMove(false);
+            return;
+        }
+        finishMineMove();
+        return;
+    }
+
     if (pendingCorePlacement) {
         event.preventDefault();
         if (event.button === 2) {
@@ -15504,7 +15857,7 @@ function handleCanvasPlacementPointer(event) {
         return;
     }
 
-    if (pendingBarricadePlacement || pendingTrapPlacement || pendingMinePlacement || pendingCorePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null) {
+    if (pendingBarricadePlacement || pendingTrapPlacement || pendingMinePlacement || pendingMineMoveId !== null || pendingCorePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null) {
         event.preventDefault();
         if (event.button === 2) {
             cancelTowerPlacement(false);
@@ -15540,11 +15893,12 @@ canvas.addEventListener("pointerdown", event => {
 });
 
 canvas.addEventListener("contextmenu", event => {
-    if (pendingBarricadePlacement || pendingTrapPlacement || pendingMinePlacement || pendingCorePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null) {
+    if (pendingBarricadePlacement || pendingTrapPlacement || pendingMinePlacement || pendingMineMoveId !== null || pendingCorePlacement || pendingTowerPurchase || pendingTowerMoveIndex !== null) {
         event.preventDefault();
         cancelBarricadePlacement(false);
         cancelTrapPlacement(false);
         cancelMinePlacement(false);
+        cancelMineMove(false);
         cancelCorePlacement(false);
         cancelTowerPlacement(false);
         cancelTowerMove(false);
@@ -15648,6 +16002,11 @@ window.addEventListener("keydown", event => {
 
         if (pendingMinePlacement) {
             cancelMinePlacement(false);
+            return;
+        }
+
+        if (pendingMineMoveId !== null) {
+            cancelMineMove(false);
             return;
         }
 
@@ -15862,6 +16221,7 @@ function openShop(sectionId = "stats") {
     cancelBarricadePlacement(false);
     cancelTrapPlacement(false);
     cancelMinePlacement(false);
+    cancelMineMove(false);
     cancelCorePlacement(false);
     cancelTowerPlacement(false);
     waveSummaryPanel.classList.add("hidden");
@@ -15886,6 +16246,7 @@ function openConstruction(sectionId = "towers") {
     cancelBarricadePlacement(false);
     cancelTrapPlacement(false);
     cancelMinePlacement(false);
+    cancelMineMove(false);
     cancelCorePlacement(false);
     cancelTowerPlacement(false);
     waveSummaryPanel.classList.add("hidden");
@@ -15972,6 +16333,7 @@ if (cancelBuildBtn) cancelBuildBtn.addEventListener("click", () => {
     cancelBarricadePlacement(false);
     cancelTrapPlacement(false);
     cancelMinePlacement(false);
+    cancelMineMove(false);
     cancelCorePlacement(false);
     cancelTowerPlacement(false);
     cancelTowerMove(false);
@@ -16422,6 +16784,7 @@ function beginMinePlacement() {
     }
     clearStructureSelection();
     pendingMinePlacement = { price, freeStarter: hasFreeStarter };
+    pendingMineMoveId = null;
     pendingTowerPurchase = null;
     pendingTrapPlacement = null;
     pendingBarricadePlacement = null;
@@ -16498,6 +16861,7 @@ function beginCorePlacement(type) {
     pendingTrapPlacement = null;
     pendingBarricadePlacement = null;
     pendingMinePlacement = null;
+    pendingMineMoveId = null;
     closeShop();
     showCenterMessage(`Colocá ${def.name} · no se puede quitar`, 1200);
     updateBuildCancelUI();
