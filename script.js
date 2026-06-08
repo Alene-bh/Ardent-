@@ -1699,6 +1699,10 @@ const CORE_COST = 10000;
 const CORE_RADIUS = 42;
 const CORE_EFFECT_RADIUS = 430;
 const CORE_MIN_DISTANCE = 760;
+// Hotfix rendimiento: los núcleos no necesitan recalcular/regenerar cada frame.
+// Evita tirones fuertes cuando hay muchas estructuras dentro de auras.
+const CORE_PASSIVE_UPDATE_INTERVAL_MS = 220;
+let lastCorePassiveUpdateAt = 0;
 const coreDefinitions = {
     military: { name: "Núcleo Militar", color: "#ff5f45", label: "M", desc: "Base ofensiva: las torres dentro del aura disparan mejor, pegan más fuerte y resisten un poco más." },
     economic: { name: "Núcleo Económico", color: "#ffd76a", label: "$", desc: "Base minera: las minas dentro del aura producen mucho más oro y aguantan mejor los ataques." },
@@ -5318,16 +5322,42 @@ function getCoreBuffTextForTarget(target, targetType = "tower") {
 
 function updateCorePassiveEffects() {
     if (!cores || !cores.length) return;
-    (barricades || []).forEach(b => {
-        if (!b || !b.active || b.hp <= 0 || !isPointInCoreRange("fortress", b.x, b.y)) return;
-        const regen = 0.09 * frameScale;
-        b.hp = Math.min(b.maxHp || b.hp, b.hp + regen);
-    });
-    (mines || []).forEach(m => {
-        if (!m || m.hp <= 0 || !isPointInCoreRange("economic", m.x, m.y)) return;
-        m.maxHp = Math.max(Number(m.maxHp) || MINE_MAX_HP, Math.ceil(MINE_MAX_HP * 1.35));
-        m.hp = Math.min(m.maxHp, (Number(m.hp) || 0) + 0.035 * frameScale);
-    });
+
+    const now = getGameTime();
+    if (lastCorePassiveUpdateAt && now - lastCorePassiveUpdateAt < CORE_PASSIVE_UPDATE_INTERVAL_MS) return;
+
+    const elapsed = lastCorePassiveUpdateAt ? Math.max(16, now - lastCorePassiveUpdateAt) : CORE_PASSIVE_UPDATE_INTERVAL_MS;
+    lastCorePassiveUpdateAt = now;
+    const passiveScale = elapsed / 16.6667;
+
+    const fortressCore = getOwnedCore("fortress");
+    const economicCore = getOwnedCore("economic");
+
+    if (fortressCore) {
+        const range = fortressCore.effectRadius || CORE_EFFECT_RADIUS;
+        const rangeSq = range * range;
+        (barricades || []).forEach(b => {
+            if (!b || !b.active || b.hp <= 0) return;
+            const dx = b.x - fortressCore.x;
+            const dy = b.y - fortressCore.y;
+            if (dx * dx + dy * dy > rangeSq) return;
+            const regen = 0.09 * passiveScale;
+            b.hp = Math.min(b.maxHp || b.hp, b.hp + regen);
+        });
+    }
+
+    if (economicCore) {
+        const range = economicCore.effectRadius || CORE_EFFECT_RADIUS;
+        const rangeSq = range * range;
+        (mines || []).forEach(m => {
+            if (!m || m.hp <= 0) return;
+            const dx = m.x - economicCore.x;
+            const dy = m.y - economicCore.y;
+            if (dx * dx + dy * dy > rangeSq) return;
+            m.maxHp = Math.max(Number(m.maxHp) || MINE_MAX_HP, Math.ceil(MINE_MAX_HP * 1.35));
+            m.hp = Math.min(m.maxHp, (Number(m.hp) || 0) + 0.035 * passiveScale);
+        });
+    }
 }
 
 function getTowerTileAt(x, y) {
@@ -12515,30 +12545,52 @@ function drawBufferBuffParticlesAround(x, y, radius = 26, color = "#73ff9f", see
 }
 
 
-function drawCoreBuffAuraAround(x, y, radius = 34, seed = 0, color = "#ff9b43") {
+function isWorldCircleVisible(x, y, radius = 0, padding = 90) {
+    const zoom = Math.max(0.05, camera?.zoom || 1);
+    const left = camera.x - padding;
+    const top = camera.y - padding;
+    const right = camera.x + GAME_WIDTH / zoom + padding;
+    const bottom = camera.y + GAME_HEIGHT / zoom + padding;
+    return x + radius >= left && x - radius <= right && y + radius >= top && y - radius <= bottom;
+}
+
+function drawCoreBuffMarkerAround(x, y, radius = 34, seed = 0, color = "#ff9b43") {
+    if (!isWorldCircleVisible(x, y, radius + 12, 60)) return;
     const now = getGameTime();
-    const t = now / 520 + seed;
+    const t = now / 680 + seed;
     ctx.save();
-    ctx.globalCompositeOperation = "lighter";
-    ctx.strokeStyle = "rgba(255,155,67,0.26)";
+    ctx.globalAlpha = 0.42 + Math.sin(t) * 0.08;
+    ctx.strokeStyle = color;
     ctx.lineWidth = 2;
-    ctx.setLineDash([5, 8]);
+    ctx.beginPath();
+    ctx.arc(x, y, radius + 6, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.restore();
+}
+
+function drawCoreBuffAuraAround(x, y, radius = 34, seed = 0, color = "#ff9b43") {
+    if (!isWorldCircleVisible(x, y, radius + 18, 70)) return;
+    const now = getGameTime();
+    const t = now / 620 + seed;
+    ctx.save();
+    ctx.globalAlpha = 0.34;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.arc(x, y, radius + 7 + Math.sin(t) * 2, 0, Math.PI * 2);
     ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 10;
-    for (let i = 0; i < 9; i++) {
-        const phase = (i / 9) * Math.PI * 2 + t * 1.4;
-        const wobble = Math.sin(t * 2.1 + i * 1.7) * 4;
-        const px = x + Math.cos(phase) * (radius + wobble);
-        const py = y + Math.sin(phase) * (radius + wobble);
-        const alpha = 0.34 + Math.sin(t * 2.6 + i) * 0.22;
-        ctx.globalAlpha = Math.max(0.16, Math.min(0.72, alpha));
-        ctx.fillStyle = i % 3 === 0 ? "#ffd08a" : color;
+
+    // Antes dibujaba 9 partículas con shadowBlur por cada estructura buffeada.
+    // Con muchas torres/minas/barricadas dentro de un núcleo eso detonaba el FPS.
+    ctx.globalAlpha = 0.55;
+    ctx.fillStyle = color;
+    for (let i = 0; i < 3; i++) {
+        const phase = (i / 3) * Math.PI * 2 + t * 1.15;
+        const px = x + Math.cos(phase) * (radius + 4);
+        const py = y + Math.sin(phase) * (radius + 4);
         ctx.beginPath();
-        ctx.arc(px, py, 1.8 + Math.sin(t + i) * 0.7, 0, Math.PI * 2);
+        ctx.arc(px, py, 1.6, 0, Math.PI * 2);
         ctx.fill();
     }
     ctx.globalAlpha = 1;
@@ -12580,8 +12632,8 @@ function drawBarricade() {
         }
         ctx.restore();
 
-        if (getCoreBuffsForTarget(b, "barricade").length) {
-            drawCoreBuffAuraAround(b.x, b.y, 42, Number(b.id) || b.x + b.y, "#ff9b43");
+        if (isPointInCoreRange("fortress", b.x, b.y)) {
+            drawCoreBuffMarkerAround(b.x, b.y, 42, Number(b.id) || b.x + b.y, "#ff9b43");
         }
 
         const liveBarricadeBuffs = getBufferEffectsForTarget(b, "barricade");
@@ -12916,8 +12968,8 @@ function drawTowers() {
     towers.forEach(tower => {
         if (!tower.owned) return;
 
-        if (getCoreBuffsForTarget(tower, "tower").length) {
-            drawCoreBuffAuraAround(tower.x, tower.y, 34, Number(tower.id) || tower.x + tower.y, "#ff9b43");
+        if (isPointInCoreRange("military", tower.x, tower.y)) {
+            drawCoreBuffMarkerAround(tower.x, tower.y, 34, Number(tower.id) || tower.x + tower.y, "#ff9b43");
         }
 
         if (isStructureSelected("tower", tower.id)) {
@@ -13154,32 +13206,40 @@ function drawCores() {
     (cores || []).forEach(core => {
         if (!core) return;
         const def = getCoreDefinition(core.type) || core;
-        const pulse = 0.5 + Math.sin(getGameTime() / 420 + (core.id || 0)) * 0.5;
+        const auraRadius = def.global ? CORE_RADIUS : (core.effectRadius || CORE_EFFECT_RADIUS);
+        if (!isWorldCircleVisible(core.x, core.y, auraRadius, 120)) return;
+
+        const pulse = 0.5 + Math.sin(getGameTime() / 520 + (core.id || 0)) * 0.5;
+        const color = def.color || core.color || "#b78cff";
         ctx.save();
+
         if (!def.global) {
-            ctx.fillStyle = `rgba(115,255,159,${0.035 + pulse * 0.025})`;
+            ctx.fillStyle = `rgba(115,255,159,${0.022 + pulse * 0.012})`;
             ctx.beginPath();
-            ctx.arc(core.x, core.y, core.effectRadius || CORE_EFFECT_RADIUS, 0, Math.PI * 2);
+            ctx.arc(core.x, core.y, auraRadius, 0, Math.PI * 2);
             ctx.fill();
-            ctx.strokeStyle = "rgba(255,255,255,0.12)";
-            ctx.setLineDash([8, 12]);
+
+            // Borde del aura más barato: sin lineDash animado, menos coste en canvas.
+            ctx.strokeStyle = "rgba(255,255,255,0.10)";
+            ctx.lineWidth = 2;
             ctx.beginPath();
-            ctx.arc(core.x, core.y, core.effectRadius || CORE_EFFECT_RADIUS, 0, Math.PI * 2);
+            ctx.arc(core.x, core.y, auraRadius, 0, Math.PI * 2);
             ctx.stroke();
-            ctx.setLineDash([]);
         }
-        ctx.shadowColor = def.color || core.color || "#b78cff";
-        ctx.shadowBlur = 18 + pulse * 12;
+
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 10 + pulse * 5;
         ctx.fillStyle = "rgba(12,12,18,0.94)";
         ctx.beginPath();
         ctx.arc(core.x, core.y, CORE_RADIUS, 0, Math.PI * 2);
         ctx.fill();
-        ctx.strokeStyle = def.color || core.color || "#b78cff";
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = color;
         ctx.lineWidth = 4;
         ctx.beginPath();
         ctx.arc(core.x, core.y, CORE_RADIUS - 2, 0, Math.PI * 2);
         ctx.stroke();
-        ctx.fillStyle = def.color || core.color || "#b78cff";
+        ctx.fillStyle = color;
         ctx.font = "bold 22px Arial";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
@@ -13216,8 +13276,8 @@ function drawMines() {
         ctx.stroke();
         ctx.restore();
 
-        if (getCoreBuffsForTarget(mine, "mine").length) {
-            drawCoreBuffAuraAround(mine.x, mine.y, radius + 13, Number(mine.id) || mine.x + mine.y, "#ffb84a");
+        if (isPointInCoreRange("economic", mine.x, mine.y)) {
+            drawCoreBuffMarkerAround(mine.x, mine.y, radius + 13, Number(mine.id) || mine.x + mine.y, "#ffb84a");
         }
 
         ctx.fillStyle = "#fff4cc";
