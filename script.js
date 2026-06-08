@@ -5616,17 +5616,20 @@ function updateAutoRepeatWaveButton() {
     const repeats = getRepeatCountForWave(targetWave);
     const atLimit = repeats >= REPEAT_LIMIT_PER_WAVE;
 
-    if (atLimit && autoRepeatWaveMode) {
-        autoRepeatWaveMode = false;
-    }
+    // Importante: NO apagamos autoRepeatWaveMode al llegar al límite de una oleada.
+    // El modo debe quedar persistente para que, al avanzar a la siguiente wave,
+    // vuelva a repetir automáticamente esa nueva oleada.
+    const blockedForThisWave = autoRepeatWaveMode && atLimit && !waveInProgress && buildPhaseActive;
 
     autoRepeatWaveBtn.textContent = autoRepeatWaveMode
-        ? `Auto repetir ON (${repeats}/${REPEAT_LIMIT_PER_WAVE})`
+        ? (blockedForThisWave
+            ? `Auto repetir ON · límite ${targetWave} (${repeats}/${REPEAT_LIMIT_PER_WAVE})`
+            : `Auto repetir ON (${repeats}/${REPEAT_LIMIT_PER_WAVE})`)
         : `Auto repetir OFF`;
     autoRepeatWaveBtn.classList.toggle("autoActive", autoRepeatWaveMode);
-    autoRepeatWaveBtn.disabled = atLimit && !waveInProgress && buildPhaseActive;
-    autoRepeatWaveBtn.title = atLimit
-        ? "Esta oleada ya alcanzó el máximo de 3 repeticiones."
+    autoRepeatWaveBtn.disabled = false;
+    autoRepeatWaveBtn.title = blockedForThisWave
+        ? "Esta oleada ya alcanzó el máximo de 3 repeticiones. Auto repetir sigue ON y volverá a actuar en la próxima oleada."
         : "Repite automáticamente la misma oleada durante el descanso: enemigos +20% y 60% de oro. Máximo 3 veces por oleada.";
 }
 
@@ -5638,10 +5641,9 @@ function prepareRepeatWave(targetWave, source = "manual") {
     const normalizedWave = Math.max(1, Math.floor(Number(targetWave) || 1));
     const repeats = getRepeatCountForWave(normalizedWave);
     if (repeats >= REPEAT_LIMIT_PER_WAVE) {
-        if (source === "auto") {
-            autoRepeatWaveMode = false;
-            updateAutoRepeatWaveButton();
-        }
+        // No apagar el modo automático: solo esta oleada está bloqueada por límite.
+        // Así el jugador no tiene que volver a activar Auto repetir en la wave siguiente.
+        if (source === "auto") updateAutoRepeatWaveButton();
         return false;
     }
 
@@ -17427,7 +17429,8 @@ nextWaveBtn.addEventListener("click", () => {
     // En build phase se ignora para evitar el bug de saltar una wave doble
     // (completeWave ya dejó wave = completedWave + 1).
     if (waveInProgress || buildPhaseActive) return;
-    autoRepeatWaveMode = false;
+    // Auto repetir es una preferencia persistente: iniciar una oleada normal
+    // no debe apagarlo. Solo limpiamos el estado puntual de repetición actual.
     isRepeatingWave = false;
     currentGoldMultiplier = 1;
     startWave();
